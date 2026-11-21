@@ -28,6 +28,9 @@ loader that maps the game's executable and resolves its imports to shims. Nothin
   Check its tables and the open pull requests first. If someone has claimed the item or has a pull request for it,
   stop and tell the user instead of writing it a second time.
 - Put the item ID from #156 in the pull request, and `Depends on: #N` for every pull request yours builds on.
+- For the D3D12 → Vulkan layer (`runtime/shims/d3d12_*`, `runtime/src/vulkan_*`), also read
+  [#313](https://github.com/ItsNotRexed/Leonida/issues/313): most of that work builds on a few open pull requests,
+  and it lists which D3D12 methods are still open.
 
 ## Before you guess, look
 
