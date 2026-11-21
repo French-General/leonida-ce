@@ -22,6 +22,13 @@ loader that maps the game's executable and resolves its imports to shims. Nothin
   contract table in `docs/design.md` with how it was confirmed (a GPU test, a Mesa/LLVM reference, or a count over
   the corpus).
 
+## Claim before you start
+
+- Work is claimed in [#156](https://github.com/ItsNotRexed/Leonida/issues/156) before a pull request is opened.
+  Check its tables and the open pull requests first. If someone has claimed the item or has a pull request for it,
+  stop and tell the user instead of writing it a second time.
+- Put the item ID from #156 in the pull request, and `Depends on: #N` for every pull request yours builds on.
+
 ## Before you guess, look
 
 - The format or behaviour may already be measured in `docs/design.md`. Quote the file and offset a claim comes from,
@@ -33,7 +40,7 @@ loader that maps the game's executable and resolves its imports to shims. Nothin
 These need no game files and run in seconds:
 
 ```powershell
-python -m compileall -q make_game.py tools
+python -m compileall -q make_game.py tools tests
 python -I make_game.py --help
 dotnet build tools/rpf9dump/rpf9dump.csproj -c Release
 cmake -S runtime -B runtime/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo; cmake --build runtime/build
