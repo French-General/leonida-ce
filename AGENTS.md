@@ -33,7 +33,7 @@ loader that maps the game's executable and resolves its imports to shims. Nothin
 These need no game files and run in seconds:
 
 ```powershell
-python -m compileall -q make_game.py tools
+python -m compileall -q make_game.py tools tests
 python -I make_game.py --help
 dotnet build tools/rpf9dump/rpf9dump.csproj -c Release
 cmake -S runtime -B runtime/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo; cmake --build runtime/build
