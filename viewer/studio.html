@@ -554,6 +554,7 @@ let texSearchQuery = '';
 
 let scene, camera, renderer, controls;
 let currentMesh = null;
+let modelLoadId = 0;
 let shadingMode = 'original'; // 'original' | 'clay' | 'normals'
 let wireframeActive = false;
 let autoRotateActive = false;
@@ -701,11 +702,13 @@ function applyMeshShading() {
 }
 
 function loadModel(url, name, category, size) {
+  const loadId = ++modelLoadId;
   const bar = document.getElementById('loading-bar');
   bar.style.transform = 'scaleX(0.4)';
 
   const loader = new THREE.GLTFLoader();
   loader.load(url, (gltf) => {
+    if (loadId !== modelLoadId) return;
     bar.style.transform = 'scaleX(1)';
     setTimeout(() => { bar.style.transform = 'scaleX(0)'; }, 250);
 
@@ -745,6 +748,7 @@ function loadModel(url, name, category, size) {
     controls.target.set(0, 0, 0);
     controls.update();
   }, undefined, (err) => {
+    if (loadId !== modelLoadId) return;
     bar.style.transform = 'scaleX(0)';
     console.error('Error loading model:', err);
     alert('Не удалось загрузить 3D модель: ' + name);
