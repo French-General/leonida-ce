@@ -2767,8 +2767,11 @@ Vulkan AS would be invisible to them. Two paths:
    the GPU and is checked against that reference. The standalone device uses it for `BuildRaytracingAccelerationStructure`
    and answers `GetRaytracingAccelerationStructurePrebuildInfo` from its layout, exactly. Acceleration-structure
    buffers then keep their console VAs, the addresses the records name each other by. `LEONIDA_RT_AS=khr` keeps
-   #743's `VkAccelerationStructureKHR` builds (for `RayQueryKHR`), which the game's shaders can't read. Updates refit
-   the source structure instead of rebuilding it, `CopyRaytracingAccelerationStructure` clones and compacts, and the
+   #743's `VkAccelerationStructureKHR` builds (for `RayQueryKHR`), which the game's shaders can't read. A top-level
+   build with `D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS` is supported there: the console VAs in the pointer list are
+   translated to Vulkan device addresses in a staged copy, without changing the guest's input. The list must be
+   CPU-written and host-readable when the command list executes; one written by an earlier GPU command in the same
+   submission is refused. Updates refit the source structure instead of rebuilding it, `CopyRaytracingAccelerationStructure` clones and compacts, and the
    postbuild compacted and current sizes are written ([bvh.md](bvh.md) §7a). Serialization and the Xbox
    batched/streaming builds are not implemented. The
    reported `RaytracingTier` is unchanged (`NOT_SUPPORTED`). Checked by `runtime/test/d3d12_xdxr_rt_test.cpp` through
