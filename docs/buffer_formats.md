@@ -67,82 +67,84 @@ whole 16 bytes compared, so a byte written outside the element shows up.
 | **USCALED / SSCALED** | **converted as UNORM / SNORM**: storing 200.0 into 8_USCALED writes 255, storing 0.5 into 8_SSCALED writes 64. The SCALED formats are for loads; a store does not undo the "not divided" |
 | 16_FLOAT, 10_11_11 / 11_11_10 FLOAT | **round toward zero** (not nearest): 0.49999997 gives `0x37FF`, not `0x3800`. A value too large for the format gives the **largest finite** value, not infinity: 65520.0 and 1e30 give `0x7BFF` for halves; only a real +infinity stores infinity. Denormals are produced. The unsigned floats store 0 for every negative number, −0 and −infinity |
 | NaN into a float format | stays a NaN: the sign (halves only) and the top mantissa bits of the payload, or 1 when those are all zero (`0x7F800001` gives `0x7C01`) |
-| a format with two components | **the 880M stores (x, w) for `buffer_store_format_xyzw`, not (x, y)**: `8_8_UINT` of (0x11, 0x22, 0x33, 0x44) writes 0x11, 0x44; `buffer_store_format_xy` into it writes 0x11 and 0. 1-, 3- and 4-component formats take x, xyz and xyzw. The translator writes (x, y); RDNA2 has not been measured (see below) |
+| a format with two components | **`buffer_store_format_*` on the 880M takes channels (x, w), not (x, y)**: `8_8_UINT` of (0x11, 0x22, 0x33, 0x44) writes 0x11, 0x44, and `buffer_store_format_xy` into it writes 0x11 and 0. **`tbuffer_store_format_*` takes (x, y)**, like the translator. 1-, 3- and 4-component formats take x, xyz and xyzw (`_xy` into them: x, y, then 0). The translator writes (x, y) for both. **KNOWN DIFFERENCE, not in the validated count; the target RDNA2 behaviour is unresolved until it is measured** |
 
 `DST_SEL` also reorders a store's channels on the 880M in a way that is not a plain swizzle (`xzwy` stores `zxyw`); only
 the identity and the B/R swap (`zyxw`, the 8_8_8_8 and 2_10_10_10 UNORM case the translator already handles) are modelled.
 
 ## What the 880M ran
 
-`python -I tools/buffer_format_fuzz.py --oracle hw --budget 200 --seed 7` on a Radeon 880M (gfx1150), 1,264,744 elements,
-0 mismatches. `--negative-control` shows the harness is not vacuous (a kernel whose V# names another format differs on
+`python -I tools/buffer_format_fuzz.py --oracle hw --budget 40 --seed 7` on a Radeon 880M (gfx1150): **1,330,469 validated
+elements, 0 mismatches**, plus **26,523 known-difference elements** that are counted apart (below). Stores run as `_xyzw` and
+as `_xy`, with a different value in every register (an earlier version of the probe gave y and w the same value for
+two-component formats, which hid the difference). `--negative-control` shows the harness is not vacuous (a kernel whose V# names another format differs on
 all but one or two elements of five formats). `--self-test` checks the model without a GPU.
 
-| Code | Format | Translator | V# loads | tbuffer loads | V# stores | tbuffer stores |
-|---|---|---|---|---|---|---|
-| 1 | `8_UNORM` | before | 658 | 658 | 1,512 | 1,512 |
-| 2 | `8_SNORM` | before | 658 | 658 | 1,512 | 1,512 |
-| 3 | `8_USCALED` | added | 658 | 658 | 932 | 932 |
-| 4 | `8_SSCALED` | added | 658 | 658 | 932 | 932 |
-| 5 | `8_UINT` | added | 658 | 658 | 844 | 844 |
-| 6 | `8_SINT` | added | 658 | 658 | 844 | 844 |
-| 7 | `16_UNORM` | before | 926 | 926 | 1,512 | 1,512 |
-| 8 | `16_SNORM` | before | 926 | 926 | 1,512 | 1,512 |
-| 9 | `16_USCALED` | added | 926 | 926 | 932 | 932 |
-| 10 | `16_SSCALED` | added | 926 | 926 | 932 | 932 |
-| 11 | `16_UINT` | added | 926 | 926 | 844 | 844 |
-| 12 | `16_SINT` | added | 926 | 926 | 844 | 844 |
-| 13 | `16_FLOAT` | before | 65,938 | 65,938 | 932 | 932 |
-| 14 | `8_8_UNORM` | before | 914 | 914 | 1,512 | 1,512 |
-| 15 | `8_8_SNORM` | before | 914 | 914 | 1,512 | 1,512 |
-| 16 | `8_8_USCALED` | added | 914 | 914 | 932 | 932 |
-| 17 | `8_8_SSCALED` | added | 914 | 914 | 932 | 932 |
-| 18 | `8_8_UINT` | added | 914 | 914 | 844 | 844 |
-| 19 | `8_8_SINT` | added | 914 | 914 | 844 | 844 |
-| 20 | `32_UINT` | before | 677 | 677 | 844 | 844 |
-| 21 | `32_SINT` | before | 677 | 677 | 844 | 844 |
-| 22 | `32_FLOAT` | before | 677 | 677 | 932 | 932 |
-| 23 | `16_16_UNORM` | before | 1,450 | 1,450 | 1,512 | 1,512 |
-| 24 | `16_16_SNORM` | before | 1,450 | 1,450 | 1,512 | 1,512 |
-| 25 | `16_16_USCALED` | added | 1,450 | 1,450 | 932 | 932 |
-| 26 | `16_16_SSCALED` | added | 1,450 | 1,450 | 932 | 932 |
-| 27 | `16_16_UINT` | before | 1,450 | 1,450 | 844 | 844 |
-| 28 | `16_16_SINT` | added | 1,450 | 1,450 | 844 | 844 |
-| 29 | `16_16_FLOAT` | before | 131,474 | 131,474 | 932 | 932 |
-| 36 | `10_11_11_FLOAT` | added | 5,522 | 5,522 | 932 | 932 |
-| 43 | `11_11_10_FLOAT` | added | 5,522 | 5,522 | 932 | 932 |
-| 44 | `10_10_10_2_UNORM` | before | 3,478 | 3,478 | 1,612 | 1,612 |
-| 45 | `10_10_10_2_SNORM` | added | 3,478 | 3,478 | 1,612 | 1,612 |
-| 48 | `10_10_10_2_UINT` | added | 3,478 | 3,478 | 844 | 844 |
-| 49 | `10_10_10_2_SINT` | added | 3,478 | 3,478 | 844 | 844 |
-| 50 | `2_10_10_10_UNORM` | before | 3,478 | 3,478 | 1,612 | 1,612 |
-| 51 | `2_10_10_10_SNORM` | added | 3,478 | 3,478 | 1,612 | 1,612 |
-| 52 | `2_10_10_10_USCALED` | added | 3,478 | 3,478 | 932 | 932 |
-| 53 | `2_10_10_10_SSCALED` | added | 3,478 | 3,478 | 932 | 932 |
-| 54 | `2_10_10_10_UINT` | added | 3,478 | 3,478 | 844 | 844 |
-| 55 | `2_10_10_10_SINT` | added | 3,478 | 3,478 | 844 | 844 |
-| 56 | `8_8_8_8_UNORM` | before | 1,426 | 1,426 | 1,512 | 1,512 |
-| 57 | `8_8_8_8_SNORM` | before | 1,426 | 1,426 | 1,512 | 1,512 |
-| 58 | `8_8_8_8_USCALED` | added | 1,426 | 1,426 | 932 | 932 |
-| 59 | `8_8_8_8_SSCALED` | added | 1,426 | 1,426 | 932 | 932 |
-| 60 | `8_8_8_8_UINT` | before | 1,426 | 1,426 | 844 | 844 |
-| 61 | `8_8_8_8_SINT` | added | 1,426 | 1,426 | 844 | 844 |
-| 62 | `32_32_UINT` | before | 952 | 952 | 844 | 844 |
-| 63 | `32_32_SINT` | before | 952 | 952 | 844 | 844 |
-| 64 | `32_32_FLOAT` | before | 952 | 952 | 932 | 932 |
-| 65 | `16_16_16_16_UNORM` | before | 2,498 | 2,498 | 1,512 | 1,512 |
-| 66 | `16_16_16_16_SNORM` | before | 2,498 | 2,498 | 1,512 | 1,512 |
-| 67 | `16_16_16_16_USCALED` | added | 2,498 | 2,498 | 932 | 932 |
-| 68 | `16_16_16_16_SSCALED` | added | 2,498 | 2,498 | 932 | 932 |
-| 69 | `16_16_16_16_UINT` | before | 2,498 | 2,498 | 844 | 844 |
-| 70 | `16_16_16_16_SINT` | added | 2,498 | 2,498 | 844 | 844 |
-| 71 | `16_16_16_16_FLOAT` | before | 262,546 | 262,546 | 932 | 932 |
-| 72 | `32_32_32_UINT` | before | 1,227 | 1,227 | 844 | 844 |
-| 73 | `32_32_32_SINT` | before | 1,227 | 1,227 | 844 | 844 |
-| 74 | `32_32_32_FLOAT` | before | 1,227 | 1,227 | 932 | 932 |
-| 75 | `32_32_32_32_UINT` | before | 1,502 | 1,502 | 844 | 844 |
-| 76 | `32_32_32_32_SINT` | before | 1,502 | 1,502 | 844 | 844 |
-| 77 | `32_32_32_32_FLOAT` | before | 1,502 | 1,502 | 932 | 932 |
+| Code | Format | Translator | V# loads | tbuffer loads | V# stores (xyzw and xy) | tbuffer stores (xyzw and xy) | known difference |
+|---|---|---|---|---|---|---|---|
+| 1 | `8_UNORM` | before | 338 | 338 | 3,024 | 3,024 | 0 |
+| 2 | `8_SNORM` | before | 338 | 338 | 3,024 | 3,024 | 0 |
+| 3 | `8_USCALED` | added | 338 | 338 | 1,864 | 1,864 | 0 |
+| 4 | `8_SSCALED` | added | 338 | 338 | 1,864 | 1,864 | 0 |
+| 5 | `8_UINT` | added | 338 | 338 | 1,688 | 1,688 | 0 |
+| 6 | `8_SINT` | added | 338 | 338 | 1,688 | 1,688 | 0 |
+| 7 | `16_UNORM` | before | 606 | 606 | 3,024 | 3,024 | 0 |
+| 8 | `16_SNORM` | before | 606 | 606 | 3,024 | 3,024 | 0 |
+| 9 | `16_USCALED` | added | 606 | 606 | 1,864 | 1,864 | 0 |
+| 10 | `16_SSCALED` | added | 606 | 606 | 1,864 | 1,864 | 0 |
+| 11 | `16_UINT` | added | 606 | 606 | 1,688 | 1,688 | 0 |
+| 12 | `16_SINT` | added | 606 | 606 | 1,688 | 1,688 | 0 |
+| 13 | `16_FLOAT` | before | 65,618 | 65,618 | 1,864 | 1,864 | 0 |
+| 14 | `8_8_UNORM` | before | 594 | 594 | 1,247 | 3,024 | 1,777 |
+| 15 | `8_8_SNORM` | before | 594 | 594 | 499 | 3,024 | 2,525 |
+| 16 | `8_8_USCALED` | added | 594 | 594 | 834 | 1,864 | 1,030 |
+| 17 | `8_8_SSCALED` | added | 594 | 594 | 414 | 1,864 | 1,450 |
+| 18 | `8_8_UINT` | added | 594 | 594 | 592 | 1,688 | 1,096 |
+| 19 | `8_8_SINT` | added | 594 | 594 | 248 | 1,688 | 1,440 |
+| 20 | `32_UINT` | before | 357 | 357 | 1,688 | 1,688 | 0 |
+| 21 | `32_SINT` | before | 357 | 357 | 1,688 | 1,688 | 0 |
+| 22 | `32_FLOAT` | before | 357 | 357 | 1,864 | 1,864 | 0 |
+| 23 | `16_16_UNORM` | before | 1,130 | 1,130 | 941 | 3,024 | 2,083 |
+| 24 | `16_16_SNORM` | before | 1,130 | 1,130 | 400 | 3,024 | 2,624 |
+| 25 | `16_16_USCALED` | added | 1,130 | 1,130 | 724 | 1,864 | 1,140 |
+| 26 | `16_16_SSCALED` | added | 1,130 | 1,130 | 382 | 1,864 | 1,482 |
+| 27 | `16_16_UINT` | before | 1,130 | 1,130 | 350 | 1,688 | 1,338 |
+| 28 | `16_16_SINT` | added | 1,130 | 1,130 | 88 | 1,688 | 1,600 |
+| 29 | `16_16_FLOAT` | before | 131,154 | 131,154 | 74 | 1,864 | 1,790 |
+| 36 | `10_11_11_FLOAT` | added | 5,202 | 5,202 | 1,864 | 1,864 | 0 |
+| 43 | `11_11_10_FLOAT` | added | 5,202 | 5,202 | 1,864 | 1,864 | 0 |
+| 44 | `10_10_10_2_UNORM` | before | 3,158 | 3,158 | 3,224 | 3,224 | 0 |
+| 45 | `10_10_10_2_SNORM` | added | 3,158 | 3,158 | 3,224 | 3,224 | 0 |
+| 48 | `10_10_10_2_UINT` | added | 3,158 | 3,158 | 1,688 | 1,688 | 0 |
+| 49 | `10_10_10_2_SINT` | added | 3,158 | 3,158 | 1,688 | 1,688 | 0 |
+| 50 | `2_10_10_10_UNORM` | before | 3,158 | 3,158 | 3,224 | 3,224 | 0 |
+| 51 | `2_10_10_10_SNORM` | added | 3,158 | 3,158 | 3,224 | 3,224 | 0 |
+| 52 | `2_10_10_10_USCALED` | added | 3,158 | 3,158 | 1,864 | 1,864 | 0 |
+| 53 | `2_10_10_10_SSCALED` | added | 3,158 | 3,158 | 1,864 | 1,864 | 0 |
+| 54 | `2_10_10_10_UINT` | added | 3,158 | 3,158 | 1,688 | 1,688 | 0 |
+| 55 | `2_10_10_10_SINT` | added | 3,158 | 3,158 | 1,688 | 1,688 | 0 |
+| 56 | `8_8_8_8_UNORM` | before | 1,106 | 1,106 | 3,024 | 3,024 | 0 |
+| 57 | `8_8_8_8_SNORM` | before | 1,106 | 1,106 | 3,024 | 3,024 | 0 |
+| 58 | `8_8_8_8_USCALED` | added | 1,106 | 1,106 | 1,864 | 1,864 | 0 |
+| 59 | `8_8_8_8_SSCALED` | added | 1,106 | 1,106 | 1,864 | 1,864 | 0 |
+| 60 | `8_8_8_8_UINT` | before | 1,106 | 1,106 | 1,688 | 1,688 | 0 |
+| 61 | `8_8_8_8_SINT` | added | 1,106 | 1,106 | 1,688 | 1,688 | 0 |
+| 62 | `32_32_UINT` | before | 632 | 632 | 36 | 1,688 | 1,652 |
+| 63 | `32_32_SINT` | before | 632 | 632 | 50 | 1,688 | 1,638 |
+| 64 | `32_32_FLOAT` | before | 632 | 632 | 6 | 1,864 | 1,858 |
+| 65 | `16_16_16_16_UNORM` | before | 2,178 | 2,178 | 3,024 | 3,024 | 0 |
+| 66 | `16_16_16_16_SNORM` | before | 2,178 | 2,178 | 3,024 | 3,024 | 0 |
+| 67 | `16_16_16_16_USCALED` | added | 2,178 | 2,178 | 1,864 | 1,864 | 0 |
+| 68 | `16_16_16_16_SSCALED` | added | 2,178 | 2,178 | 1,864 | 1,864 | 0 |
+| 69 | `16_16_16_16_UINT` | before | 2,178 | 2,178 | 1,688 | 1,688 | 0 |
+| 70 | `16_16_16_16_SINT` | added | 2,178 | 2,178 | 1,688 | 1,688 | 0 |
+| 71 | `16_16_16_16_FLOAT` | before | 262,226 | 262,226 | 1,864 | 1,864 | 0 |
+| 72 | `32_32_32_UINT` | before | 907 | 907 | 1,688 | 1,688 | 0 |
+| 73 | `32_32_32_SINT` | before | 907 | 907 | 1,688 | 1,688 | 0 |
+| 74 | `32_32_32_FLOAT` | before | 907 | 907 | 1,864 | 1,864 | 0 |
+| 75 | `32_32_32_32_UINT` | before | 1,182 | 1,182 | 1,688 | 1,688 | 0 |
+| 76 | `32_32_32_32_SINT` | before | 1,182 | 1,182 | 1,688 | 1,688 | 0 |
+| 77 | `32_32_32_32_FLOAT` | before | 1,182 | 1,182 | 1,864 | 1,864 | 0 |
 
 "before" means the format was in `Gen.FORMATS` before this change. (Codes 5, 6, 11, 12, 18, 19, 28, 61 and 70, the narrow UINT and SINT ones, were added to main's table by a parallel change, measured on gfx1036, while this branch was open; they are marked "added" here because the 880M run covers them too and the table entries are identical.) Codes 30..35, 37..42 (no GFX11 form), 46 and 47 (GFX11
 has no SCALED 10_10_10_2) are not in the table.
@@ -151,7 +153,7 @@ has no SCALED 10_10_10_2) are not in the table.
 
 Decode of every format that was already in `Gen.FORMATS` matches the 880M word for word (the 32 old codes are in the
 table above). **Differences found in the older stores, left as they are** (an existing format stays byte-identical in this
-change; the first two are pinned by an `expectedFailure` in `tests/semantic/test_buffer_formats_all.py`, which starts to
+change; the three are pinned by an `expectedFailure` in `tests/semantic/test_buffer_formats_all.py`, which starts to
 fail when someone fixes them):
 
 1. **16_FLOAT, 16_16_FLOAT and 16_16_16_16_FLOAT stores round to nearest even and overflow to infinity** (`Gen.f16_bits`
@@ -163,8 +165,10 @@ fail when someone fixes them):
    one-component formats and between 1 and 13 of 200 for the others (8_8_8_8_UNORM 9, 16_16_UNORM 7, 16_16_16_16_UNORM 12,
    10_10_10_2_UNORM 13, 2_10_10_10_UNORM 11). The new formats store with an exact integer product
    (`Gen.norm_encode_exact`).
-3. **A two-component format stored with `xyzw`** takes (x, y) in the translator and (x, w) on the 880M (table above).
-   The RDNA2 xy/xyz measurements in `cs_fmt_xy_xyz.asm` do not cover it. Unresolved: it needs an RDNA2 card.
+3. **A two-component format stored with `buffer_store_format_xyzw` or `_xy`** takes (x, y) in the translator and (x, w) on the 880M
+   (26,523 elements in the run above, the last column of the table; `tbuffer_store_format_*` agrees with the translator).
+   The RDNA2 xy/xyz measurements in `cs_fmt_xy_xyz.asm` do not cover it. **Unresolved: the translator is unchanged until an RDNA2
+   card shows which is right.** It is pinned as an `expectedFailure` too, and excluded from the validated count.
 
 ## Not measured
 
