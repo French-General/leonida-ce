@@ -308,16 +308,6 @@ print(sum(1 for i in items if i.get("IsFragment")), "fragments")
 print([n for n in names if "lucia" in n.lower()])
 ```
 
-```python
-import json
-
-items = json.load(open(r"<outdir>/packs/models/manifest.json", encoding="utf-8"))["Items"]
-names = sorted({i["Name"] for i in items})
-print(len(items), len(names))
-print(sum(1 for i in items if i.get("IsFragment")), "fragments")
-print([n for n in names if "lucia" in n.lower()])
-```
-
 The material rows are in the same manifest, one per shader of a record, each with the texture
 references by slot:
 
@@ -335,28 +325,50 @@ A key's size and format come from the pool that holds it: the `AssetKey`, `Width
 `DxgiFormat` and `Mips` fields of the manifest `rpf9dump ttpf <pool.ttpf> <outdir>` writes.
 
 The [Hands and feet](#hands-and-feet) tables also need `core_restofworld.rpf` and the 57 pool
-catalogs (`AssetKey` in each pool's `manifest.json`):
+catalogs (`AssetKey` in each pool's `manifest.json`).
 
-Use a dedicated output root for the pool catalogs. `rpf9dump` appends the input pool's basename
-to that root; the recursive lookup below also handles catalogs already exported one level deeper.
-Check that all 57 pool manifests are present before interpreting an absent key as a lookup miss.
+`rpf9dump ttpf` writes a pool's catalog to `<output root>\<pool basename>\manifest.json`, and pool
+basenames repeat: the 57 pools in [`game/xbox-1.0.2.1.json`](../game/xbox-1.0.2.1.json) have 51
+distinct basenames (`ttdb_maps` and `ttdb_terrain_image_based` twice, `ttdb_ui` and `ttdb_vfx` three
+times). With one output root for all of them, later pools overwrite earlier catalogs. Give each pool
+its package-relative parent folder under `<outdir>\ttpf` as its output root:
 
 ```powershell
-rpf9dump models <pack\core_restofworld\core_restofworld.rpf> <outdir>
-rpf9dump ttpf <each .ttpf under data\ttdb and pack\*\data\ttdb> <outdir>\ttpf
+$game = (Resolve-Path "<game root>").Path.TrimEnd("\")
+rpf9dump models "$game\pack\core_restofworld\core_restofworld.rpf" <outdir>
+Get-Item "$game\data\ttdb", "$game\pack\*\data\ttdb" | Get-ChildItem -Recurse -File -Filter *.ttpf | ForEach-Object {
+    rpf9dump ttpf $_.FullName "<outdir>\ttpf\$($_.DirectoryName.Substring($game.Length + 1))"
+}
 ```
+
+Each catalog records its source pool in `src`. The lookup finds catalogs at any depth under
+`<outdir>\ttpf` and stops unless their sources are exactly the 57 pools of the game root, so a
+catalog that was overwritten, exported in another layout or taken from another folder is caught
+before an absent key is read as a lookup miss:
 
 ```python
 import json
+import os
 from pathlib import Path
 
 maps = {"C8E8C282": "diffusetex", "C6F46E79": "speculartex", "1E77BF4C": "bumptex", "739E3D0D": "speculartex2"}
+game = Path(r"<game root>")
 pool_root = Path(r"<outdir>/ttpf")
-manifests = sorted(pool_root.rglob("manifest.json"))
-if len(manifests) != 57:
-    raise ValueError(f"Expected 57 pool manifests under {pool_root}, found {len(manifests)}")
-pooled = {t["AssetKey"] for m in manifests
-          for t in json.loads(m.read_text(encoding="utf-8"))["Textures"]}
+
+
+def source(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+pools = {source(p) for pattern in ("data/ttdb/**/*.ttpf", "pack/*/data/ttdb/**/*.ttpf") for p in game.glob(pattern)}
+sources, pooled = set(), set()
+for m in pool_root.rglob("manifest.json"):
+    catalog = json.loads(m.read_text(encoding="utf-8"))
+    sources.add(source(catalog.get("src", m)))
+    pooled.update(t["AssetKey"] for t in catalog.get("Textures", []))
+if len(pools) != 57 or sources != pools:
+    raise ValueError(f"{len(pools)} pools under {game} (expected 57); {len(pools - sources)} have no catalog "
+                     f"under {pool_root}, {len(sources - pools)} catalogs come from other sources")
 items = [i for m in (r"<outdir>/packs/models/manifest.json", r"<outdir>/core_restofworld/models/manifest.json")
          for i in json.load(open(m, encoding="utf-8"))["Items"]]
 for name in ("hand_fr1_000_nude_cull.#dr", "feet_fr1_000_full.#dr", "bodynipplesgen_fr1_000_regular_ws00_full.#dr",
