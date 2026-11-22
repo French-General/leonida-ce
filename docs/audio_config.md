@@ -75,9 +75,16 @@ the bank itself carries track markers: see [Marker events](#marker-events-awc-ta
 ## Marker events (AWC tag `0xBD`)
 
 The cue times the config lacks are partly in the banks. AWC tag `0xBD` is a headerless array of
-16-byte events. In a streamed-music bank (one with a `0x48` descriptor, [audio.md](audio.md#streamed-music-0x48))
-it is the only tag of a channel's own stream-table entry: the entry whose id is the descriptor's channel id.
-The `0x48` stream itself (id 0) never has one.
+16-byte cue records; [rsc8_audio.md](rsc8_audio.md#the-0xbd-cue-records) has the layout over all 420,168 tags of
+`audio.rpf`, counted by `tools/rsc8_audio.py`. This section is about the 945 of them in the streamed-music banks,
+which that count does not separate, and about what their records mark. The fields are the same four; the names
+used here (with the other page's in brackets) are type (`name`), value, time (`offset`) and flags (`extra`).
+
+In a streamed-music bank (one with a `0x48` descriptor, [audio.md](audio.md#streamed-music-0x48))
+the tag is the only tag of a channel's own stream-table entry: the entry whose id is the descriptor's channel id.
+The `0x48` stream itself (id 0) never has one. Those entries have no `0x76` format tag, so the check of the
+offsets against the `0x76` sample count on the other page does not reach them; here they are checked against
+the descriptor's length.
 
 | Offset | Size | Field | Confidence |
 |---:|---:|---|---|
@@ -160,6 +167,7 @@ station name, and the tool prints none.
 
 ### Track markers (`0xA6D93246`)
 
+The type is the hash of `trackid`, one of the four names [rsc8_audio.md](rsc8_audio.md#the-0xbd-cue-records) gives.
 Measured:
 
 - 905 chunks carry exactly one, at time 0 in 900 and within 0.35 s of it in the other five. 35 chunks carry none.
@@ -187,14 +195,16 @@ runtime can read the track boundaries and track numbers from the bank.
 
 ### Other banks
 
-The 419,223 chunks outside the music banks have the same layout: every size is 16, 32 or 48 bytes, 419,221
-of the streams are mono Opus with a `0x76` format tag, and no time passes the stream length. 418,838 chunks
-hold one event of type `0xE5C74063` at time 0 whose value is an integer 0.0 to 6.0 and whose flags field
-equals that integer (418,838 of 418,838), the only non-zero flags in the archive. 330,756 chunks put one
-event of type `0xDBEDD43C` (integers 33 to 1,467, at time 0) before it. So the "16-byte header with magic
-`0xE5C74063`" of [rsc8_audio.md](rsc8_audio.md#companion-awc-speech-tags) is the first event of a one-event
-chunk, not a header; in a two-event chunk the first u32 is `0xDBEDD43C`. Three types occur in both groups
-(`0x00000000`, `0x0C801D6C`, `0x7A495DB3`).
+The 419,223 tags outside the music banks are the ones [rsc8_audio.md](rsc8_audio.md#the-0xbd-cue-records)
+describes, and the counts here agree with that page where they overlap (945 + 419,223 = 420,168 tags,
+31,330 + 750,020 = 781,350 records, 17 + 153 types with three in both groups = 167, 363,166 records with
+flags 0). Two things it does not have:
+
+- In the 418,838 records of type `0xE5C74063` the value is an integer 0.0 to 6.0 and the flags field equals
+  that integer (418,838 of 418,838). These are the only non-zero flags in the archive.
+- The 330,756 records of type `0xDBEDD43C` are all at time 0, with integer values 33 to 1,467.
+
+The three types found in both groups are `0x00000000`, `0x0C801D6C` and `0x7A495DB3`.
 
 ### Reproduce
 

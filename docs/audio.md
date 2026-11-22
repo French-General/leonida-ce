@@ -54,10 +54,10 @@ The exporters use three tag types:
 | `0x48` | streamed-music descriptor |
 
 `tools/rsc8_audio.py` additionally decodes the speech companions `0x36` (peaks), `0xa3` (seek
-table), `0xb2` (loudness), `0xbd` (marker) and the two structural tags below; every other tag type
-is skipped. Tag `0xbd` is an array of 16-byte marker events (`u32 type | f32 value | u32 time | u32 flags`,
-time in 48 kHz frames) in the music banks too: 945 chunks in 938 of the 3,008 streamed-music banks,
-counted by `tools/awc_markers.py` ([audio_config.md](audio_config.md#marker-events-awc-tag-0xbd)).
+table), `0xb2` (loudness), `0xbd` (cue records) and the two structural tags below; every other tag type
+is skipped. The `0xbd` record layout is in [rsc8_audio.md](rsc8_audio.md#the-0xbd-cue-records); the music banks
+have the tag too (945 tags in 938 of the 3,008 streamed-music banks, counted by `tools/awc_markers.py`), and
+what their records mark is in [audio_config.md](audio_config.md#marker-events-awc-tag-0xbd).
 
 | Tag | Meaning |
 |---|---|
