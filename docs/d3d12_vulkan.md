@@ -349,7 +349,9 @@ What is implemented (all of it testable without the game):
     format then decides the alpha: a `B8G8R8X8` view of a `B8G8R8A8` texture reads 1, a `B8G8R8A8` view of a
     `B8G8R8X8` one the stored byte. It decides the channel order too: an `R8G8B8A8` texture whose list names
     `B8G8R8A8` or `B8G8R8X8` reads red and blue swapped through those views, as on the host (both orders share one
-    T# format code, so the T#'s swizzle carries the order). As on the host runtime, the family has no typed UAV, and a typed `B8G8R8X8`
+    T# format code, so the T#'s swizzle carries the order). An RTV in a format the list names stores clears and
+    draws in the view's channel order and encoding, as on the host (see the castable-list RTVs under D3D-275 below).
+    As on the host runtime, the family has no typed UAV, and a typed `B8G8R8X8`
     texture cannot allow unordered access (the host accepts one whose castable-format list names `B8G8R8A8`; the
     layer doesn't yet). Blending into a `B8G8R8X8` render target reads destination
     alpha as 1, as WARP and AMD's D3D12 driver do: the PSO turns `DEST_ALPHA` into `ONE`, `INV_DEST_ALPHA` into
@@ -2063,6 +2065,20 @@ The trace will enumerate them.
   `uint4(7, 300, 1000, 3)` or `float4(0.5, -2, 1.5, 0.25)` into R16G16B16A16_UINT/FLOAT/UNORM, R32_UINT/FLOAT,
   R10G10B10A2_UINT/UNORM and R8G8B8A8_UINT views of the matching TYPELESS textures: 8 of 8 equal the host, with no
   validation error, before and after the clear fix.
+- **RTVs through a castable-format list in the other channel order:** an `R8G8B8A8` or `B8G8R8A8` texture (UNORM or
+  SRGB, `B8G8R8X8` included) whose castable-format list names the RTV's format in the other channel order, across
+  `B8G8R8X8` and `B8G8R8A8`, or a typed `B8G8R8A8` texture's listed SRGB format, gets an RTV in that format.
+  `CreateRenderTargetView` checks the list as the application gave it (`lists_castable_format`), and
+  `color_view_format` lets a castable image's clear cross between the RGBA8 and BGRA8 orders. WARP and AMD's D3D12
+  driver (RX 9060 XT, 26.11.2) store clears and draws in the view's channel order and encoding: an `R8G8B8A8` texture
+  cleared to (0.2, 0.4, 0.6, 0.25) through a `B8G8R8A8` RTV holds the bytes 153, 102, 51, 64. Before, the RTV was
+  refused for an `R8G8B8A8` texture (its clear failed `Close` and its draws were dropped), and a typed `B8G8R8A8`
+  texture's RTV kept the image's format whatever the view named, so its clears came out in BGRA order and without
+  the sRGB encoding (its draws were right already, as they use the PSO's format). A format the list doesn't name
+  stays refused; a typed `B8G8R8A8` texture without a list still ignores the RTV's format, as before.
+  `d3d12_clear_test` compares 8 such textures with WARP in full and rectangle clears (the X byte of an X8 view left
+  out: WARP and AMD write different values there) and checks that 3 unlisted formats get no RTV, `d3d12_draw_test`
+  draws through the same views, and `typeless_rtv_test` checks the replay's crossing and its refusals.
 - **Typed RTV clears:** `ClearRenderTargetView` still takes `FLOAT[4]`. For every integer RTV format the device
   exposes (`R8G8`, `R8G8B8A8`, `R16G16`, `R16G16B16A16`, `R32`, `R32G32` and `R32G32B32A32` in `_UINT` and `_SINT`,
   plus `R10G10B10A2_UINT`; `R8`/`R16` `_UINT`/`_SINT` are handled in replay too) convert those values numerically
