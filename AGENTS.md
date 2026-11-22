@@ -59,14 +59,20 @@ loader that maps the game's executable and resolves its imports to shims. Nothin
 
 ## Test without the game first
 
-These need no game files and run in seconds:
+Run the unified fast preflight first (mirrors CI's stdlib checks, no-game-data scan, repo-rule tests, and viewer
+streaming tests in ~7 s without game files, LLVM, or a GPU):
 
 ```powershell
-python -m compileall -q make_game.py tools tests
-python -I make_game.py --help
-python -m unittest discover -s tests/semantic -v   # translator regression suite; no LLVM, SPIR-V tools or GPU needed
-python -I tests/test_<name>.py                     # standalone standard-library unit test
-node --test tests/test_viewer_streaming.cjs        # viewer streaming; needs Node 22+
+python -I scripts/preflight_pr.py
+python -I scripts/preflight_pr.py --semantic      # also run tests/semantic via unittest discover
+```
+
+For targeted checks:
+
+```powershell
+python -I scripts/check_semantic_behavior.py --base origin/main --head HEAD   # prove changed semantic tests fail under sabotaged rdna2spirv
+python -I tools/build_design_doc.py --check                                   # verify docs/contracts/*.json matches docs/design.md
+python -I .agents/skills/verify-translator/scripts/verify_translator.py drive --feature valu-ops --evidence <dir>
 dotnet build tools/rpf9dump/rpf9dump.csproj -c Release
 cmake -S runtime -B runtime/build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo; cmake --build runtime/build
 ```
@@ -79,6 +85,22 @@ test file you want to check.
 python -m pip install -r tests/requirements.txt
 python -m pytest tests/test_user_sgpr_census.py
 ```
+
+## Rules and enforcers
+
+Keep every recurring repo rule paired with its check. When a rule without an enforcer fails twice, add a check instead
+of more prose.
+
+| Rule | Enforced by |
+|---|---|
+| No tracked game binaries or magic headers | `.github/workflows/no-game-data.yml`, `scripts/check_no_game_data.py` |
+| Every test file is collected and executed by CI | `tests/test_ci_registration.py` |
+| Semantic tests exercise `tools/rdna2spirv.py` and fail under sabotage | `tests/test_semantic_translator_use.py`, `scripts/check_semantic_behavior.py` |
+| Contract rows live in `docs/contracts/*.json` with consistent status and match `docs/design.md` | `tools/build_design_doc.py`, `tests/test_design_contracts.py` |
+| LF line endings, UTF-8 encoding, CSV LF, and `sys.stdout.reconfigure(errors="replace")` | `tests/test_text_write_line_endings.py`, `tests/test_text_encoding.py`, `tests/test_csv_line_endings.py`, `tests/test_tool_stdout_encoding.py` |
+| Docs links, anchors, CLI flags, repo paths, tables, and list items stay valid | `tests/test_docs_links.py`, `tests/test_docs_cli_flags.py`, `tests/test_docs_repo_paths.py`, `tests/test_docs_table_rows.py`, `tests/test_docs_list_items.py` |
+| Python stdlib-only exceptions stay in sync with `AGENTS.md` | `tests/test_docs_python_deps.py` |
+| No keys, decryption, protection workarounds, or online services | Review policy (`CONTRIBUTING.md`) |
 
 With a work folder already built, a translator change is checked on a slice before the full run, and the result is
 compared with the run before it:
@@ -93,6 +115,8 @@ Shard runs write `index.part*.json`; merge them into `index.json` with `--merge`
 
 ## Conventions
 
+- New translator contract rules are added as one file per topic under `docs/contracts/` and rendered into
+  `docs/design.md` with `python -I tools/build_design_doc.py`.
 - Python tools run with `python -I` and use only the standard library unless a file says otherwise; the exceptions
   are the texture and model tools that import numpy or Pillow: `bc_feature.py`, `amd_swizzle.py`, `tile_probe.py`,
   `swizzle_search.py`, `tex_export.py`, `tex_mode_probe.py`, `calibrated_texture.py`, `tex_headers.py` and
