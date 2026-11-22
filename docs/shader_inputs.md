@@ -61,22 +61,20 @@ dword and the buffer's bounds first.
 
 #### Light shape size
 
-Reported by @Silliana [on the pull request](https://github.com/ItsNotRexed/Leonida/pull/3157): +0x3C holds two f16,
-the low half a sphere radius and the high half a range. Since intensity is radiance, the light's power grows with
-radius², so a radius that's too big (for example the range written into both halves) gives scattered single-pixel
-specular blowups that look like a translator bug.
++0x3C holds two f16. How they are used depends on the light type (bits 30–31 at +0x28):
 
-What the shader shows confirms the two f16 halves, but their use depends on the light type (bits 30–31 at +0x28):
+| Type | Low half | High half | Source |
+|---|---|---|---|
+| 0 | Sphere radius: clamped against the reflection ray to pick the closest point on the light. Brightness grows with radius², since intensity is radiance. | No effect. | Tested by @Silliana [on the pull request](https://github.com/ItsNotRexed/Leonida/pull/3157): radius 60 → 5 dimmed the light about 134× (radius² predicts 144×). |
+| not decoded | Half-size along one axis of a rectangle. | Half-size along the other axis. | Shader: the light's position is moved by ± each half along its axis, and points are clamped to those bounds. |
+| not decoded | — | A length along the light's axis (clamped to ± half of it), also squared and compared against a distance. Probably a tube light's length (@Silliana's hypothesis, not tested). | Shader. |
 
-- In one path they are the two half-sizes of a rectangle. The light's position is moved by ± the low half along one
-  axis and ± the high half along the other, and points are clamped to those bounds.
-- In another path the high half is a length along the light's axis (clamped to ± half of it), and it is also squared
-  and compared against a distance.
-- The low half also sets one blend factor.
-- No range-style falloff was found: neither half divides a distance.
+The low half also sets one blend factor. No range-style falloff was found: neither half divides a distance, and the
+early reading of the high half as a range is dropped.
 
-So a wrong value here makes the light the wrong size, and an oversized area light is a likely cause of the blowups.
-Which light type reads the low half as a sphere radius isn't decoded yet.
+A value that's too big makes the light too large. On a sphere light, the brightness grows with the square of the
+radius. That gives scattered single-pixel specular blowups that look like a translator bug, for example when a range
+is written into both halves (reported by @Silliana).
 
 #### Correction to #1892
 
