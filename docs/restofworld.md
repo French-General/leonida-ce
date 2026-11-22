@@ -604,6 +604,28 @@ than 0x8000 between neighbouring vertices occurs 1,597,530 times when the values
 half floats, 1,391,311 slot 3 values are NaN or infinite. So the stream is a pair of `int16`s, continuous across
 the surface, which fits the `x / 32767 * f32@0x7C` texture-coordinate reading.
 
+**Tag `0x27` is a second tangent frame: a unit tangent along `u` of another `0x28` stream, with a sign.**
+The mesh shaders fetch it with `tbuffer_load_format_xyzw ... BUF_FMT_2_10_10_10_UNORM` (one of the
+four typed vertex formats they use, in 2,162 of the 9,282 mesh shaders) and map every component by
+`v * 2 - 1`. They transform xyz by the same matrix as the normal and cross it with the normal, scaled by
+w. `tangent_0x27` in `tools/vertex_types.py` is that read: xyz = bits 0-9, 10-19, 20-29 over 1023, and
+w = bits 30-31 over 3. Per `0x27` slot, `tangent27_checks` counts unit length over all vertices; over
+the sampled triangles it counts vectors perpendicular to the face normal (`|cos| < 0.2`) and, for each
+`0x28` stream, vectors within `cos > 0.8` of `dP/du` and the w side:
+
+| Sample | Slot | Vertices | Unit | w = 3 / 0 | Perpendicular to face | Best `0x28` stream: along u | w > 0 exactly when `cross(face normal, xyz)` runs along `-v` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| levels (400 streams) | 11 | 637,604 | 100% | 634,431 / 3,173 | 86.1% | slot 4: 96.7% (slot 3: 69.5%) | 99.8% |
+| core_restofworld (500 streams) | 18 | 182,208 | 100% | 180,282 / 1,926 | 40.3% | slot 14: 79.3% (slot 4: 73.6%, slot 3: 21.0%) | 99.2% |
+| core_restofworld | 19 | 12,679 | 100% | 12,445 / 234 | 61.7% | slot 14: 69.0% (slot 3: 54.1%) | 98.5% |
+
+The w side is counted among the along-u vertices of that stream. The w field only ever holds 0 or 3 in
+these samples. Against the vertex normal of tag `0x21` (read as the mesh shaders read it) instead of the
+face normal, the slot-18 vectors are perpendicular (`|cos| < 0.1`) for 174,942 of 182,208 (96.0%) and the
+slot-19 and levels slot-11 vectors for all of them. Where the face-normal column is low, the face normals
+disagree with the vertex normals, as for tag `0x21`. The tangent matches the `0x21` tangent (`cos > 0.99`)
+for only 10-17% of vertices, so it is a different frame, the one for a second texture-coordinate stream.
+
 **Tag `0x26` (slot 1) is four bytes with an alpha-like byte 3.** Byte 3 is 255 on 62.4% of the 137.9 million
 vertices and 0 on 17.2%; each of bytes 0-2 is constant within a block in 36,544 to 38,854 blocks. The bytes
 change smoothly over edges (block-weighted median edge/random difference ratio 0.18 to 0.27), as a colour or
