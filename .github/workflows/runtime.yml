@@ -44,6 +44,7 @@ on:
       - "tools/spirv_asm_tables.py"
       - "tools/spirv_stubs.py"
       - "tools/vk_subgroup_info.py"
+      - "tools/wave64_emulate_opt.py"
       - "tools/wave64_halves.py"
       - "tools/xdxr_bvh.py"
   pull_request:
@@ -79,6 +80,7 @@ on:
       - "tools/spirv_asm_tables.py"
       - "tools/spirv_stubs.py"
       - "tools/vk_subgroup_info.py"
+      - "tools/wave64_emulate_opt.py"
       - "tools/wave64_halves.py"
       - "tools/xdxr_bvh.py"
   workflow_dispatch:
