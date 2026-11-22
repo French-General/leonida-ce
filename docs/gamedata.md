@@ -358,9 +358,41 @@ Two consequences for a loader. The stored matrices do not include `Scale`, so th
 built from `Position`, `Rotation` and `Scale` rather than read from `TransformMtx`. Profile indices are
 positions in `ProfileList`, so its order must be kept.
 
-Not measured here (hypothesis): with half the volumes at the origin, two profiles in use and no interpolation,
-this list looks like a sample or default set; the placed fog of the map is probably elsewhere (map resources
-or another archive). What `IntExtMode` (interior/exterior) and `BlendMode` select is also untested.
+**Package-wide census (ASSET-308, `tools/fog_volumes.py`).** Scanning all zlib streams across the package's
+archives (`common.rpf`, `data.rpf`, `packs.rpf`, `levels.rpf`, `story000.rpf`, `anim.rpf`, `navmeshes.rpf`,
+`textures.rpf`, `script.rpf`, `story000_script.rpf`, `core_restofworld.rpf`, `core_restofworld001.rpf`,
+`story000_restofworld.rpf`, `shared_minigame000.rpf`, `core_bvh4.rpf`, `shared_minigame000_bvh4.rpf`,
+`appdata0.rpf`, `core_licenses_data.rpf`) for XML, RBF0, and `0x7a` schemas matching
+`CScatteringTransmittance__FogVolumeListData` (`0x03073767`) or `CScatteringTransmittance__FogVolume`
+(`0x81907918`) finds:
+
+- **`levels.rpf`** (1,003,199 streams, 180,282 `0x7a` resources, 9 `RBF0`), **`data.rpf`** (15,728 `0x7a`,
+  1,263 `RBF0`), **`story000.rpf`** (46,201 `0x7a`, 1 `RBF0`), and all other archives except `common.rpf` and
+  `packs.rpf`: **0** `FogVolumeListData` / `FogVolume` resources.
+- **`common.rpf`**: remains the only archive with the XML `FogVolumeProfileList` (`0x236000`, 43 profiles) and
+  world-coordinate `CScatteringTransmittance__FogVolumeListData` (`0x64c000`, 14 volumes).
+- **`packs.rpf`**: **230 complete `0x7a` resources** (`0x8ae9010..0xc120010`), each embedding
+  `CScatteringTransmittance__FogVolumeListData` (`0x03073767`, 16 bytes) and 1–4 instances (median 2) of
+  `CScatteringTransmittance__FogVolume` (`0x81907918`, 512 bytes, 45 members), totalling **385 volumes**:
+
+| Check (`packs.rpf` 0x7a, 385 volumes across 230 resources) | Result |
+|---|---|
+| `Position` | `(0, 0, 0)` in all 385 (local-space attachments) |
+| `PositionOffset` | non-zero in 383 of 385: X `-2.46..2.46`, Y `-9.20..20.62`, Z `-6.50..6.66` m |
+| `Scale` | X `0.43..6.00`, Y `0.13..28.00`, Z `0.13..2.63` m |
+| `Rotation` / `Shear` | non-zero in 41 / 194 of 385 |
+| `RotationMtx` and `TransformMtx` | identity in all 385 (even where `Rotation` or `Shear` is non-zero) |
+| `IsBox` (`+0x000`, `ty=0x01`) | `1` in 365, `0` in 20 |
+| `BlendMode` / `IntExtMode` | `1` in all 385 / `1` in 380, `0` in 5 |
+| `ProfileIndex` / `SecondaryProfileIndex` | `{0: 1, 10: 2, 12: 382}` (all in `0..42`) / `0` in all 385; `ProfileInterpolation` is 0 in all 385 |
+| `Type` / `SortKey` | `{0: 384, 2: 1}` / `{0: 384, 10: 1}` |
+
+This resolves the earlier hypothesis: the map's placed fog volumes are **not** stored as `0x7a` or XML
+`FogVolumeListData` in `levels.rpf` or `data.rpf`. Instead, `packs.rpf` holds 385 local-space (`Position = 0`,
+non-zero `PositionOffset` and `Shear`, `IntExtMode = 1` in 380/385) volumes attached to pack assets (consistent
+with interior/vehicle bounds), and `RotationMtx`/`TransformMtx` stay identity there too — confirming a loader
+must compose the volume transform from `Position`, `PositionOffset`, `Rotation`, `Shear`, and `Scale`. What
+`IntExtMode` and `BlendMode` select at runtime remains untested.
 
 ## Schema style
 
