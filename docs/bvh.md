@@ -104,7 +104,8 @@ The offsets are relative to the header at `0x100`, not to the start of the paylo
 `offsetToNodes` therefore addresses `0x59580` and `offsetToElements` addresses `0x4380`. The node and element
 regions are not necessarily the simple `0x140` onward array that the first indexer assumed. `offsetToPrimRemap`
 is source type `int32_t`, so the indexer keeps it signed. `offsetToParents` is source type `uint32_t`, so the
-indexer keeps its raw value; its signed/relative interpretation is still **Open**.
+indexer keeps its raw value; it is a signed offset from the start of the structure (RT-151: rehydrated console BLASes
+have it negative), and only the entries from the header end to `offsetToElements` are stored.
 
 The `flags` word has version `6` in its low 16 bits. It also sets `0x80000000` (bottom level), `0x00020000`
 (offline) and `0x01000000` (dehydrated). It does not set `0x00010000` (compressed). The sample is therefore a
@@ -392,6 +393,59 @@ python -I tools/bvh_rehydrate.py <bvh4 stream> --header-offset 256 --geom ... --
 python -I tests/test_bvh_rehydrate.py
 ```
 
+`tools/bvh_geometry_check.py` says whether the geometry given to a rehydration is the geometry the BLAS was built
+from, using what the dehydrated stream stores (§4a): leaves inside and equal to `sceneBounds`, stored box overrides
+consistent with the rehydrated slots, and paired leaves sharing an edge in the index buffer, which needs no positions.
+On the 8 samples the right geometry passes every check and a wrong decode fails (175 of 181 leaves outside, or 11 of
+23 overrides inconsistent).
+
+```powershell
+python -I tools/bvh_geometry_check.py <dehydrated.bin> --geom <vertices.f32>[,<indices.u32>] [--json report.json]
+python -I tests/test_bvh_geometry_check.py
+```
+
+`tools/bvh_match.py` finds the drawable geometry a dehydrated BLAS was built from, on top of `rpf9dump`'s model
+export rather than a second decoder. It reads the leaf signature (triangles per geometry index, a leaf that holds two
+primitives counting as two), keeps every (drawable, model) of a `rpf9dump models` manifest whose per-geometry triangle
+counts contain that signature as an ordered subsequence, and checks the survivors with
+`tools/bvh_geometry_check.py` from the model's exported OBJ and the 3x4 at `+0x50` of the instance descriptor. The
+geometries of the two shaders the BVH leaves out are filtered with `--skip-shaders`: those name hashes are game data,
+as §4a says, so the rule is off unless the user passes them. A geometry whose shader index the manifest cannot resolve
+keeps its place and the checks decide. Measured on the ten BLAS of the sample pack, against the first 1 GiB window of
+`levels.rpf` cut at 3 GB (exported as a whole slice): 1,228 models, 1 to 374 candidates from the signature per BLAS,
+and exactly one consistent candidate each. A window holds one region's drawables, so a BLAS whose drawable is
+elsewhere in the archive finds no candidate in it at all, and the tool says so instead of reporting a rejection.
+
+`rpf9dump models` and `rpf9dump textures` take `--start`/`--length` to export a window of a file. A window need not be a
+valid archive - a slice of `levels.rpf` cut at an offset has no `9FPR` header - because both modes read every resource
+from its own compression blocks; a sub-range is never written to the index cache, which describes a whole file.
+
+```powershell
+dotnet build tools/rpf9dump/rpf9dump.csproj -c Release
+dotnet tools/rpf9dump/bin/Release/net8.0/rpf9dump.dll models <levels.rpf> <out> --start 3221225472 --length 1073741824
+python -I tools/bvh_match.py <dehydrated.bin> <out>/levels/models/manifest.json --descriptor <instance208.bin> [--skip-shaders H,H]
+python -I tests/test_bvh_match.py
+```
+
+The sample set §4a was measured on can be rebuilt from any copy of the package, and nothing of it enters this
+repository:
+
+1. `tools/bvh_index.py` on `core_bvh4.rpf` lists each `bvh4` stream and its descriptor row; the 3x4 at `+0x50` is
+   the transform the matching needs, and a carved stream is passed to the next tools with `--header-offset 256`
+   (or `0` when the structure was carved from its own header);
+2. export a window of `levels.rpf` that holds that region's drawables (`rpf9dump models`, `--start`/`--length`);
+3. `tools/bvh_match.py` identifies the drawable's geometries against it, and `--write <dir>` stores exactly those
+   geometries as the float3 and uint32 buffers the next step takes, with the transform recorded in `export.json`;
+4. `tools/bvh_rehydrate.py` on the same stream with those buffers and `--transform` gives the runtime layout,
+   byte-identical to what `XboxBvhBuilder.dll` writes on these samples (§4a).
+
+With the two excluded shader hashes the run answers with one consistent candidate per sample; without them every
+candidate is checked and the checks decide. Measured on the window above: 1,228 models in the export, 1 to 374
+candidates from the signature per sample, and a rehydrated structure of `64 * (totalSizeIn64BNodes + 1)` bytes from
+the header. Its root parent-table entry is `0xFFFFFFFF` in all eight identified samples (the entry at
+`offsetToParents` read signed, plus `4 * ((root - offsetToElements) / 64)`), which is what the GPU builder writes
+for a root and what `tools/xdxr_bvh.py validate` requires since #2625.
+
 ## 7a. Building runtime BVHs: `tools/xdxr_bvh.py`
 
 The Vulkan layer has to write acceleration structures in this runtime layout, because the game's traversal shaders
@@ -438,6 +492,19 @@ the destination buffer:
 3. BOX32 nodes, built level by level from four consecutive sorted children, with the parent table and each
    instance's `ParentNode`;
 4. the header.
+
+The radix sort's scan writes the prefix sums of the digit counts to their own scratch array, not over the counts.
+No invocation of the builder stores to a word and then uses a value it loaded from that word earlier. SPIRV-Cross
+`6c09849f`, in MoltenVK 1.4.2, breaks that pattern for a pointer made by `OpBitcast` from a `uvec2`
+(`GL_EXT_buffer_reference_uvec2`): it moves the load to where the value is used, after the store, and the load
+returns the new value. MoltenVK `main` at `5189f8de` pins SPIRV-Cross `aa217aeb`, which has the same bug.
+SPIRV-Cross [`38abe362`](https://github.com/KhronosGroup/SPIRV-Cross/commit/38abe362c57311a77808b7ec4d1d0d9ceb8d9370)
+fixes it. With the old in-place scan, the radix path (more than 1,024 elements) lost and duplicated elements on
+MoltenVK: `xdxr_build_check` found about 130 of 200 rays wrong in `blas_three_sort_tiles` and 210 of 300 in
+`blas_refit_in_place`, which refits a radix-sorted tree. Measured on an Apple M3 Max, the separate arrays pass
+10 runs out of 10 on Homebrew MoltenVK 1.4.2, on MoltenVK `5189f8de` built with SPIRV-Cross `57e4efcc`, on
+KosmicKrisp and on llvmpipe. A pointer from `OpConvertUToPtr`, which the translator uses, kept its load before the
+store in the same test.
 
 The tree's shape depends only on the element count. `XdxrLayout` therefore computes the result and scratch sizes
 exactly when the build is recorded, and the same numbers can answer `GetRaytracingAccelerationStructurePrebuildInfo`.
