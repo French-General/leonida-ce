@@ -611,9 +611,28 @@ Modifiers come in two shapes:
 49 documents, so a submodifier is a by-name reference to another modifier, with its own blend attributes.
 The one unresolved item points outside this archive or at a document lost to the unread region.
 
-Not measured here (hypothesis): the hour of each of the 13 samples (GTA V's are fixed in code), how the two
-regions are chosen at runtime, what the two plain-modifier numbers are (GTA V reads them as a value pair
-blended by strength), and how `controlValue` maps onto game state.
+**Sample hours come from data.** One `time_data` document (root attributes `version` and `mode`) has exactly 13
+`sample` elements, each with `name`, `hour`, `uw_tc_mod` and `interpolation_type`, plus one `region`. The 13
+hours are integers from 0 to 22 in strictly increasing order, with gaps of 1 hour (7 times), 2 (twice), 3 (once)
+and 4 (twice); `interpolation_type` is `EASE_LINEAR_IN` on 9 samples and `EASE_QUARTIC_INOUT` on 4, and all 13
+`uw_tc_mod` values are the same name, which resolves to one of the 4,592 modifier names. The `region` name equals one of the two keyframe
+region names. So unlike GTA V, where the 13 sample times are compiled in, this build reads them (and the easing
+between them) from `time_data`; their count matches the 13 values of every keyframe variable.
+
+The `hour` attributes of the 13 `sample` elements, in document order, are **0, 4, 5, 6, 7, 9, 12, 16, 18, 19, 20,
+21, 22**. They come from the one `time_data` payload of the `common.rpf` carve, at archive offset 1,773,568
+(`0x1b1000`): a single zlib stream, 268 B stored and 1,370 B inflated. `EASE_QUARTIC_INOUT` is on the samples at
+hours 4, 20, 21 and 22. That value *i* of a keyframe variable belongs to sample *i* is a hypothesis: it rests
+on the equal count and the document order, not on the executable. To print the hours from a carve (the JSON is
+game data and stays local):
+
+```
+python -I tools/gamedata_reader.py <work>/carve/common --root time_data --out <scratch>
+```
+
+Not measured here (hypothesis): how the two regions are chosen at runtime, what the two plain-modifier numbers
+are (GTA V reads them as a value pair blended by strength), and how `controlValue` maps onto game state.
+
 ## Vehicle and tyre XML documents
 
 Four roots account for 37 of the 45 documents (4,547,932 inflated bytes) in the vehicles/tyres category:
@@ -697,16 +716,6 @@ entry combines up to four nested parameter groups with 12 direct scalar `value=`
 | `roadPenalties`, `offRoadPenalties` | 40 / 40 each | identical 6-scalar schema: `fMaterialTractionLoss`, `fMaterialRollingDragGain`, `fMaterialSinkDragGain`, `fMaterialSurfaceDragGain`, `fWetTractionLoss`, `fWetDragGain` |
 | Direct scalars (required) | 40 / 40 each | `fLoadShapeVarianceScale`, `fDamageShapeVarianceScale`, `fDamageCoefficientScale`, `fOptimumTyreTemp` (all `100.0`), `fOptimumTyreTempRange` (all `100.0`), `fGripDropOffWithTemp` (`0.01..0.05`) |
 | Direct scalars (optional) | 36..39 / 40 | `fPuncturedTyreGripReduction`, `fBurstTyreGripReduction`, `fTractionStiffnessSpeedMult`, `fTractionStiffnessSpeedCap` (39 each); `fLoadStability` (37); `fLoadSensitivity` (36) |
-**Sample hours come from data.** One `time_data` document (root attributes `version` and `mode`) has exactly 13
-`sample` elements, each with `name`, `hour`, `uw_tc_mod` and `interpolation_type`, plus one `region`. The 13
-hours are integers from 0 to 22 in strictly increasing order, with gaps of 1 hour (7 times), 2 (twice), 3 (once)
-and 4 (twice); `interpolation_type` is `EASE_LINEAR_IN` on 9 samples and `EASE_QUARTIC_INOUT` on 4, and all 13
-`uw_tc_mod` values are the same name, which resolves to one of the 4,592 modifier names. The `region` name equals one of the two keyframe
-region names. So unlike GTA V, where the 13 sample times are compiled in, this build reads them (and the easing
-between them) from `time_data`; their count matches the 13 values of every keyframe variable.
-
-Not measured here (hypothesis): how the two regions are chosen at runtime, what the two plain-modifier numbers
-are (GTA V reads them as a value pair blended by strength), and how `controlValue` maps onto game state.
 
 ## Relationship to `data.rpf` and `script.rpf`
 
