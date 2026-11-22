@@ -78,7 +78,7 @@ gives the returned PSO (RT-266, WARP, default constructor flag): the builder nam
 GetBVHCompactedSize`**, from the same call site in `FUN_18001d400` (return address `+0x1d503`, called through
 `FUN_18000c470` at `+0xc4e4`); `FUN_18001d400` is called twice, once from `FUN_18000d850` (#47) and once from
 `FUN_180021330` directly (#53). So the repeat is one PSO created twice under one name, not one container under two
-names, and no creation is named `XDXR PostBuildInfoQuery`: that string is not used on this path (the flag-true
+names, and no creation is named `XDXR PostBuildInfoQuery` in this run (default flag, WARP; the flag-true
 constructor was not run). The creation order, by module (it is not the table
 order of section 3; `CopyAndCompactBVH` is #52, not the first):
 
