@@ -55,7 +55,9 @@ The exporters use three tag types:
 
 `tools/rsc8_audio.py` additionally decodes the speech companions `0x36` (peaks), `0xa3` (seek
 table), `0xb2` (loudness), `0xbd` (marker) and the two structural tags below; every other tag type
-is skipped.
+is skipped. Tag `0xbd` is an array of 16-byte marker events (`u32 type | f32 value | u32 time | u32 flags`,
+time in 48 kHz frames) in the music banks too: 945 chunks in 938 of the 3,008 streamed-music banks,
+counted by `tools/awc_markers.py` ([audio_config.md](audio_config.md#marker-events-awc-tag-0xbd)).
 
 | Tag | Meaning |
 |---|---|
@@ -208,7 +210,8 @@ programming is assembled by the game from many assets, so a lone AWC is rarely a
 
 The music/radio **config table** is a separate structure: 1,589 records with exact durations, AWC stream ids,
 contiguous station grouping and no per-track start offsets. See [audio_config.md](audio_config.md) for the record
-layout and the station-content references.
+layout, the station-content references and the marker events (tag `0xBD`) that mark track boundaries in five
+long mixes.
 
 ## Mission music: Home Sweet Home
 
