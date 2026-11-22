@@ -201,8 +201,8 @@ The `+4` word of a polygon packs `(index start << 4) | count`; the runs tile the
 (`tools/navmesh_decode.py --deep` checks it on all `124,768,148` polygons, 0 failures), which caps a polygon at 15
 vertices. 6stars independently reads the same packing. Its polygon `+0x28` bit 17 and `+0x18` bit 27
 road/pavement labels were not adopted: a 1,027,984-polygon sample over 238 tiles sets both bits on 258 polygons, so
-they are not a partition, and the lane-graph count [below](#polygon-flags-under-the-lane-graph) puts the road
-surface on `+0x18` bit 13 instead. No 6stars code was copied; the repository has no licence.
+they are not a partition, and in the lane-graph count [below](#polygon-flags-under-the-lane-graph) neither is under
+most lane nodes; `+0x18` bits 8 and 13 are. No 6stars code was copied; the repository has no licence.
 
 ### Flags (`u32@0x10`) and 512 Ã— 512 world grid
 
@@ -253,19 +253,32 @@ nodes stand on a polygon with the bit; "area" is the share of the plan area such
 
 | Word | Bit | Nodes | Polygons | Area | Reading |
 |---|---|---:|---:|---:|---|
-| `+0x18` | 13 (`0x2000`) | 57,559 (90.2%) | 3,357,132 | 12.0% | **road surface** |
-| `+0x18` | 8 (`0x100`) | 58,528 (91.7%) | 251,917 | 2.6% | on the road as well, but a much smaller set of larger polygons; not named |
+| `+0x18` | 13 (`0x2000`) | 57,559 (90.2%) | 3,357,132 | 12.0% | under nine in ten nodes; SixNG's "road surface" |
+| `+0x18` | 8 (`0x100`) | 58,528 (91.7%) | 251,917 | 2.6% | under nine in ten nodes, on a fifth of bit 13's area; not named |
 | `+0x18` | 12 (`0x1000`) | 787 (1.2%) | 18,746,182 | 33.6% | not road: a third of the area, almost no node |
 | `+0x18` | 19 (`0x80000`) | 3,980 (6.2%) | 3,263,052 | 23.6% | the water candidate above |
-| `+0x18` | 27 (`0x8000000`) | 5,526 (8.7%) | 2,489,161 | 3.2% | 6stars's label; not the road surface |
+| `+0x18` | 27 (`0x8000000`) | 5,526 (8.7%) | 2,489,161 | 3.2% | 6stars's label; under few nodes |
 | `+0x28` | 17 (`0x20000`) | 21,246 (33.3%) | 1,083,157 | 4.7% | 6stars's label; seven times its area share, but only a third of the nodes |
 
 No other bit of either word has more than 5% of the nodes, except `+0x28` bit 18 (4,520 nodes, 7.1%, on 1.6% of
-the area). Bit 13 is the one
-[SixNG](https://github.com/holdmysocks/SixNG) calls road surface after a visual check
-(`crates/sixng-core/src/navmesh.rs`, commit `0619601`, GPL-3.0), and the vertex formula is stated there too; both
-are measured here, and no code was taken. What separates bit 8 from bit 13, and the meaning of the other bits,
-stays open.
+the area).
+
+Bits 8 and 13 are mostly set together. The tool counts the four combinations:
+
+| `+0x18` bits 8 and 13 | Nodes | Polygons | Area |
+|---|---:|---:|---:|
+| both | 57,181 (89.6%) | 236,753 | 2.5% |
+| bit 8 only | 1,347 (2.1%) | 15,164 | 0.1% |
+| bit 13 only | 378 (0.6%) | 3,120,379 | 9.5% |
+| neither | 4,887 (7.7%) | 74,508,600 | 87.8% |
+
+So nine in ten lane nodes stand on polygons that carry both bits, which cover 2.5% of the area. Bit 13
+alone covers almost four times that area (9.5%) with almost no node on it, and bit 8 alone is rare.
+[SixNG](https://github.com/holdmysocks/SixNG) labels bit 13 "road surface" after a visual check
+(`crates/sixng-core/src/navmesh.rs`, commit `0619601`, GPL-3.0; see [related_projects.md](related_projects.md)).
+The count is consistent with that if road surface is wider than the driven lanes. It does not settle which bit,
+or which combination, means road surface. That stays open, as do bit 8's meaning and the other bits. The vertex
+formula above is stated in the same file and is confirmed by the heights.
 
 ## Band-3 `grid` resources (`27,482` resources)
 
@@ -297,8 +310,8 @@ remain **open**.
 3. **`0DRP` unnamed structs and fields.** Several `0x7a` struct/member hashes (including `0x4712787b`, `0x57ad0b12`,
    `0xdd53676a`, `0xf2dd6348`, `0xde5f1345`, and 3 of the 4 singletons) are not yet matched to engine names.
 4. **Per-record bitfields inside `0x00010015` tiles.** `u32@0x10` bit 3's secondary trigger on `289` tiles and bit 6's
-   name, `u32@0xE8` build-stamp encoding, the polygon flag bits other than road surface (`+0x18` bit 13) and the
-   water candidate, the adjacent-edge and special-link flag bitfields, and the C++ type of the
+   name, `u32@0xE8` build-stamp encoding, the polygon flag bits (`+0x18` bits 8 and 13 lie under nine in ten lane
+   nodes, which is road surface is open; see above), the adjacent-edge and special-link flag bitfields, and the C++ type of the
    96-byte `+0xB8` records remain open.
 5. **Band-3 `grid` subsystem and EOF `PSIN` v79.** The Band-3 subsystem identity, `u64` key encoding and `u32[N]`
    payload bits are open, as is why the final `PSIN` (version `79`) terminates before `LSNS` ends.
