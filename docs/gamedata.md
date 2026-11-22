@@ -359,17 +359,18 @@ built from `Position`, `Rotation` and `Scale` rather than read from `TransformMt
 positions in `ProfileList`, so its order must be kept.
 
 **Package-wide census (ASSET-308, `tools/fog_volumes.py`).** Scanning all `0x7a` resources (assembled via
-`world_census.assemble`, up to 64 MiB and multi-stream, without a 256 KiB per-stream cutoff) in `packs.rpf` and
-`levels.rpf`, plus bounded zlib-stream scans across the remaining package archives (`common.rpf`, `data.rpf`,
-`story000.rpf`, `anim.rpf`, `navmeshes.rpf`, `textures.rpf`, `script.rpf`, `story000_script.rpf`,
+`world_census.assemble`, up to 64 MiB and multi-stream, without a 256 KiB per-stream cutoff) in `packs.rpf`,
+`levels.rpf`, `data.rpf`, and `story000.rpf`, plus bounded zlib-stream scans across the remaining package
+archives (`common.rpf`, `anim.rpf`, `navmeshes.rpf`, `textures.rpf`, `script.rpf`, `story000_script.rpf`,
 `core_restofworld.rpf`, `core_restofworld001.rpf`, `story000_restofworld.rpf`, `shared_minigame000.rpf`,
 `core_bvh4.rpf`, `shared_minigame000_bvh4.rpf`, `appdata0.rpf`, `core_licenses_data.rpf`) for XML, RBF0, and
 `0x7a` schemas matching `CScatteringTransmittance__FogVolumeListData` (`0x03073767`) or
 `CScatteringTransmittance__FogVolume` (`0x81907918`) finds:
 
-- **`levels.rpf`** (`188,449` complete `0x7a` resources assembled, `0` incomplete), **`data.rpf`** (`15,728`
-  bounded `0x7a`, `1,263` `RBF0`), **`story000.rpf`** (`46,201` bounded `0x7a`, `1` `RBF0`), and all other
-  archives except `common.rpf` and `packs.rpf`: **0** `FogVolumeListData` / `FogVolume` resources.
+- **`levels.rpf`** (`188,449` complete `0x7a`, `0` incomplete), **`data.rpf`** (`15,768` complete `0x7a`, `0`
+  incomplete — matching `docs/world.md` and `docs/page_directory.md` — plus `1,263` `RBF0`), **`story000.rpf`**
+  (`48,084` complete `0x7a`, `0` incomplete, plus `1` `RBF0`), and all other archives except `common.rpf` and
+  `packs.rpf`: **0** `FogVolumeListData` / `FogVolume` resources.
 - **`common.rpf`**: remains the only archive with the XML `FogVolumeProfileList` (`0x236000`, 43 profiles) and
   world-coordinate `CScatteringTransmittance__FogVolumeListData` (`0x64c000`, 14 volumes).
 - **`packs.rpf`** (`4,678` complete `0x7a` resources assembled, `0` incomplete): **231 complete `0x7a`
