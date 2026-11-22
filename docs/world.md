@@ -419,6 +419,7 @@ and joins them with the `InteriorNames` section (full archive, `--jobs 15`, abou
 |---|---:|
 | `CMloArchetypeDef` definitions / distinct names | 1,706 / 1,706 |
 | `CMloInstanceDef` placements / distinct interiors placed | 2,590 / 1,704 |
+| placements of a name with no `CMloArchetypeDef` | 0 |
 | keys naming an interior (confirmed by the 64-bit key) | 1,357 (1,357) |
 | keys whose interior is placed | 1,356 |
 | ... with as many positions as placements | 1,268 |
@@ -439,8 +440,12 @@ positions to the nearest placed copy of its own interior's box (0 = inside):
 
 | Rotation | Inside | ≤ 1 m | ≤ 2 m | ≤ 5 m | ≤ 25 m | ≤ 100 m | Median | In a non-`limbo` room box |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| stored quaternion | 315 | 1,015 | 1,189 | 1,443 | 1,867 | 2,199 | 1.72 m | 213 |
-| conjugated | 571 | 950 | 1,121 | 1,416 | 1,863 | 2,199 | 2.10 m | 482 |
+| stored quaternion | 315 | 1,015 | 1,189 | 1,443 | 1,867 | 2,199 | 1.72 m | 215 |
+| conjugated | 571 | 950 | 1,121 | 1,416 | 1,863 | 2,199 | 2.10 m | 484 |
+
+The interior and room boxes are scaled by each placement's `scaleXY` and `scaleZ` before measuring. Only 6 of
+the 2,590 placements are scaled at all (`scaleZ` 0.998), so this changes two room hits per convention and none
+of the distances.
 
 The interior box's largest side has a median of 16.7 m. Most positions are therefore just outside or just inside
 the interior shell, which fits an entry or label point; that they are doors is a hypothesis (portals were not
@@ -451,8 +456,9 @@ compared). The conjugated rotation puts more positions inside rooms, consistent 
 Interior rooms (`CMloRoomDef` `0b1811f1`, 0x70 bytes: `name` +0x00, `bbMin` +0x10, `bbMax` +0x20) are reached
 through the interior's array members, which use the `InstanceList` reference of
 [Instanced props and grass](#instanced-props-and-grass) (1-based block index, offset from bit 20, u16 count). Room
-names are lower-cased joaat; in all 908 resources that hold one interior, its first room is `limbo`. A room's hash member `a261e0a9` (+0x34)
-holds the hash of 267 interior keys.
+names are lower-cased joaat; all 1,706 interiors have rooms, and in every one the first room is `limbo`
+(`interiors_first_room_limbo`). A room's hash member `a261e0a9` (+0x34) holds the joaat of 267 interior keys
+(`keys_in_a_room_key_member`).
 
 ```powershell
 python -I tools\gamedata_reader.py <work>\common --root GameShape__Data__LocationNameLoopkup --out <work>\gamedata
