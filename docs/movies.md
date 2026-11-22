@@ -174,7 +174,7 @@ build dependency. With that copy:
   they return 0 on every call ([ABI over the archive](#abi-over-the-archive)); a caller must not treat 0 as failure
   without checking the pixels.
 - `BinkGetSummary` with a guessed `BINKSUMMARY` layout crashed with an access violation. With a 1,024-byte buffer it
-  writes 144 bytes on every stream; the fields found in it are in [ABI over the archive](#abi-over-the-archive).
+  writes bytes +0x00..+0x8F on every stream; the fields found in it are in [ABI over the archive](#abi-over-the-archive).
 
 The nine sampled streams (all at 30 fps):
 
@@ -200,7 +200,7 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
 
 ### ABI over the archive
 
-[`runtime/test/bink_abi_test.cpp`](../runtime/test/bink_abi_test.md) maps `Bink2Scarlett.dll` with `rt::Loader` and
+[`runtime/test/bink_abi_test.cpp`](../runtime/test/bink_abi_test.cpp) ([notes](../runtime/test/bink_abi_test.md)) maps `Bink2Scarlett.dll` with `rt::Loader` and
 opens each of the 515 streams inside `movies.rpf` (`BinkSetFileOffset`, then `BinkOpen` with flag `0x20`), so nothing
 is extracted. For each stream, it reads the first 256 bytes of the `HBINK` and the `BINKSUMMARY` that `BinkGetSummary`
 writes, and keeps the 32-bit word offsets that hold the stream header's value. An offset is listed only if it
@@ -220,8 +220,10 @@ that rate take effect. RAD's Bink 1 value, `0x00080000`, changes nothing.
 | file frame rate | | `+0x34` / `+0x38` | keeps 30/1 under the forced rate |
 | audio track count | `+0x38` | | values 0, 1, 2 and 4 |
 
-- `BinkGetSummary` writes 144 bytes (the highest byte it changed in a 1,024-byte buffer filled first with `0xCD` and
-  then with `0x5A`). It writes the same 144 bytes on all 515 streams.
+- `BinkGetSummary` writes every byte from +0x00 to +0x8F and none after, on all 515 streams. The test fills a
+  1,024-byte buffer with `0xCD`, then again with `0x5A`. A written byte differs from at least one of the two, so a
+  byte that kept the sentinel both times was not written. This bounds what the call writes, not the declared size of
+  the structure, which may have padding past +0x8F.
 - `BinkDoFrame` and `BinkCopyToBuffer` return 0 on every call. That covers 515 x 3 decodes: frame 1, frame 2, and
   the frame after `BinkGoto` to the middle of the stream. `BinkCopyToBuffer` replaced the sentinel buffer on every
   stream.
@@ -242,7 +244,7 @@ that rate take effect. RAD's Bink 1 value, `0x00080000`, changes nothing.
   passes, whether it uses `BinkDoFrameAsync`, `BinkGoto`, subtitles or the GPU path, and how it schedules movies
   against streaming are all unknown.
 - **Bink2Scarlett ABI.** [ABI over the archive](#abi-over-the-archive) gives the `HBINK` and `BINKSUMMARY` fields
-  that match the stream header, the 144-byte summary size, and the return values of `BinkWait`, `BinkDoFrame` and
+  that match the stream header, the bytes `BinkGetSummary` writes (+0x00..+0x8F), and the return values of `BinkWait`, `BinkDoFrame` and
   `BinkCopyToBuffer`. The rest of both structures, the async API, the GPU API and the XAudio2 setup are not
   established. The DLL loads on
   Windows only after the missing `xmem.dll` imports are supplied; a proper port needs an allocator shim with the
