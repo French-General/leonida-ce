@@ -1572,7 +1572,7 @@ Things that can invalidate this simple model, all **Open**:
   takes its base from SGPRs: its 10,548 `global_*` instructions (530 shaders) address through VGPR pairs, which the
   classifier does not follow. 25,669 shaders truncate every user-SGPR pointer they dereference, 196 only some (the
   195 GS, whose 64-bit s8 pointer has a high dword the classifier cannot resolve, and one CS), and the other 638
-  dereference none. Bases not rooted in a user SGPR (462 shader/access combinations) never have a constant-zero
+  dereference no user-SGPR pointer. Bases not rooted in a user SGPR (462 shader/access combinations) never have a constant-zero
   high dword. So what is measured to need the low 4 GB is the descriptor heaps; buffer addresses reach the shaders
   inside V#s (48-bit bases) or in VGPRs for `global_*`, and this count sees neither, so it does not show that
   buffers may sit above 4 GB.
