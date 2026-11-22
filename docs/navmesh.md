@@ -201,8 +201,8 @@ The `+4` word of a polygon packs `(index start << 4) | count`; the runs tile the
 (`tools/navmesh_decode.py --deep` checks it on all `124,768,148` polygons, 0 failures), which caps a polygon at 15
 vertices. 6stars independently reads the same packing. Its polygon `+0x28` bit 17 and `+0x18` bit 27
 road/pavement labels were not adopted: a 1,027,984-polygon sample over 238 tiles sets both bits on 258 polygons, so
-they are not a partition and neither meaning is confirmed. No 6stars code was copied; the repository has no
-licence.
+they are not a partition, and the lane-graph count [below](#polygon-flags-under-the-lane-graph) puts the road
+surface on `+0x18` bit 13 instead. No 6stars code was copied; the repository has no licence.
 
 ### Flags (`u32@0x10`) and 512 Ã— 512 world grid
 
@@ -234,6 +234,39 @@ The `24,480` unique static sector IDs form a complete, gap-free `136 Ã— 180` 
   nullable leaf pointer (`+0x2C`), four 4-byte-aligned child pointers (`+0x34..+0x53`), and 12 trailing zero
   bytes (`+0x54..+0x5F`). Each `32`-byte leaf holds `{u64 0, ptr64 poly_indices, u64 0, u64 num_polys}`.
 
+### Polygon flags under the lane graph
+
+`tools/navmesh_nodes.py` puts the lane graph of `levels.rpf` ([world_lights_paths.md](world_lights_paths.md)) on
+the navmesh: for each node it takes the polygon of the node's tile that contains the node in plan view and is
+closest in height, and counts that polygon's flag bits. For comparison it sums the plan area of the polygons that
+carry each bit over the same tiles. A bit that most road nodes stand on while it covers little of the area marks
+where the roads are.
+
+A vertex is `tile minimum + u16 / 65535 * tile extent` (the minimum is the quadtree root's, the extent `+0x60`).
+The node heights confirm it: of the 63,806 nodes with a finite position (63,808 read),
+63,802 lie over a polygon and 63,793 have one within 3 m above or below; the height
+difference is 0.032 m at the median, 0.095 m at the 90th percentile and 0.28 m at the 99th.
+
+Measured over the 6,970 static tiles that hold a node (77,880,896 polygons with three
+or more vertices, 120.2 km2 of plan area; 0 tiles unreadable). "Nodes" is how many of the 63,793
+nodes stand on a polygon with the bit; "area" is the share of the plan area such polygons cover:
+
+| Word | Bit | Nodes | Polygons | Area | Reading |
+|---|---|---:|---:|---:|---|
+| `+0x18` | 13 (`0x2000`) | 57,559 (90.2%) | 3,357,132 | 12.0% | **road surface** |
+| `+0x18` | 8 (`0x100`) | 58,528 (91.7%) | 251,917 | 2.6% | on the road as well, but a much smaller set of larger polygons; not named |
+| `+0x18` | 12 (`0x1000`) | 787 (1.2%) | 18,746,182 | 33.6% | not road: a third of the area, almost no node |
+| `+0x18` | 19 (`0x80000`) | 3,980 (6.2%) | 3,263,052 | 23.6% | the water candidate above |
+| `+0x18` | 27 (`0x8000000`) | 5,526 (8.7%) | 2,489,161 | 3.2% | 6stars's label; not the road surface |
+| `+0x28` | 17 (`0x20000`) | 21,246 (33.3%) | 1,083,157 | 4.7% | 6stars's label; seven times its area share, but only a third of the nodes |
+
+No other bit of either word has more than 5% of the nodes, except `+0x28` bit 18 (4,520 nodes, 7.1%, on 1.6% of
+the area). Bit 13 is the one
+[SixNG](https://github.com/holdmysocks/SixNG) calls road surface after a visual check
+(`crates/sixng-core/src/navmesh.rs`, commit `0619601`, GPL-3.0), and the vertex formula is stated there too; both
+are measured here, and no code was taken. What separates bit 8 from bit 13, and the meaning of the other bits,
+stays open.
+
 ## Band-3 `grid` resources (`27,482` resources)
 
 The final 433 MiB of `navmeshes.rpf` holds `27,482` `pgBase` resources (`+6` continuations) paired **1-to-1** with all
@@ -264,7 +297,8 @@ remain **open**.
 3. **`0DRP` unnamed structs and fields.** Several `0x7a` struct/member hashes (including `0x4712787b`, `0x57ad0b12`,
    `0xdd53676a`, `0xf2dd6348`, `0xde5f1345`, and 3 of the 4 singletons) are not yet matched to engine names.
 4. **Per-record bitfields inside `0x00010015` tiles.** `u32@0x10` bit 3's secondary trigger on `289` tiles and bit 6's
-   name, `u32@0xE8` build-stamp encoding, polygon/adjacent-edge/special-link flag bitfields, and the C++ type of the
+   name, `u32@0xE8` build-stamp encoding, the polygon flag bits other than road surface (`+0x18` bit 13) and the
+   water candidate, the adjacent-edge and special-link flag bitfields, and the C++ type of the
    96-byte `+0xB8` records remain open.
 5. **Band-3 `grid` subsystem and EOF `PSIN` v79.** The Band-3 subsystem identity, `u64` key encoding and `u32[N]`
    payload bits are open, as is why the final `PSIN` (version `79`) terminates before `LSNS` ends.
@@ -307,12 +341,16 @@ stored elsewhere, and which vehicles the 31 are (wagons, boats and trains would 
 - `tools/navmesh_decode.py` (stdlib-only) decodes all four resource classes (`0DRP`, `0x00010015`, `grid`, `PSIN`),
   joins continuations (including tiny `< 64`-byte continuations), validates structural invariants, and writes aggregate
   JSON and optional numeric CSV metadata. It never writes payload bytes and never touches the TOC.
+- `tools/navmesh_nodes.py` (stdlib-only) counts the polygon flag bits under the lane-graph nodes
+  ([above](#polygon-flags-under-the-lane-graph)). It reads `navmeshes.rpf` and `levels.rpf` and writes counts only.
 
 ```powershell
 python -I tools/navmesh_decode.py <package>\navmeshes.rpf --out <temp>/navmesh-decode.json --csv <temp>/navmesh-decode.csv
 python -I tools/navmesh_decode.py <package>\navmeshes.rpf --deep --out <temp>/navmesh-decode-deep.json
 python -I tools/navmesh_decode.py <carve-dir> --out <temp>/carved-decode.json
+python -I tools/navmesh_nodes.py <package>\navmeshes.rpf <package>\levels.rpf --jobs 8 --out <temp>/navmesh-nodes.json
 python -I -W error::ResourceWarning tests/test_navmesh_decode.py -v
+python -I tests/test_navmesh_nodes.py
 python -I tests/test_navmesh_index.py
 ```
 
