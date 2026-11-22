@@ -2084,7 +2084,7 @@ mapped stages/accesses, and if no single layout serves all uses, use `GENERAL` a
   `CONCURRENT` (vkd3d-proton does that, because D3D12 gives no information for transfers).
   Measured: `d3d12_queue_handover_test` (three modes: the standalone device with a `VkQueue` per D3D12 queue, then the
   host runtime; `--two-queues`, a caller-owned device with two `VkQueue`s handed over; `--shared-queue`, one) runs
-  579 cases on the layer on the Radeon 880M (592 on the RTX 5070 and with one shared `VkQueue`, 8 with two) and 587 on the host runtime: pairs and three-stage chains (produce, relay, consume)
+  592 cases on the layer on the Radeon 880M and the RTX 5070 (also with one shared `VkQueue`; 8 with two handed over) and 587 on the host runtime: pairs and three-stage chains (produce, relay, consume)
   over the queue type assignments that fit and all 6 submission orders (consumer first among them), two producers
   (texture from one queue, buffer from another) with one consumer, a chain released by a CPU `Signal`, a CPU
   `Signal` before and after the `Wait`, a never-signaled fence, a fence released while a batch waits, a held Signal
