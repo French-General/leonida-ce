@@ -824,13 +824,13 @@ material strings are not reproduced.
 
   So the 24 physics materials go to 10 of the 11 surfaces; the 6 surfaces without a material are entry 8 and the
   5 empty slots. `SupportPropFlatten` is set on the 2 sand entries (4 and 10).
-- **Cross-check with the material table.** In the retained part of `MaterialDataList` (one 64 KiB block, 101
-  `name` elements), 13 materials carry `isDeformableTerrain="true"`, and they are exactly the 13 of the 24
-  surface materials whose names occur in that block. The comparison covers only the records whose flags are
-  visible: the block ends inside its last material record, after the name and before any flag, so that record's
-  flag state is unknown (its name is not one of the surface materials). Within that scope no material outside the
-  surface list is deformable, and no surface material lacks the flag. One more `isDeformableTerrain` item in the
-  block has its name in the preceding, unread block.
+- **Cross-check with the material table.** The retained part of `MaterialDataList` is one stream without its
+  head, kept as five contiguous fragments (four 64 KiB blocks and a short tail, 403 `name` elements in all).
+  All 14 `isDeformableTerrain` items of the stream are in the first fragment, and all are `"true"`. 13 of them
+  belong to exactly the 13 of the 24 surface materials whose names occur in the stream (all 13 names are in the
+  first fragment); the 14th belongs to a record whose name is before the start of the stream. No other record
+  carries the flag, and no surface material lacks it. The other 11 surface materials do not occur in the
+  retained stream.
 - **Deformation map size.** `GlobalDeepSurfaceParams` gives `DeformationWorldSpaceWidth` = **96 m** and
   `ParallaxWorldSpaceWidth` = **48 m**: one world-space width each. The document gives no second dimension, so a
   square window is an assumption, not a reading. No field in the document gives a texel count, and no other carved XML in
