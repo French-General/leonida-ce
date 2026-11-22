@@ -23,8 +23,9 @@ Stages, in order (each skips work that is already done, so a stopped build conti
     runtime   build the loader (needs the game's executable to run, not to build). On Linux it is cross-built with
               clang-cl and an xwin SDK (docs/testing.md) and gta6rt.sh starts it with Wine; --runtime-build DIR
               takes a Windows build of runtime/ instead (the runtime-windows artifact of the Runtime workflow)
-    pipelines create every translated shader on your GPU's driver (and every compute pipeline), report anything
-              the driver rejects, and save the pipeline cache next to the port so the first boot doesn't compile
+    pipelines create every translated shader on your GPU's driver as a pipeline, report anything the driver
+              rejects or that has to be skipped, and save the pipeline cache next to the port (the runtime doesn't
+              load that cache yet)
 """
 import argparse
 import functools
@@ -34,12 +35,17 @@ import json
 import ntpath
 import os
 import re
+import shlex
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+
+if __name__ == "__main__" and sys.version_info < (3, 12):   # before code an older Python can't run
+    sys.exit("ERROR: Python 3.12 or newer is needed: https://www.python.org/downloads/")
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(ROOT, "tools")
@@ -71,6 +77,19 @@ def log(msg: str) -> None:
 def fail(msg: str) -> "None":
     print(f"\nERROR: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def require_folder(flag: str, path: str) -> None:
+    """Fail before any work when a destination, or its nearest existing parent, is a file: os.makedirs would
+    raise a traceback later, and with a separate --work the build reported success without creating --out."""
+    probe = path
+    while not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return
+        probe = parent
+    if not os.path.isdir(probe):
+        fail(f"{flag} is not a folder: {path}")
 
 
 def below_normal() -> None:
@@ -186,9 +205,59 @@ def load_version(game: str) -> dict:
         if not mismatches:
             return version
         reports.append(f"  {version['title']} {version['version']}\n    " + "\n    ".join(mismatches))
+    notes = "".join(f"\n{container_message(p, h)}" for p, h in containers_in(game))
     fail("This doesn't look like a supported version of the game. Point --game at the folder that holds "
          "MicrosoftGame.Config and the .rpf archives.\nSupported:\n"
-         + "\n".join(reports or ["  No version manifests found."]))
+         + "\n".join(reports or ["  No version manifests found."]) + notes)
+
+
+# ---------------------------------------------------------------- packaged containers
+# The store keeps the game as one packaged container (.xvc), an XVD file whose contents are encrypted. Nothing here
+# reads keys or decrypts (docs/design.md, "Ground rules"), so the build can't use it. Pointed at one, or at a folder
+# that only holds one, the build reads the plain 4 KiB header to say what it is instead of "not found".
+# Offsets are from the start of the file: xvdtool's XvdHeader + 0x200, the signature in front of it.
+XVD_MAGIC = b"msft-xvd"
+XVD_HEADER_SIZE = 0x1000
+XVD_ENCRYPTION_DISABLED = 0x2          # VolumeFlags bit
+CONTAINER_SUFFIXES = (".xvc", ".msixvc", ".xvd")
+
+
+def xvd_header(path: str):
+    """The few XVD header fields the build reports, or None when the file isn't an XVD. Reads 4 KiB, nothing else."""
+    try:
+        with open(path, "rb") as f:
+            b = f.read(XVD_HEADER_SIZE)
+    except OSError:
+        return None
+    if len(b) < XVD_HEADER_SIZE or b[0x200:0x208] != XVD_MAGIC:
+        return None
+    flags, = struct.unpack_from("<I", b, 0x208)
+    content_type, = struct.unpack_from("<I", b, 0x284)
+    xvc_data_length, = struct.unpack_from("<I", b, 0x290)
+    version = struct.unpack_from("<4H", b, 0x3BC)        # stored lowest part first: 1,2,0,1 is 1.0.2.1
+    return {"kind": "XVC" if xvc_data_length else "XVD",
+            "encrypted": not flags & XVD_ENCRYPTION_DISABLED,
+            "content_type": content_type,
+            "version": ".".join(str(p) for p in reversed(version))}
+
+
+def container_message(path: str, h: dict) -> str:
+    """Why the build can't use a packaged container, and what to give it instead."""
+    state = "Its files are encrypted inside it" if h["encrypted"] else "Its files are packed inside it"
+    return (f"{path} is a packaged {h['kind']} container (package version {h['version']}), not a game folder. "
+            f"{state}, and this project doesn't read keys, decrypt or unpack containers, so the build can't use "
+            "it. Give --game the folder that holds MicrosoftGame.Config and the .rpf archives.")
+
+
+def containers_in(folder: str) -> list:
+    """(path, header) for each packaged container directly in folder; only files with a container suffix are read."""
+    try:
+        with os.scandir(folder) as it:
+            names = sorted(e.path for e in it if e.name.lower().endswith(CONTAINER_SUFFIXES)
+                           and e.is_file(follow_symlinks=False))
+    except OSError:
+        return []
+    return [(p, h) for p in names if (h := xvd_header(p))]
 
 
 # Windows known-folder IDs (KnownFolders.h): Downloads, Desktop, Documents. OneDrive's Known Folder Move puts
@@ -228,10 +297,12 @@ def known_folders() -> list:
     return found
 
 
-def find_dumps() -> list:
+def find_dumps(containers: list | None = None) -> list:
     """Folders on this PC that hold a supported version: Downloads, Desktop, Documents (under the home folder and
     where Windows really keeps them), the home folder and the top of each drive, up to two folder levels down.
-    Only folder names and a few file sizes are read."""
+    Only folder names and a few file sizes are read. With a containers list, also appends (path, header) for each
+    packaged container (.xvc/.msixvc/.xvd) in the folders searched, which the build can't use: only the 4 KiB header
+    of a file with that suffix is read."""
     home = os.path.expanduser("~")
     roots = [os.path.join(home, d) for d in ("Downloads", "Desktop", "Documents", "Games")] + known_folders() + [home]
     if os.name == "nt":
@@ -241,7 +312,7 @@ def find_dumps() -> list:
         roots += ["/mnt", "/media"]
     skip = {"windows", "program files", "program files (x86)", "programdata", "appdata", "$recycle.bin",
             "system volume information", "node_modules", ".git"}
-    visited_depths, found = {}, {}
+    visited_depths, found, seen_containers = {}, {}, set()
 
     def visit(d: str, depth: int) -> None:
         try:
@@ -262,10 +333,23 @@ def find_dumps() -> list:
             return
         try:
             with os.scandir(d) as it:
-                subs = [e.path for e in it if e.is_dir(follow_symlinks=False)
-                        and e.name.lower() not in skip and not e.name.startswith((".", "$"))]
+                entries = list(it)
         except OSError:
             return
+        subs = []
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if e.name.lower() not in skip and not e.name.startswith((".", "$")):
+                        subs.append(e.path)
+                elif containers is not None and e.name.lower().endswith(CONTAINER_SUFFIXES) \
+                        and e.is_file(follow_symlinks=False):
+                    key = os.path.normcase(os.path.realpath(e.path))
+                    if key not in seen_containers and (h := xvd_header(e.path)):
+                        seen_containers.add(key)
+                        containers.append((e.path, h))
+            except OSError:
+                continue
         for s in subs:
             visit(s, depth - 1)
 
@@ -297,8 +381,10 @@ def pick_game() -> str:
             if v:
                 log(f"chose {v['title']} {v['version']} in {d}")
                 return d
+            notes = "".join(f"\n\n{container_message(p, h)}" for p, h in containers_in(d))
             messagebox.showwarning("Leonida", "That folder isn't a supported version of the game. Choose the "
-                                   "folder that holds MicrosoftGame.Config and the .rpf archives.", parent=root)
+                                   "folder that holds MicrosoftGame.Config and the .rpf archives." + notes,
+                                   parent=root)
     finally:
         root.destroy()
 
@@ -306,7 +392,8 @@ def pick_game() -> str:
 def choose_game() -> str:
     """No --game given: find the dump, or ask for it."""
     log("looking for your game files...")
-    found = find_dumps()
+    containers = []
+    found = find_dumps(containers)
     interactive = sys.stdin is not None and sys.stdin.isatty()
     if len(found) == 1:
         log(f"found {found[0][1]['title']} {found[0][1]['version']} in {found[0][0]}")
@@ -323,10 +410,11 @@ def choose_game() -> str:
                 fail("No copy chosen: choose one with --game.")
             if pick.isdigit() and 1 <= int(pick) <= len(found):
                 return found[int(pick) - 1][0]
+    notes = "".join(f"\n{container_message(p, h)}" for p, h in containers)
     if not interactive:
-        fail("Your game files weren't found. Give the folder with --game.")
+        fail("Your game files weren't found. Give the folder with --game." + notes)
     print("Your game files weren't found automatically. Paste the folder that holds MicrosoftGame.Config "
-          "and the .rpf archives.")
+          "and the .rpf archives." + notes)
     while True:
         try:
             d = input("Game folder: ").strip().strip('"')
@@ -334,6 +422,10 @@ def choose_game() -> str:
             fail("No folder given. Give the folder with --game.")
         if d and match_version(d):
             return d
+        h = xvd_header(d) if d and os.path.isfile(d) else None
+        pasted = [(d, h)] if h else containers_in(d) if d else []
+        for p, ph in pasted:
+            print(f"  {container_message(p, ph)}")
         print("  That folder isn't a supported version of the game. Try again.")
 
 
@@ -373,7 +465,9 @@ def assets_exported(work: str) -> bool:
     last marker assets() writes, after every model, texture and audio export before it succeeded; ogg.done is read
     too. A marker counts only when it holds what mark() writes, not because a file of that name exists.
     xma.done is written with or without ffmpeg, and every run decodes the XMA2 streams that have no .wav yet once
-    ffmpeg is on PATH. So with ffmpeg there, a stream still waiting for its .wav means the stage will write again."""
+    ffmpeg is on PATH. So with ffmpeg there, a stream still waiting for its .wav means the stage will write again.
+    Models and textures made by another decoder (DECODER_RECORD) don't change the answer: assets() removes each
+    such folder before it exports it again, so the new export goes into the space the old one held."""
     audio = os.path.join(work, "assets", "audio")
     for name, what in (("ogg.done", "awc_opus.py"), ("xma.done", "rpf9dump xma")):
         try:
@@ -383,6 +477,82 @@ def assets_exported(work: str) -> bool:
         except (OSError, UnicodeError):
             return False
     return not (shutil.which("ffmpeg") and pending_xma(os.path.join(audio, "xma")))
+
+
+def _linked(path: str) -> bool:
+    """A symbolic link or an NTFS junction: what it points at may be on another drive, so it is never counted."""
+    return os.path.islink(path) or os.path.isjunction(path)
+
+
+def _tree_bytes(root: str, skip: tuple = ()) -> int:
+    """Bytes of the regular files under root, without following links or junctions (root's own names in skip are
+    left out). One os.scandir walk; on Windows the sizes come with the directory listing, so no file is opened."""
+    if _linked(root):
+        return 0
+    total, stack = 0, [(root, True)]
+    while stack:
+        folder, top = stack.pop()
+        try:
+            with os.scandir(folder) as it:
+                for e in it:
+                    try:
+                        if e.is_symlink() or e.is_junction() or (top and e.name in skip):
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append((e.path, False))
+                        elif e.is_file(follow_symlinks=False):
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:   # missing, or can't be listed: count nothing for it
+            continue
+    return total
+
+
+def _finished_pool_dirs(top: str) -> list:
+    """Texture pool folders under assets/ttpf or assets/ttpf_pack whose manifest ttpf_manifest() accepts, the check
+    assets() uses to skip a pool. A folder with a manifest is a pool: its subfolders are not searched."""
+    found, stack = [], [top]
+    while stack:
+        folder = stack.pop()
+        if _linked(folder):
+            continue
+        if os.path.isfile(os.path.join(folder, "manifest.json")):
+            if ttpf_manifest(folder) is not None:
+                found.append(folder)
+            continue
+        try:
+            with os.scandir(folder) as it:
+                stack += [e.path for e in it if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            continue
+    return found
+
+
+def assets_bytes_on_disk(work: str) -> int:
+    """Bytes a stopped assets stage has already written and a rerun will skip: only the output of steps whose
+    manifest or marker assets() checks before redoing them (an archive's models/textures manifest.json, a texture
+    pool's complete manifest, audio_manifest.json, ogg.done, xma.done). Other files under <work>/assets, such as a
+    step that stopped before its marker, are not counted, since the rerun writes that step again."""
+    out = os.path.join(work, "assets")
+    if _linked(out):
+        return 0
+    total = 0
+    for rel in MODEL_ARCHIVES:
+        name = os.path.splitext(os.path.basename(rel))[0]
+        for mode in ("models", "textures"):
+            folder = os.path.join(out, name, mode)
+            if os.path.isfile(os.path.join(folder, "manifest.json")):
+                total += _tree_bytes(folder)
+    for top in ("ttpf", "ttpf_pack"):
+        total += sum(_tree_bytes(d) for d in _finished_pool_dirs(os.path.join(out, top)))
+    audio = os.path.join(out, "audio")
+    if os.path.isfile(os.path.join(audio, "audio_manifest.json")):
+        total += _tree_bytes(audio, skip=("ogg", "xma", "wav"))
+    for step in ("ogg", "xma"):
+        if os.path.isfile(os.path.join(audio, f"{step}.done")):
+            total += _tree_bytes(os.path.join(audio, step))
+    return total
 
 
 def pipeline_check_prerequisite(runtime_selected: bool = False) -> str:
@@ -424,14 +594,13 @@ def preflight(stages: list, work: str, wav: bool = False, runtime_build: str | N
         if not dotnet_sdk_ok():
             missing.append(".NET 8 SDK (the .NET runtime alone can't build rpf9dump): "
                            "https://dotnet.microsoft.com/download/dotnet/8.0")
-        ensure_submodule()
     if os.name == "nt" and "runtime" in stages and not runtime_build and not visual_cpp_tools_ok():
         missing.append("Visual Studio 2022 with 'Desktop development with C++'")
     if os.name != "nt" and not runtime_build and any(s in WINDOWS_ONLY for s in stages):
         missing.extend(f"{s} (for the runtime stage, or pass --runtime-build)" for s in cross_build_missing())
     # The pipelines stage needs a checker the runtime stage builds (on Windows only with VULKAN_SDK set).
     # Without this check a build with shaders and pipelines spends hours before failing at the very end.
-    if "pipelines" in stages and not pipeline_check_exe():
+    if "pipelines" in stages and not pipeline_check_exe(runtime_build):
         if os.name != "nt":
             if not shutil.which("cmake"):
                 missing.append("CMake 3.24 or newer, a C++20 compiler and the Vulkan headers, to build "
@@ -456,13 +625,26 @@ def preflight(stages: list, work: str, wav: bool = False, runtime_build: str | N
     if free_gb < need_gb and need.get("shaders") and shader_outputs_reusable(work, emulate, keep_emulated, fallbacks):
         log(f"preflight: the shaders in {work} can be reused; not counting their {need['shaders']} GB")
         need_gb -= need["shaders"]
+    # An export stopped part-way (no xma.done yet) has already put some of the 300 GB on the drive, and the rerun
+    # skips the steps it finished. Only walked when the space is short, so a build with room to spare reads no
+    # folder.
+    # --wav still counts the whole estimate, as above: the WAV decode writes several times the Ogg Opus size and has
+    # no marker, so what is on disk says nothing about what it will still write.
+    if free_gb < need_gb and need.get("assets") and not wav:
+        done_gb = min(assets_bytes_on_disk(work) // 2**30, need["assets"])
+        if done_gb:
+            log(f"preflight: {done_gb} GB of a stopped asset export is already in {work}; not counting it again")
+            need_gb -= done_gb
     if free_gb < need_gb:
         hint = ""
-        if "assets" in stages and need.get("assets"):
-            hint = (" The assets stage is optional for running: use --stages check,shaders,runtime "
-                    "(about 30 GB; add pipelines if you need it).")
+        assets_gb = need.get("assets", 0)
+        loader_stages_selected = "shaders" in stages and "runtime" in stages
+        if loader_stages_selected and not wav and assets_gb and free_gb >= need_gb - assets_gb:
+            hint = " To prepare the loader without exporting assets, use --stages check,shaders,runtime."
         fail(f"{free_gb:.0f} GB free on the drive of {work}, about {need_gb} GB is needed. "
              "Free some space or choose another drive with --work." + hint)
+    if "assets" in stages:
+        ensure_submodule()
     if os.name != "nt" and not runtime_build and any(s in WINDOWS_ONLY for s in stages):
         cross_configure()
     if "pipelines" in stages and os.name != "nt" and not pipeline_check_exe():
@@ -593,7 +775,8 @@ def ensure_submodule() -> None:
 
 def check(game: str, full: bool) -> dict:
     if not os.path.isdir(game):
-        fail(f"Game folder not found: {game}")
+        h = xvd_header(game) if os.path.isfile(game) else None
+        fail(container_message(game, h) if h else f"Game folder not found: {game}")
     v = load_version(game)
     log(f"check: {v['title']} {v['version']}, {len(v['files'])} files")
     bad = 0
@@ -657,18 +840,49 @@ def unpacked_shader_stems(dxbc: str) -> set[str] | None:
     return unpacked if unpacked and unpacked <= carved else None
 
 
-def disassembly_matches(dxbc: str, signature: str) -> bool:
-    if read_shader_setting(os.path.join(dxbc, "disasm.done")) != signature:
-        return False
-    names = unpacked_shader_stems(dxbc)
-    if names is None:
-        return False
+def disassembly_listings(dxbc: str) -> set[str] | None:
     try:
         with os.scandir(os.path.join(dxbc, "disasm")) as entries:
-            return all(entry.name[:-2] in names for entry in entries
-                       if entry.name.endswith(".s") and entry.is_file())
+            listings = set()
+            for entry in entries:
+                if not entry.name.endswith(".s"):
+                    continue
+                if entry.is_symlink():
+                    return None
+                if entry.is_file() and entry.stat().st_size > 0:
+                    listings.add(entry.name[:-2])
+            return listings
     except OSError:
-        return False
+        return None
+
+
+def disassembly_status(dxbc: str, signature: str) -> tuple[bool, bool, set[str]]:
+    """Report readiness, whether existing listings can be reused, and any repair inventory."""
+    done = read_shader_setting(os.path.join(dxbc, "disasm.done"))
+    marker = done or read_shader_setting(os.path.join(dxbc, "disasm.started"))
+    inactive = (False, False, set())
+    if not marker:
+        return inactive
+    active = unpacked_shader_stems(dxbc)
+    listings = disassembly_listings(dxbc)
+    if active is None or listings is None or not listings <= active:
+        return inactive
+    if marker == signature:
+        # Older completion markers recorded only LLVM. Require a listing for every input.
+        return (listings == active, False, set()) if done else (False, True, set())
+    try:
+        metadata = json.loads(marker)
+    except ValueError:
+        return inactive
+    if not isinstance(metadata, dict) or metadata.get("llvm") != signature:
+        return inactive
+    recorded = metadata.get("listings")
+    if not isinstance(recorded, list) or not recorded or not all(isinstance(name, str) for name in recorded):
+        return inactive
+    expected = set(recorded)
+    if not listings <= expected <= active:
+        return inactive
+    return bool(done) and listings == expected, True, expected
 
 
 def shader_outputs_reusable(work: str, emulate: bool, keep_emulated: bool,
@@ -686,15 +900,15 @@ def shader_outputs_reusable(work: str, emulate: bool, keep_emulated: bool,
             and read_shader_setting(os.path.join(spirv, "translator_flags.txt")) == translator_flags_setting(fallbacks)
             and read_shader_setting(os.path.join(spirv, "translation_sources.sha256")) == translation_sources_digest()
             and os.path.isfile(os.path.join(dxbc, "disasm.done"))
-            and disassembly_matches(dxbc, llvm_mc_signature()))
+            and disassembly_status(dxbc, llvm_mc_signature())[0])
 
 
-def clear_shader_disassembly(work: str, disasm: str) -> None:
-    """Remove generated assembly so a failed decode cannot leave a file from an older run."""
+def prepare_shader_disassembly(work: str, disasm: str, resume: bool) -> None:
+    """Check the output path and remove old listings before starting a new run."""
     expected = os.path.join(os.path.realpath(work), "shaders", "dxbc", "disasm")
     if os.path.normcase(os.path.realpath(disasm)) != os.path.normcase(expected):
         fail(f"The shader disassembly folder must be inside the work folder: {disasm}")
-    if os.path.isdir(disasm):
+    if not resume and os.path.isdir(disasm):
         with os.scandir(disasm) as entries:
             for entry in entries:
                 if entry.name.endswith(".s") and (entry.is_file(follow_symlinks=False) or entry.is_symlink()):
@@ -711,31 +925,50 @@ def shaders(game: str, work: str, jobs: int, emulate: bool = False, keep_emulate
     # or holds many files: a run stopped part-way leaves both. Re-running a stage drops the later stages' proof.
     carved = os.path.join(dxbc, "index.json")             # shader_carve.py, renamed into place at the end
     unpacked = os.path.join(dxbc, "fssm_index.json")      # fssm_unpack.py, the same
-    disassembled = os.path.join(dxbc, "disasm.done")      # records the LLVM command and version after a successful run
+    disassembly_started = os.path.join(dxbc, "disasm.started")
+    disassembled = os.path.join(dxbc, "disasm.done")      # records LLVM and the listings produced
     translated = os.path.join(spirv, "index.json")        # rdna2spirv.py --merge, renamed into place
     shard_plan = os.path.join(spirv, SHARD_PLAN)          # lets translate() keep finished shards; see there
     signature = llvm_mc_signature()
     if not os.path.isfile(carved):
         log("shaders: carving shaders.rpf")
-        drop(translated, shard_plan, disassembled, unpacked)
+        drop(translated, shard_plan, disassembled, disassembly_started, unpacked)
         py("shader_carve.py", src, dxbc)
     if unpacked_shader_stems(dxbc) is None:
         log("shaders: unpacking native code")
-        drop(translated, shard_plan, disassembled)
+        drop(translated, shard_plan, disassembled, disassembly_started)
         py("fssm_unpack.py", dxbc, "--carve-index", carved)
     # rdna2spirv.py finds index.json, the .dxbc files and fssm/ in the parent of the .s files' folder, so the
     # disassembly must sit inside the carve folder: next to it, every stage reads as "?" and is rejected.
     disasm = os.path.join(dxbc, "disasm")
-    if not disassembly_matches(dxbc, signature):
+    complete, resume, expected = disassembly_status(dxbc, signature)
+    if not complete:
         if os.path.isfile(disassembled) or os.path.isfile(translated):
             log("shaders: llvm-mc changed or the saved disassembly could not be verified")
-        log("shaders: disassembling (gfx1013)")
-        drop(translated, shard_plan, disassembled)
-        clear_shader_disassembly(work, disasm)
+        log("shaders: resuming disassembly (gfx1013)" if resume else "shaders: disassembling (gfx1013)")
+        drop(translated, shard_plan)
+        if not resume:
+            drop(disassembly_started, disassembled)
+        prepare_shader_disassembly(work, disasm, resume)
+        if not os.path.isfile(disassembly_started) or os.path.isfile(disassembled):
+            marker = disassembly_started + ".tmp"
+            with open(marker, "w", encoding="utf-8", newline="\n") as f:
+                start = json.dumps({"llvm": signature, "listings": sorted(expected)}) if expected else signature
+                f.write(start + "\n")
+            os.replace(marker, disassembly_started)
+        drop(disassembled)
+        resume_args = ("--skip-existing",) if resume else ()
         py("shader_disasm.py", os.path.join(dxbc, "fssm"), "--unpack-index", unpacked,
-           "--out", disasm, "--mcpu", "gfx1013", "--jobs", jobs)
-        with open(disassembled, "w", encoding="utf-8", newline="\n") as f:
-            f.write(signature + "\n")
+           "--out", disasm, "--mcpu", "gfx1013", "--jobs", jobs, *resume_args)
+        listings = disassembly_listings(dxbc)
+        if not listings or not expected <= listings:
+            fail("Shader disassembly did not restore all expected listings")
+        marker = disassembled + ".tmp"
+        with open(marker, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"llvm": signature, "listings": sorted(listings)}, f)
+            f.write("\n")
+        os.replace(marker, disassembled)
+        drop(disassembly_started)
     # The translation also depends on the translator's own files, so their digest is kept beside it. A folder without
     # it (from before the file existed), with an unreadable one or with another one is translated again; carving, unpacking and
     # disassembly stay current.
@@ -812,14 +1045,23 @@ def fspx_settings(dll: str, mc_signature: str, emulate: bool, fallbacks: tuple[s
                       sort_keys=True)
 
 
+def fspx_cache_complete(spirv: str) -> bool:
+    """Check that the FSPX translation index and its named modules are present."""
+    try:
+        index = json.loads(read_shader_setting(os.path.join(spirv, "index.json")))
+    except ValueError:
+        return False
+    return isinstance(index, dict) and all(os.path.isfile(os.path.join(spirv, name + ".spv")) for name in index)
+
+
 def fspx_shaders(game: str, work: str, mc_signature: str, emulate: bool = False,
                  fallbacks: tuple[str, ...] = ()) -> None:
     """The FidelityFX DLL's compute programs (docs/fspx.md): tools/fspx_unpack.py unpacks and disassembles them into
     <work>/shaders/fspx, rdna2spirv.py translates them into <work>/shaders/spirv/fspx, where the runtime's shader
     library finds them by fspx_code_sha256. The game's own shaders neither feed nor depend on this step.
 
-    The 29 programs take seconds, so the step runs whole: it counts as finished when spirv/fspx/index.json is there
-    and fspx_build.json, written after it, matches this run's settings (fspx_settings)."""
+    The 29 programs take seconds, so the step runs whole. Reuse requires the translation index, its named modules
+    and a matching fspx_build.json (fspx_settings)."""
     dll = os.path.join(game, FSPX_DLL)
     unpacked = os.path.join(work, "shaders", "fspx")
     spirv = os.path.join(work, "shaders", "spirv", "fspx")
@@ -829,7 +1071,7 @@ def fspx_shaders(game: str, work: str, mc_signature: str, emulate: bool = False,
         log(f"shaders: no {FSPX_DLL} in the game folder, so no FSPX programs to translate")
         return
     settings = fspx_settings(dll, mc_signature, emulate, fallbacks)
-    if os.path.isfile(translated) and read_shader_setting(settings_file) == settings:
+    if read_shader_setting(settings_file) == settings and fspx_cache_complete(spirv):
         return
     log(f"shaders: unpacking and translating the FSPX programs of {FSPX_DLL}")
     drop(translated, settings_file)
@@ -885,7 +1127,7 @@ WAVE64_MODES = ("auto", "on", "off")
 # The translator's fallback flags make_game.py can forward, and the argparse attribute each one reads.
 FALLBACK_FLAGS = (("--no-float-controls", "no_float_controls"), ("--bary-fallback", "bary_fallback"),
                   ("--texel-offset-fallback", "texel_offset_fallback"), ("--mesh-compute", "mesh_compute"),
-                  ("--f16-interp-fallback", "f16_interp_fallback"))
+                  ("--f16-interp-fallback", "f16_interp_fallback"), ("--pc-tail-ubo", "pc_tail_ubo"))
 
 
 def fallback_flags(a) -> tuple[str, ...]:
@@ -915,10 +1157,10 @@ def smallest_max_subgroup(vulkaninfo_text: str):
     return min(per_device)
 
 
-def wave64_settings(mode: str) -> tuple[bool, bool]:
+def wave64_settings(mode: str, *, mesh_compute: bool = False) -> tuple[bool, bool]:
     """Return whether to translate with emulation and whether to reuse emulated shaders. A wave64 compute or mesh
     shader is only exact without it when the GPU gives it 64-wide subgroups; with it, it is exact on any subgroup
-    size, at the cost of a workgroup barrier per segment. "auto" keeps emulation off on native-wave64 RDNA2
+    size, at the cost of a workgroup barrier per segment. "auto" keeps emulation off on native-wave64 RDNA1/2
     under the AMD Windows driver. Elsewhere it turns emulation on unless every Vulkan device reports
     maxSubgroupSize >= 64 and the runtime probe does not rule out native wave64."""
     if mode == "on":
@@ -926,13 +1168,19 @@ def wave64_settings(mode: str) -> tuple[bool, bool]:
     if mode == "off":
         return False, False
     gpu = runtime_gpu_info()
-    native64 = bool(gpu["native64"]) if "native64" in gpu else None
-    if gpu.get("rdna2_amd_windows") and native64:
-        # #857: AMD's Windows compiler for RDNA2 crashes on many emulated LDS compute pipelines.
+    rdna1 = gpu.get("rdna1_amd_windows", False)
+    # On RDNA1 the native mesh modules cannot run. Both the default build's compute pipelines and
+    # any mesh shaders translated with --mesh-compute use the GPU's compute subgroup capabilities.
+    compute_only = mesh_compute or (rdna1 and gpu.get("mesh_in_supported_stages") is False)
+    native64 = gpu.get("native64")
+    if compute_only:
+        native64 = gpu.get("native64_compute", native64)
+    if native64 and (rdna1 or gpu.get("rdna2_amd_windows")):
+        # #857: AMD's Windows compiler for RDNA1/2 crashes on many emulated LDS compute pipelines.
         # The runtime probe can identify that GPU even when vulkaninfo is unavailable.
-        log(f"shaders: the runtime's GPU ({gpu.get('device', '?')}) is RDNA2 on the AMD Windows driver "
-            "and runs wave64 natively. That driver can crash on emulated wave64 code (#857), so auto uses "
-            "native wave64 and does not reuse emulated outputs (--wave64-emulate on to force emulation)")
+        log(f"shaders: the runtime's GPU ({gpu.get('device', '?')}) is {'RDNA1' if rdna1 else 'RDNA2'} "
+            "on the AMD Windows driver and runs wave64 natively. That driver can crash on emulated wave64 code "
+            "(#857), so auto uses native wave64 and rebuilds emulated outputs (--wave64-emulate on to force emulation)")
         return False, False
     exe = shutil.which("vulkaninfo")
     size = None
@@ -948,16 +1196,17 @@ def wave64_settings(mode: str) -> tuple[bool, bool]:
         return True, True
     on = size < 64
     if not on and native64 is False:
-        log(f"shaders: smallest maximum subgroup size is {size}, but the Vulkan query found no 64-wide path for both "
-            "compute and mesh (fixed default size or required-size control): wave64 emulation on")
+        stages = "compute" if compute_only else "both compute and mesh"
+        log(f"shaders: smallest maximum subgroup size is {size}, but the Vulkan query found no 64-wide path for "
+            f"{stages} (fixed default size or required-size control): wave64 emulation on")
         return True, True
     log(f"shaders: smallest maximum subgroup size is {size}: wave64 emulation {'on' if on else 'off'}")
     return on, True
 
 
-def wave64_emulate(mode: str) -> bool:
+def wave64_emulate(mode: str, *, mesh_compute: bool = False) -> bool:
     """Whether a new translation uses wave64 emulation."""
-    return wave64_settings(mode)[0]
+    return wave64_settings(mode, mesh_compute=mesh_compute)[0]
 
 
 def runtime_gpu_info() -> dict:
@@ -983,21 +1232,32 @@ def runtime_gpu_per_vertex():
         return None
 
 
+def runtime_gpu_max_push_constants():
+    """max_push_constants_size as tools/vk_subgroup_info.py answers for the GPU the runtime would use, or None."""
+    v = runtime_gpu_info().get("max_push_constants_size")
+    return int(v) if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
 # Source and data files that produce the translated modules, metadata and partner stubs.
 TRANSLATION_SOURCES = ("rdna2spirv.py", "shader_ir.py", "cfg_structure.py", "fssm_header.py", "lane_masks.py", "wave64_halves.py",
-                       "shader_meta.py", "spirv_stubs.py", "spirv_asm.py", "spirv_asm_tables.py",
+                       "wave64_emulate_opt.py", "shader_meta.py", "spirv_stubs.py", "spirv_asm.py", "spirv_asm_tables.py",
                        "gfx10_formats.json")
 
 
-def translation_sources_digest() -> str:
-    """SHA-256 over the name and exact bytes of each TRANSLATION_SOURCES file."""
-    h = hashlib.sha256()
-    for name in TRANSLATION_SOURCES:
-        with open(os.path.join(TOOLS, name), "rb") as f:
+def sources_digest(folder: str, names, lead: str = "") -> str:
+    """SHA-256 over lead, then the name and exact bytes of each named file in folder."""
+    h = hashlib.sha256(lead.encode())
+    for name in names:
+        with open(os.path.join(folder, name), "rb") as f:
             data = f.read()
         h.update(f"{name}\0{len(data)}\0".encode())
         h.update(data)
     return h.hexdigest()
+
+
+def translation_sources_digest() -> str:
+    """SHA-256 over the name and exact bytes of each TRANSLATION_SOURCES file."""
+    return sources_digest(TOOLS, TRANSLATION_SOURCES)
 
 
 def drop(*paths: str) -> None:
@@ -1051,7 +1311,7 @@ def translate(disasm: str, spirv: str, jobs: int, emulate: bool = False,
               fallbacks: tuple[str, ...] = ()) -> None:
     """rdna2spirv.py runs on one core: start one --shard per job side by side, then merge their index parts.
 
-    A shard renames its index.part<i>.json into place last, so a part on disk is a finished shard. A run stopped
+    A shard publishes shard<i>.json and then index.part<i>.json. Both are needed to reuse it. A run stopped
     part-way, or during the merge, keeps those parts when it resumes with the same --jobs, wave64 mode, fallback
     flags and translator source, and starts only the shards that have none. shaders() drops the plan whenever an
     earlier step reruns."""
@@ -1072,7 +1332,11 @@ def translate(disasm: str, spirv: str, jobs: int, emulate: bool = False,
                 os.remove(os.path.join(spirv, f))
         with open(plan_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(plan, f)
-    todo = [i for i in range(jobs) if not os.path.isfile(os.path.join(spirv, f"index.part{i}.json"))]
+    todo = [
+        i for i in range(jobs)
+        if not (os.path.isfile(os.path.join(spirv, f"index.part{i}.json"))
+                and os.path.isfile(os.path.join(spirv, f"shard{i}.json")))
+    ]
     if len(todo) < jobs:
         log(f"  keeping {jobs - len(todo)} of {jobs} shards finished by the run before")
     tool = os.path.join(TOOLS, "rdna2spirv.py")
@@ -1098,6 +1362,27 @@ def translate(disasm: str, spirv: str, jobs: int, emulate: bool = False,
 
 
 # ---------------------------------------------------------------- assets
+DECODER_RECORD = "decoder.sha256"   # beside each model and texture manifest.json: the decoder_digest() that made it
+
+
+@functools.cache
+def decoder_digest() -> str:
+    """SHA-256 over the checked-out third_party/rpf9-explorer commit and the name and exact bytes of each
+    tools/rpf9dump source file: what the model and texture exports come from."""
+    sub = os.path.join(ROOT, "third_party", "rpf9-explorer")
+    pin = ""
+    # Asked only inside the submodule's own checkout: in an empty folder git answers with this repository's HEAD.
+    # shortcut: a copy without git metadata (source zips) has no pin to read, so only tools/rpf9dump is tracked
+    # there; hash third_party/rpf9-explorer/Core as well if such copies need it.
+    git = shutil.which("git")
+    if git and os.path.exists(os.path.join(sub, ".git")):
+        r = subprocess.run([git, "-C", sub, "rev-parse", "HEAD"], capture_output=True, text=True)
+        pin = r.stdout.strip() if r.returncode == 0 else ""
+    folder = os.path.join(TOOLS, "rpf9dump")
+    names = sorted(n for n in os.listdir(folder) if n.endswith((".cs", ".csproj", ".json")))
+    return sources_digest(folder, names, pin)
+
+
 def rpf9dump(work: str) -> str:
     exe = os.path.join(work, "tools", "rpf9dump", "rpf9dump.exe" if os.name == "nt" else "rpf9dump")
     core = os.path.join(ROOT, "third_party", "rpf9-explorer", "Core")
@@ -1147,13 +1432,26 @@ def assets(game: str, work: str, wav: bool, jobs: int) -> None:
 
     get_exporter = functools.cache(rpf9dump)
     out = os.path.join(work, "assets")
+    # An export also depends on the decoder, so its digest is kept beside the manifest, written before the export
+    # starts. A folder without it (from before the file existed) or with another one is exported again, as the
+    # shaders stage does for the translator.
+    decoder = decoder_digest()
     for rel in MODEL_ARCHIVES:
         src = os.path.join(game, rel)
         name = os.path.splitext(os.path.basename(rel))[0]
         for mode in ("models", "textures"):
-            if os.path.isfile(os.path.join(out, name, mode, "manifest.json")):
+            folder = os.path.join(out, name, mode)
+            record = os.path.join(folder, DECODER_RECORD)
+            if os.path.isdir(folder) and read_shader_setting(record) != decoder:
+                # rpf9dump keeps the files it finds, so another decoder's output is removed first.
+                log(f"assets: no matching decoder fingerprint for {mode} from {rel}: exporting again")
+                shutil.rmtree(folder)
+            elif os.path.isfile(os.path.join(folder, "manifest.json")):
                 continue
             log(f"assets: {mode} from {rel}")
+            os.makedirs(folder, exist_ok=True)
+            with open(record, "w", encoding="utf-8", newline="\n") as f:
+                f.write(decoder + "\n")
             run([get_exporter(work), mode, src, out])
     # Texture pools: data/ttdb/** and each pack's own pack/<name>/data/ttdb/** (pool names repeat across packs,
     # so pack pools go under ttpf_pack/<pack>/).
@@ -1331,7 +1629,7 @@ def runtime(game: str, out: str, v: dict, runtime_build: str | None = None, jobs
     else:
         log("runtime: building")
         run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-             os.path.join(ROOT, "scripts", "build_runtime.ps1")])
+             os.path.join(ROOT, "scripts", "build_runtime.ps1"), "-Jobs", str(jobs)])
         build = os.path.join(ROOT, "runtime", "build")
     artifacts = [os.path.join(build, name) for name in RUNTIME_FILES]
     for built in artifacts:
@@ -1352,10 +1650,20 @@ def runtime(game: str, out: str, v: dict, runtime_build: str | None = None, jobs
         with open(start, "w", encoding="utf-8", newline="\n") as f:
             f.write(WINE_LAUNCHER)
         os.chmod(start, os.stat(start).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    if not os.path.isfile(os.path.join(game, v["expected_exe"])):
+    image = os.path.join(game, v["expected_exe"])
+    if not os.path.isfile(image):
         log(f"runtime: built, but {v['expected_exe']} is missing from your copy, so there is nothing to run yet.")
+    elif os.name == "nt":
+        def ps_literal(path: str) -> str:
+            # PowerShell also treats typographic single quotes as string delimiters.
+            return "'" + re.sub(r"['\u2018-\u201b]", r"\g<0>\g<0>", path) + "'"
+
+        log("runtime: built. Inspect the game's imports in PowerShell:\n"
+            f"  & {ps_literal(start)} --dry-run {ps_literal(image)}")
     else:
-        log(f"runtime: done. Start {start}")
+        # Wine inherits the package directory; the image argument needs no host-to-Windows path conversion.
+        command = shlex.join([start, "--dry-run", "./" + v["expected_exe"]])
+        log(f"runtime: built. Inspect the game's imports with Wine:\n  (cd {shlex.quote(game)} && {command})")
 
 
 def positive_int(text: str) -> int:
@@ -1369,12 +1677,12 @@ def positive_int(text: str) -> int:
     return value
 
 
-def pipeline_check_exe():
-    """vk_pipeline_check where the build puts it: runtime/build on Windows (scripts/build_runtime.ps1), the CMake
-    build folders of the README and CONTRIBUTING.md elsewhere."""
+def pipeline_check_exe(runtime_build: str | None = None) -> str | None:
+    """Find the checker for this host, using a supplied Windows build before the local Windows build."""
     build = os.path.join(ROOT, "runtime", "build")
     if os.name == "nt":
-        found = [os.path.join(build, "vk_pipeline_check.exe")]
+        windows_builds = (runtime_build, build) if runtime_build else (build,)
+        found = [os.path.join(d, "vk_pipeline_check.exe") for d in windows_builds]
     else:
         found = [os.path.join(build, "linux", "vk_pipeline_check"), os.path.join(build, "vk_pipeline_check")]
     return next((p for p in found if os.path.isfile(p)), None)
@@ -1387,8 +1695,8 @@ def require_translated_shaders(work: str) -> str:
     return spirv
 
 
-def pipelines(work: str, out: str, jobs: "int | None" = None) -> None:
-    exe = pipeline_check_exe()
+def pipelines(work: str, out: str, jobs: "int | None" = None, *, runtime_build: str | None = None) -> None:
+    exe = pipeline_check_exe(runtime_build)
     if not exe and os.name == "nt":
         fail("vk_pipeline_check.exe wasn't built: run the runtime stage with the Vulkan SDK installed.")
     if not exe:
@@ -1396,7 +1704,7 @@ def pipelines(work: str, out: str, jobs: "int | None" = None) -> None:
              "loader installed, run: cmake -S runtime -B runtime/build/linux && "
              "cmake --build runtime/build/linux --parallel")
     spirv = require_translated_shaders(work)
-    log("pipelines: creating every shader module and compute pipeline on this GPU")
+    log("pipelines: creating every shader module and pipeline (compute and graphics) on this GPU")
     os.makedirs(out, exist_ok=True)
     cache = os.path.join(out, "pipeline_cache.bin")
     inflight = os.path.join(out, "pipeline_inflight.txt")
@@ -1508,14 +1816,16 @@ def main() -> int:
     ap.add_argument("--find", action="store_true", help="only list the game copies found on this PC")
     ap.add_argument("--runtime-build", metavar="DIR",
                     help="a Windows build of runtime/ (gta6rt.exe and gta6rt_tls_host.dll) for the runtime stage "
-                         "instead of building it (off Windows: instead of the clang-cl + xwin cross-build)")
+                         "instead of building it (off Windows: instead of the clang-cl + xwin cross-build); "
+                         "on Windows, also use vk_pipeline_check.exe from DIR if present")
     ap.add_argument("--wave64-emulate", choices=WAVE64_MODES, default="auto",
                     help="translate wave64 compute and mesh shaders to be exact on any subgroup size (needed on "
-                         "32-wide GPUs: NVIDIA, Intel). auto (default) turns it on unless vulkaninfo shows that "
-                         "every GPU has 64-wide subgroups")
+                         "32-wide GPUs: NVIDIA, Intel). auto (default) checks GPU subgroup support and prefers "
+                         "native wave64 on affected AMD Windows drivers")
     ap.add_argument("--no-float-controls", action="store_true",
-                    help="translate without SignedZeroInfNanPreserve (Depends on: #664), for devices whose "
-                         "vk_pipeline_check skips a shader without shaderSignedZeroInfNanPreserveFloat32")
+                    help="translate without SignedZeroInfNanPreserve and DenormPreserve (Depends on: #664), for "
+                         "devices whose vk_pipeline_check skips a shader without "
+                         "shaderSignedZeroInfNanPreserveFloat32 or shaderDenormPreserveFloat16")
     ap.add_argument("--bary-fallback", action="store_true",
                     help="translate raw barycentric reads from an interpolated vec3 input (with a pass-through "
                          "geometry shader the runtime draws), for devices without "
@@ -1529,6 +1839,10 @@ def main() -> int:
     ap.add_argument("--mesh-compute", action="store_true",
                     help="translate mesh shaders to compute shaders writing an output buffer, for devices "
                          "without VK_EXT_mesh_shader")
+    ap.add_argument("--pc-tail-ubo", action="store_true",
+                    help="keep s0..s31 in 128 push-constant bytes and move heap/code base to a set-1 uniform "
+                         "block; on by itself when the runtime's GPU reports maxPushConstantsSize below what "
+                         "the shaders need (144, or 152 with --mesh-compute)")
     a = ap.parse_args()
     stages = STAGES
     if a.stages is not None:
@@ -1542,17 +1856,23 @@ def main() -> int:
         ap.error("--pick and --game both choose the game folder: give one")
     below_normal()
     if a.find:
-        found = find_dumps()
+        containers = []
+        found = find_dumps(containers)
         for d, v in found:
             print(f"{d}  ({v['title']} {v['version']})")
         print(f"{len(found)} found")
+        for p, h in containers:
+            print(f"not usable: {p}  (packaged {h['kind']} container, package version {h['version']}; "
+                  "the build needs the folder that holds MicrosoftGame.Config)")
         return 0
     game = os.path.abspath(a.game or (pick_game() if a.pick else choose_game()))
+    out = os.path.abspath(a.out or default_out())
+    work = os.path.abspath(a.work or os.path.join(out, "work"))
+    require_folder("--out", out)
+    require_folder("--work", work)
     v = check(game, a.full_check)
     if a.check:
         return 0
-    out = os.path.abspath(a.out or default_out())
-    work = os.path.abspath(a.work or os.path.join(out, "work"))
     # Resolve existing parents too: a not-yet-created destination can be under a junction or symlink.
     real_game = os.path.normcase(os.path.realpath(game))
     is_game_drive_root = os.path.splitdrive(real_game)[1] in ("\\", "/")
@@ -1589,12 +1909,19 @@ def main() -> int:
             stages = [s for s in stages if s not in WINDOWS_ONLY]
             log(f"{', '.join(WINDOWS_ONLY)}: left out, the cross-build needs {'; '.join(lacking)} "
                 "(or pass --runtime-build)")
-    emulate, keep_emulated = (wave64_settings(a.wave64_emulate) if "shaders" in stages
+    emulate, keep_emulated = (wave64_settings(a.wave64_emulate, mesh_compute=a.mesh_compute) if "shaders" in stages
                               else (False, a.wave64_emulate == "auto"))
     if "shaders" in stages and not a.f16_interp_fallback and runtime_gpu_per_vertex() is False:
         log("shaders: the GPU the runtime would use can't take PerVertexKHR inputs (MoltenVK, or no "
             "fragmentShaderBarycentric): translating with --f16-interp-fallback")
         a.f16_interp_fallback = True
+    if "shaders" in stages and not a.pc_tail_ubo:
+        need_pc = 152 if a.mesh_compute else 144
+        max_pc = runtime_gpu_max_push_constants()
+        if max_pc is not None and max_pc < need_pc:
+            log(f"shaders: the GPU the runtime would use reports maxPushConstantsSize = {max_pc} (< {need_pc}): "
+                "translating with --pc-tail-ubo")
+            a.pc_tail_ubo = True
     fallbacks = fallback_flags(a) if "shaders" in stages else ()
     preflight(stages, work, a.wav, runtime_build, emulate=emulate, keep_emulated=keep_emulated,
               fallbacks=fallbacks, jobs=a.jobs)
@@ -1610,7 +1937,7 @@ def main() -> int:
     if "runtime" in stages:
         runtime(game, out, v, runtime_build, a.jobs)
     if "pipelines" in stages:
-        pipelines(work, out, a.jobs)
+        pipelines(work, out, a.jobs, runtime_build=runtime_build)
     log(f"finished in {(time.time() - t0) / 60:.0f} min")
     return 0
 
