@@ -367,23 +367,26 @@ or another archive).
 `GameShape__Data__LocationNameLoopkup` (`InteriorNames`, 2,280 `Pos`; see [world.md](world.md)), both read with
 `tools/gamedata_reader.py <carve> --root <root> --out <dir>`. That document gives interior points, not bounds; no
 document in `common.rpf` stores interior extents (the `CMloArchetypeDef` bounds in `levels.rpf` are in interior
-space and need the placing instance). "Inside" is therefore approximated as the volume centre (`Position` +
-`PositionOffset`) within 100 m of an interior point.
+space and need the placing instance). So containment cannot be tested: what is measured is only the distance
+from a volume centre (`Position` + `PositionOffset`) to the nearest interior point, and a point nearby would not
+show that a volume is inside an interior.
 
-| Field value | Volumes | `Position` | Nearest interior point | Inside (≤ 100 m) |
+| Field value | Volumes | `Position` | Nearest interior point | Within 100 m of one |
 |---|---|---|---|---|
-| `BlendMode` 0 | 7 | world coordinates, none at the origin | 117 to 230 m | 0 |
-| `BlendMode` 1 | 7 | exactly (0, 0, 0) in all 7, offset only | 174 to 182 m (centre = offset) | 0 |
-| `IntExtMode` 0 | 14 | both groups above | 117 to 230 m | 0 |
+| `BlendMode` 0 | 7 | world coordinates, none at the origin | 117.48 to 230.16 m | 0 |
+| `BlendMode` 1 | 7 | exactly (0, 0, 0) in all 7, offset only | unknown (parent transform not known) | unknown |
+| `IntExtMode` 0 | 14 | both groups above | as above | 0 of the 7 world-placed |
 
 - `BlendMode` splits the list exactly by placement: 0 on the 7 world-placed volumes, 1 on the 7 at the origin.
-  Together with the 385 local-space volumes of `packs.rpf` (`BlendMode` 1 in all 385, measured in #3873), 392 of 392
-  local-space volumes have `BlendMode` 1. Hypothesis: 1 marks a volume attached to (and blended with) a parent
-  transform; what it does in the renderer is not measured.
-- `IntExtMode` cannot be correlated here: it is 0 in all 14, and no volume lies within 100 m of an interior
-  point. The 2 volumes that use a profile with `IntExtMode` 1 (`ProfileIndex` 10) are origin volumes with
-  `IntExtMode` 0, so the volume field does not copy the profile's. Whether 1 means interior stays a hypothesis;
-  deciding it needs world-placed volumes with `IntExtMode` 1 and placed interior bounds.
+  The world position of those 7 is unknown: their offsets are local to a parent this document does not name.
+  #3873 reports `BlendMode` 1 on the 385 local-space records of `packs.rpf`; that counts record occurrences in
+  one representation of the pack block, so it agrees with the split without being independent placement
+  evidence. Hypothesis: 1 marks a volume attached to (and blended with) a parent transform; what it does in the
+  renderer is not measured.
+- `IntExtMode` cannot be correlated here: it is 0 in all 14, and none of the 7 world-placed centres is near an
+  interior point. The 2 volumes that use a profile with `IntExtMode` 1 (`ProfileIndex` 10) are origin volumes
+  with `IntExtMode` 0, so the volume field does not copy the profile's. Whether 1 means interior stays a
+  hypothesis; deciding it needs world-placed volumes with `IntExtMode` 1 and placed interior bounds.
 
 ## Schema style
 
