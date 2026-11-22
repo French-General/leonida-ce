@@ -1805,7 +1805,8 @@ The trace will enumerate them.
   and its layout field is `0x101` (tiled) or `0x1` (row-major buffer). The PC proxy replaces the layout with a
   driver-chosen one; our layer must recognise slot 76 and `0x101` explicitly and must not pass `0x101` to the public
   layout enum. The FidelityFX upscaler creates 10 default-heap resources through this slot, so it is not optional
-  for middleware. The actual console tiled data layout and the detile path remain **Open**.
+  for middleware. The console tiled data layout is GFX10 `SW_64KB_D` (Mesa addrlib `GFX10_SW_64K_D_RBPLUS_PATINFO`),
+  and the detile and tile path is implemented in `resource_detile.h` and verified by `resource_detile_test` (D3D-316).
 - `CreateCommittedResource`: allocate an aligned range in the arena for a buffer, or a separate `VkDeviceMemory`
   for an image; record the initial state. Map `D3D12_HEAP_TYPE_DEFAULT` to device-local memory, `UPLOAD`/`READBACK`
   to separate host-visible buffers. This remains the path for buffers and for any PC-style committed resource.
@@ -1928,9 +1929,9 @@ The trace will enumerate them.
 - `D3D12_RESOURCE_DESC::Layout`: the public `ROW_MAJOR` and `64KB_STANDARD_SWIZZLE` values plus the Xbox `0x101`
   tiled value from slot 76. Row-major textures need `VK_IMAGE_TILING_LINEAR` (not usable for RT/DS) or a staging
   copy; `64KB_STANDARD_SWIZZLE` and `0x101` have no direct Vulkan equivalent. If the game uploads console-tiled data,
-  the layer needs a detile step or a matching tiled image. **Open**; the ABI value is known, the data layout is not.
-  `runtime/src/gfx10_tiling.h` provides single-level GFX10/RbPlus SW_4KB_S and SW_64KB_D tile/detile,
-  tested synthetically by `gfx10_tiling_test`. Which mode `0x101` uses, the mip tail and upload wiring remain **Open**.
+  the layer uses a detile step. `runtime/src/resource_detile.h` (`detile_surface_64k` / `tile_surface_64k`, `resource_detile_test`)
+  and `runtime/src/gfx10_tiling.h` provide GFX10/RbPlus `SW_64KB_D` detiling. Which mode `0x101` uses, the mip tail and
+  upload wiring remain **Open**.
 - Formats: a `DXGI_FORMAT` → `VkFormat` table, including sRGB and typeless variants. Typeless resources get a
   concrete image format plus `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` and a `VK_KHR_image_format_list` when views cast
   within the family; unsupported casts are logged and fall back to the resource format. `CreateCommittedResource3`'s
