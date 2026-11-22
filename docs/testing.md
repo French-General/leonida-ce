@@ -183,9 +183,11 @@ The wave32 tests whose words depend on 32 lanes (`cs_dpp*`, `cs_bpermute32`, `cs
 `cs_w32_*`, and in `check.py` every compute test the index records at 32) ask `vk_compute_test` for 32 lanes
 (`VKC_SUBGROUP_SIZE=32`). MoltenVK can't require a subgroup size (`requiredSubgroupSizeStages` is 0, sizes 4..32),
 but its default is 32 and the translator's SPIR-V 1.5 doesn't allow varying sizes, so Vulkan fixes the size at 32.
-`vk_compute_test` checks that with a probe shader before the test: same local size and flags, every invocation's
-lane and subgroup number, and a ballot 32 lanes wide. It prints `compute subgroup size: 32 (observed: ...)` and the
-test is judged; if the probe disagrees, the test fails with `observed wrong` and the first wrong invocation. Measured
+`vk_compute_test` checks that with a probe shader before the test (where the device has compute ballots): same
+local size and flags as the test's `main`, every subgroup 32 lanes wide by its own lane numbers and ballot, and the
+lanes in invocation order, which the translator assumes. It prints `compute subgroup size: 32 (observed: ...)` and
+the test is judged. A wrong width fails the test with `observed wrong` and the first wrong invocation; 32-lane
+subgroups in another order print `not available`, a skip. Measured
 on an Apple M3 Max (MoltenVK 1.4.2 and 1.4.3): 17 workgroup shapes from 1 to 1024 invocations, partial last
 subgroups, with and without full subgroups and register pressure, all 32 lanes in order. A device whose default
 isn't the requested size still prints `not available`, and those tests skip.
