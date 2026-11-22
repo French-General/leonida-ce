@@ -106,6 +106,9 @@ Leonida's rule is `u32[0xC0] + 0x28` to the last `s_endpgm` (also `docs/design.m
 The 1.0.2.1 scan tested 88 aligned little-endian words in each of the 26,503 indexed FSSM blobs as possible
 packed `PGM_RSRC1` registers carrying `FLOAT_MODE`, `DX10_CLAMP` and `IEEE`. It covered 78 word starts at
 FSSM offsets `0x00` through `0x134` and 10 at `code_off + 0x00` through `code_off + 0x24`, inclusive.
+Local Python scripts walked the DXBC export?s `index.json`, opened the matching `fssm/<stem>.fssm` for each row,
+and read each candidate with `struct.unpack_from("<I", ...)`. For the standalone check, the scripts intersected
+the sets of header offsets containing `0xC0` across all rows.
 
 The VGPR allocation field provides an independent check on that interpretation. Of 2,689 compute shaders, 1,675
 had zero reported invalid words and at least one explicit VGPR in the instruction listing. For each of these,
@@ -126,8 +129,9 @@ A standalone mode field makes no VGPR allocation prediction. The contributor als
 52 BVH-builder DLL shaders, outside this replay.
 
 The adjacent words provide two cross-checks. The low byte at `+0x100` matches the stage in every row
-(GS 3, VS 4, PS 5, CS 6, MS 7). The next byte is 2, 0, 1, 3 and 6 respectively, so only the 2,236 VS
-match the full `0x000200NN` pattern. The word at `+0x108` is always zero. For every one of the 2,689 CS,
+(GS 3, VS 4, PS 5, CS 6, MS 7). The VS word is `0x00020004`; the GS word is `0x00020203`.
+Only the 2,236 VS have zero in bits 15:8 and match the full `0x000200NN` pattern.
+The corresponding byte is 1 for PS, 3 for CS and 6 for MS. The word at `+0x108` is always zero. For every one of the 2,689 CS,
 rounding the byte count at `+0x10C` up to 512-byte blocks predicts the independently decoded
 `COMPUTE_PGM_RSRC2.LDS_SIZE` at `+0x138[23:15]`, including all 485 nonzero allocations. Five MS also
 have a nonzero count. This varying LDS measurement locates stage state near the candidate.
