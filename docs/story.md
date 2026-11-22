@@ -282,6 +282,23 @@ correlation 0.997 (x), 0.997 (y) and 0.983 (z) over 387 blocks. Readings that ar
 The earlier test on `63 30` blocks found no correlation, and the reason is that their records hardly vary: the
 groups matched to a `63 30` block keep the default words in 2,417 of 2,452 meshlets.
 
+**Which `42 40` block a group is checked against (ASSET-294).** `--faces` and `--centres` decode a group with
+a `42 40` block of its vertex count in the same page. When several blocks have that count, the order in the
+page doesn't decide it. In `Q0 Q1 G0 G1` pages, G0 is built on Q0 in some pages and on Q1 in others, and taking
+the k-th block for the k-th group fits only 9,295 of 15,997 such groups in `story000`. The link is in the drawable's
+pointers, outside the page. So the walker takes the block whose vertex boxes are closest to the group's stored
+centres (`centre_distance`, summed over its meshlets), keeping the nearest block before the group on a tie. Over
+all of `story000.rpf` (7,577 mesh pages, 7,571 parsed), before and after:
+
+| Pairing | Groups with several blocks | Block changed | Shared edges | Faces within ~25° | Opposed |
+|---|---:|---:|---:|---:|---:|
+| nearest block before | 16,059 | — | 36,703,865 | 33,340,567 (90.8%) | 518,113 (1.41%) |
+| closest centres | 16,059 | 8,668 | 36,715,738 | 34,035,780 (92.7%) | 16,408 (0.045%) |
+
+The face check doesn't use the centres, so it is the independent evidence. The centre counts rise too (same step
+212,278 → 222,371 of 827,430 axes), but for those 8,668 groups they no longer measure the centres on their own.
+The `shared_minigame000` tables above were counted with the old pairing.
+
 The other bits are not decoded:
 - **w3 bits 12-31** are non-zero in 24% of the `42 40` meshlets of the first 400 streams (14,594 of 61,156), and
   bits 12-13 are clear in every one of them. They follow how closely the meshlet's face normals agree (r ≈ 0.7 with the smallest dot product to the mean normal), which
