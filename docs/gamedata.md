@@ -622,17 +622,17 @@ The one unresolved item points outside this archive or at a document lost to the
   4,290.
 - Where the second number is non-zero (3,541 pairs) it does not follow the first: Pearson correlation 0.009,
   and the first is `0` in 570 of them.
-- Against the keyframe documents (29,220 pairs whose name is also a keyframe variable): a second number of `0`
-  occurs in 17,041 pairs where 0 is outside every value that variable takes in all 27 keyframe documents.
+- Against the keyframe documents (25,732 pairs with a second number of `0` whose name is also a keyframe
+  variable): `0` lies outside every value that variable takes in the 27 keyframe documents in 17,041 pairs,
+  but the first number is outside that range too in 15,183 of the same pairs. Plain-modifier values are not
+  bounded by the keyframe ranges, so this comparison does not tell what either number means.
 
-So the GTA V reading, two endpoints blended by strength, would make 17,041 entries blend towards a value their
-variable never takes in a keyframe. The distribution fits better a value (the first number) followed by a
-second field that is unset (`0`) in most entries. What that field does when it is set is not settled by the
-distribution alone.
+So `0` is the most frequent stored value of the second number. What it means, and how the runtime blends the
+two numbers by strength, is not settled by these counts.
 
 Not measured here (hypothesis): the hour of each of the 13 samples (GTA V's are fixed in code), how the two
-regions are chosen at runtime, what the second plain-modifier number does when it is not `0` (see above), and
-how `controlValue` maps onto game state.
+regions are chosen at runtime, what the two plain-modifier numbers mean and how the runtime blends them (see
+above), and how `controlValue` maps onto game state.
 ## Vehicle and tyre XML documents
 
 Four roots account for 37 of the 45 documents (4,547,932 inflated bytes) in the vehicles/tyres category:
@@ -724,9 +724,9 @@ and 4 (twice); `interpolation_type` is `EASE_LINEAR_IN` on 9 samples and `EASE_Q
 region names. So unlike GTA V, where the 13 sample times are compiled in, this build reads them (and the easing
 between them) from `time_data`; their count matches the 13 values of every keyframe variable.
 
-Not measured here (hypothesis): how the two regions are chosen at runtime, what the second plain-modifier
-number does when it is not `0` (see "The two plain-modifier numbers" above), and how `controlValue` maps onto
-game state.
+Not measured here (hypothesis): how the two regions are chosen at runtime, what the two plain-modifier
+numbers mean and how the runtime blends them (see "The two plain-modifier numbers" above), and how
+`controlValue` maps onto game state.
 
 ## Relationship to `data.rpf` and `script.rpf`
 
