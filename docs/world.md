@@ -726,8 +726,10 @@ only; no names.
   67 to 254, not contiguous), and none of those 149 has a tag: they read as unused placeholder slots, which would
   keep the slot index (the value a material would store) stable. The other 106 names occur once each, and
   only one of them has neither tag.
-- `MaterialDataList`, which would carry each material's procedural tag, survives only from mid-document (see
-  the snow and mud section below); 1 of the 107 tag names occurs in its retained part.
+- Five retained fragments of `MaterialDataList` contain 399 complete material records with 1,433 nested tag
+  entries. One of the 107 procedural table names occurs as a substring in the retained text, but none matches
+  a field value in those records exactly. The fragments cover only part of the list (see the snow and mud
+  section below). A numeric value in the slot range (0–254) alone does not identify a slot reference.
 
 Not measured here (hypothesis): whether materials index this table by slot, as in GTA V, and where the
 object and plant definitions live.
