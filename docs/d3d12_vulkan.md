@@ -1507,11 +1507,14 @@ Pipeline creation:
   buffer device address, storage image without format, maintenance8.
 - Request the subgroup size each shader was translated for (`requiredSubgroupSize` 64 or 32) where the device lists the stage
   in `requiredSubgroupSizeStages`, and say so in the log where it cannot (section 3.2, "Subgroup size").
-- Pipeline caches: use a `VkPipelineCache` keyed by driver/pipeline-cache UUID; the `pipelines` build stage already
-  produces one. The PSO is always rebuilt from its descriptors: `GetCachedBlob` returns a small blob that holds no
-  pipeline, only what the PC runtime checks before it accepts one in `CachedPSO` (`runtime/src/cached_pso.h`:
-  vendor, device, driver version, `pipelineCacheUUID` and a SHA-256 of the description without `Flags`, sealed by a
-  checksum). The answers are the host's, measured on an RTX 3060 and WARP: the same description is accepted; another
+- Pipeline caches: graphics and compute PSOs use one `VkPipelineCache` per device. On first use the runtime reads
+  the `pipelines` build stage's `pipeline_cache.bin` beside the executable if its Vulkan header matches the device
+  and pipeline-cache UUID. When the file is absent or incompatible, the runtime starts with an empty cache.
+  The offline checker matches the runtime's layout and subgroup request for compute shaders with no descriptor
+  bindings and the standard 144-byte push-constant range.
+  `GetCachedBlob` records the vendor, device, driver version, `pipelineCacheUUID` and a SHA-256 of the description
+  without `Flags`, sealed by a checksum (`runtime/src/cached_pso.h`). The answers are the host's, measured on an
+  RTX 3060 and WARP: the same description is accepted; another
   shader, root signature content or state, a changed byte, a truncated blob or a pointer with size 0 give
   `E_INVALIDARG`; a null pointer with a size is ignored; another adapter gives `D3D12_ERROR_ADAPTER_NOT_FOUND` and
   another driver `D3D12_ERROR_DRIVER_VERSION_MISMATCH`. `ID3D12PipelineLibrary` is an in-memory map plus the Vulkan
