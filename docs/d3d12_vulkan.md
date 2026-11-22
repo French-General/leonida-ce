@@ -2057,7 +2057,10 @@ mapped stages/accesses, and if no single layout serves all uses, use `GENERAL` a
   Resources are not kept: a resource released while a batch that names it is held fails that batch at release.
   Order against other work: a held `Signal(F, v)` released after an unheld `Signal(F, w)` with `w >= v` leaves the
   Vulkan signal out (timelines only increase; waits for `v` already pass), decided under the submit lock so the
-  order of the checks is the order of the submissions; `Present` is queued behind held work too (below). Edge cases:
+  order of the checks is the order of the submissions, and the value counts as submitted only once the
+  `vkQueueSubmit` succeeded (a failed Signal releases nobody and its retry goes through); `Present` is queued behind
+  held work too (below). Fence keep-alives are released outside the queue lock, at the next `ExecuteCommandLists`,
+  `Signal`, `Wait` or marker once their submission has completed. Edge cases:
   a queue destroyed with held operations reports them once (stderr: `queue destroyed with N held operation(s) never
   submitted: waits for a fence value (V) that no Signal reached`) and goes on without waiting, and the CPU waits on
   the fences of its held Signals are completed, as a released fence completes them; queues that wait for those fences
@@ -2076,12 +2079,21 @@ mapped stages/accesses, and if no single layout serves all uses, use `GENERAL` a
   releases the last operation held when it was called. It is not blocked on the calling thread because the Signal that
   releases the work may be one that thread makes after `Present` returns. Held work that is never released holds back
   the presents after it (device-wide, since the layer cannot tell which batch draws into which back buffer). A
-  blank present reads nothing and is only ordered behind earlier queued presents.
+  blank present reads nothing and is only ordered behind earlier queued presents. At most 8 presents queue up; the
+  next one waits for held work to release (logged once; `set_abort` ends the wait), as a full frame-latency queue
+  does. A queued present reports `last_present_tore()` false, which the Xbox PresentX path turns into the default
+  vblank sync for the frame pacer. The presenter's state is guarded by one mutex (the counters are atomics, so
+  reading them never waits for a present blocked on a swapchain image); `set_abort` has its own.
   Facts from vkd3d-proton (LGPL, approach only, nothing copied): it keeps a CPU-side virtual value and pending signals
   per fence and blocks the queue's submission thread until a signal that satisfies a wait has been submitted, so Vulkan
   never sees a wait without a submitted signal. Resources are `VK_SHARING_MODE_EXCLUSIVE` and every D3D12 queue is in
   the graphics family, so no ownership transfer is needed; with dedicated compute/transfer families they would need
   `CONCURRENT` (vkd3d-proton does that, because D3D12 gives no information for transfers).
+  Every mode of the handover test ends with the same cases on the host runtime (the expected data is the CPU's
+  pattern in all of them, so that run shows the cases are valid D3D12 and holds the layer's modes to one bar).
+  The pipeline-state and root-signature pins are covered end to end by `d3d12_m4_compute_test`: the compute list is
+  executed while held, its two PSOs and root signature are released and the list is Reset, the copy that releases
+  it is submitted, and the output is compared with the CPU (it reads zeros without the pins).
   Measured: `d3d12_queue_handover_test` (three modes: the standalone device with a `VkQueue` per D3D12 queue, then the
   host runtime; `--two-queues`, a caller-owned device with two `VkQueue`s handed over; `--shared-queue`, one) runs
   592 cases on the layer on the Radeon 880M and the RTX 5070 (also with one shared `VkQueue`; 8 with two handed over) and 587 on the host runtime: pairs and three-stage chains (produce, relay, consume)
