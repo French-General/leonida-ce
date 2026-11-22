@@ -7,6 +7,11 @@ modules in [runtime_imports.md](runtime_imports.md): every import binds, 0 unimp
 
 ## The bind order
 
+The lookup key is the DLL name normalised the way `LoadLibrary` resolves a file name (`dll_key`,
+`pe_loader.cpp`): lower-case, a trailing `.` dropped, and `.dll` added when the name has no extension —
+so a descriptor naming `GameInput` or `gameinput.dll.` keys the same as `gameinput.dll`, matching the
+host `LoadLibraryExA` it can fall through to.
+
 `resolve(dll, name)` tries, in order:
 
 1. **Shim** — `rt::shims::find("dll!name")`, the clean-room tables registered by `SHIM_TABLE` in
