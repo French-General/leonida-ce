@@ -1051,16 +1051,23 @@ and any validation error fails them.
   releases those of seven frames earlier (about 190 live keys, so the table grows), the direct queue uploads, the
   compute queue waits for it on the GPU, and each queue runs the `cs_set0_sample.comp` shader eight times on SRVs
   of the frame and the three before it. All 98,304 sampled texels per run are compared with what the CPU wrote.
-  It runs once as the layer is (0 `vkDeviceWaitIdle` for the bindless set required, at least one generation made,
-  a retired generation seen pending right after the submit that made it), once with the compute queue never waiting on
-  the direct queue's fence (it samples textures the CPU has seen finished, so only the grown table is new to it: the
-  layer's own wait on the uploading submission is what keeps it correct), and once with `LEONIDA_BINDLESS_IDLE_WAIT=1` (the old wait; counted above 0); the times of both are printed, not
-  asserted. The table's growth is the only replacing flush this scenario produces (3 generations); the other two
-  kinds (a live key's index replaced, a relocation) and the failed-submit retry are covered at the Vulkan level by
-  `vk_bindless_test` cases 3 to 6, which check that the set changes and that `release_retired` frees only what
-  its ticket allows. The test's devices have one `VkQueue`, so the second queue's order after the upload holds by
-  submission order too; the cross-queue wait is checked for validity (sync validation, `d3d12_bindless_churn_validated`)
-  but not against a GPU that reorders two real queues.
+  The two D3D12 queues get distinct `VkQueue`s where the device's family has two (`queue_count_wanted = 2`,
+  `command_queues`; the test prints which it got and says so when the family has only one). Two queues on one
+  `VkQueue` are ordered by submission, which hides a missing wait between them. It runs four times: as the layer is (0
+  `vkDeviceWaitIdle` for the bindless set required, at least one generation made, a retired generation seen pending
+  right after the submit that made it); with the compute queue never waiting on the direct queue's fence (it samples
+  textures the CPU has seen finished, so only the grown table is new to it); and both again with
+  `LEONIDA_BINDLESS_IDLE_WAIT=1` (the old wait, counted above 0). Times are printed, not asserted. The async runs
+  are what the layer's wait on the uploading submission keeps correct: with that wait removed, the RTX 5070 run
+  failed at frame 5 (compute read a zeroed table: the grown binding 2 with the upload not yet run), as @duudiis
+  reported on #2740; the old-wait path shares that bug on `main` (the idle wait only covers work already submitted,
+  not another queue's later submission that binds the new table). The Radeon 880M did not reproduce it in two
+  runs. `d3d12_bindless_churn_validated` runs it under the validation layer.
+  The table's growth is the only replacing flush this scenario produces (3 generations). The other kinds (a live
+  key's index replaced, a relocation) and the failed-submit retry are checked at the Vulkan level by
+  `vk_bindless_test` cases 3 to 6 (the set changes; `release_retired` frees only what its ticket allows). That test
+  needs the translated `vs_ids`, `ps_tex` and `ps_imgatomic`; it was not in ctest before D3D-314 (only
+  `scripts/run_gpu_tests.py` and `check.py` ran it), and is now, as `vk_bindless_ps_tex` and `vk_bindless_ps_imgatomic`.
 - `d3d12_set0_compute_test`: set 0 from the compute bind point, through the proxy and D3D12 alone. The index entry
   of its shader lists set-0 bindings, so the PSO's layout holds the device's bindless set and replay binds it at
   each dispatch; nothing in the test binds it. Four dispatches of `test/glsl/cs_set0_sample.comp` (GLSL written to
