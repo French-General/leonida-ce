@@ -106,7 +106,7 @@ Leonida's rule is `u32[0xC0] + 0x28` to the last `s_endpgm` (also `docs/design.m
 The 1.0.2.1 scan tested 88 aligned little-endian words in each of the 26,503 indexed FSSM blobs as possible
 packed `PGM_RSRC1` registers carrying `FLOAT_MODE`, `DX10_CLAMP` and `IEEE`. It covered 78 word starts at
 FSSM offsets `0x00` through `0x134` and 10 at `code_off + 0x00` through `code_off + 0x24`, inclusive.
-Local Python scripts walked the DXBC export?s `index.json`, opened the matching `fssm/<stem>.fssm` for each row,
+Local Python scripts walked the exported DXBC `index.json`, opened the matching `fssm/<stem>.fssm` for each row,
 and read each candidate with `struct.unpack_from("<I", ...)`. For the standalone check, the scripts intersected
 the sets of header offsets containing `0xC0` across all rows.
 
