@@ -117,6 +117,13 @@ and the `api-ms-win-core-file-*` sets a GDK title links against.
   overlay; fail-if-exists counts a name only the package has. Either side can be a host path.
 - `SetFileAttributes*` sets the attributes on the overlay copy, copying a package file up (or mirroring a package
   folder) first, so the package keeps its own.
+- A folder has to exist in the title's view before it is used. An open that writes fails with `ERROR_PATH_NOT_FOUND`
+  when its folder is missing, was removed, or is a file, and creates nothing; `FindFirstFile` fails the same way for a
+  listing inside such a folder (a pattern that matches nothing in a folder that exists is still
+  `ERROR_FILE_NOT_FOUND`).
+- `MoveFile*` onto the same name succeeds and changes nothing. A rename that changes only the case renames the overlay
+  entry; a package file gets an overlay copy under the new spelling, and a package folder is refused like any other
+  move of one.
 
 `runtime/test/file_system_test.cpp` (ctest `file_system`) covers this over folders it makes in `%TEMP%`.
 
