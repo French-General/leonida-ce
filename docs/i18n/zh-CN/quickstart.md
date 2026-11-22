@@ -21,7 +21,7 @@ Leonida 是一个把 Xbox Series 版 Grand Theft Auto VI **静态重编译**到 
 ## 前置条件
 
 - **你自己的拷贝**：Xbox Series 包，版本 `1.0.2.1`（目录里有 `MicrosoftGame.Config` 和明文可读的 `.rpf` 文件）。
-- **Windows 10/11 x64**，约 **350 GB** 空闲空间给中间文件（可用 `--work` 放到另一块盘）。
+- **Windows 10/11 x64**，约 **400 GB** 空闲空间给中间文件（可用 `--work` 放到另一块盘）。
 - [Python 3.12+](https://www.python.org/downloads/)（勾选 “Add python.exe to PATH”）。
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
 - [Vulkan SDK](https://vulkan.lunarg.com/)（`spirv-as`、`spirv-val`、`vulkaninfo`）。
@@ -81,7 +81,7 @@ python -I make_game.py --wave64-emulate auto              # auto（默认）、o
   `--texel-offset-fallback`（把 `image_sample*_o` 的偏移折叠进坐标，用于没有 `VK_KHR_maintenance8` 的设备）和
   `--mesh-compute`（把 mesh 着色器当作 compute，用于没有 `VK_EXT_mesh_shader` 的设备）。每个标志的说明见
   [`docs/design.md`](../../design.md)。
-- **`--work`**：建议指向至少有 350 GB 空闲的磁盘；`shaders` 阶段最慢，默认使用一半 CPU 线程（`--jobs` 可调）。
+- **`--work`**：建议指向至少有 400 GB 空闲的磁盘；`shaders` 阶段最慢，默认使用一半 CPU 线程（`--jobs` 可调）。
 - **Linux 与 Wine/Proton**：`make_game.py` 也能在 Linux 上运行。`runtime` 阶段会在 Linux 上用 clang-cl 和
   lld-link（LLVM 19+，但 22.1.7 和 22.1.8 有已知问题，见 [docs/testing.md](../../testing.md#known-problems)；
   命令名用不带版本后缀的，或五个 LLVM 工具都用同一版本后缀，例如 `clang-cl-21`）把 loader 交叉编译到

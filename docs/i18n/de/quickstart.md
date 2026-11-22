@@ -27,7 +27,7 @@ Das Projekt steht noch am Anfang: **Das Spiel startet noch nicht.**
 
 - **Deine eigene Kopie** des Xbox-Series-Pakets in Version `1.0.2.1` (der Ordner mit `MicrosoftGame.Config` und den
   `.rpf`-Archiven, als normale, lesbare Dateien auf der Festplatte).
-- **Windows 10/11 x64** mit etwa **350 GB freiem Speicher** für die Arbeitsdateien (mit `--work` auch auf einem
+- **Windows 10/11 x64** mit etwa **400 GB freiem Speicher** für die Arbeitsdateien (mit `--work` auch auf einem
   anderen Laufwerk).
 - [Python 3.12+](https://www.python.org/downloads/) (bei der Installation *„Add python.exe to PATH“* anhaken).
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
@@ -87,7 +87,7 @@ Die Stufen laufen in dieser Reihenfolge: `check` → `shaders` → `assets` → 
 - **`--wave64-emulate`**: emuliert Wave64-Compute- und -Mesh-Shader auf GPUs mit 32 breiten Subgroups (NVIDIA und
   Intel). Der Standard `auto` fragt `vulkaninfo` und schaltet die Emulation selbst ein, wenn sie gebraucht wird.
   AMD-Karten (RDNA) führen Wave64 nativ aus.
-- **`--work`**: am besten ein Laufwerk mit mindestens 350 GB freiem Platz angeben. Die Stufe `shaders` dauert am
+- **`--work`**: am besten ein Laufwerk mit mindestens 400 GB freiem Platz angeben. Die Stufe `shaders` dauert am
   längsten und nutzt standardmäßig die Hälfte der CPU-Threads (änderbar mit `--jobs`).
 - **`pipelines`**: erstellt jeden übersetzten Shader auf deinem GPU-Treiber und speichert einen Pipeline-Cache,
   damit der erste Start sie nicht kompilieren muss.

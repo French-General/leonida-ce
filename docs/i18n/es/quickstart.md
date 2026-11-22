@@ -26,7 +26,7 @@ El proyecto está en una fase inicial: **el juego todavía no arranca**.
 
 - **Su propia copia** del paquete de Xbox Series, versión `1.0.2.1`: la carpeta que contiene `MicrosoftGame.Config`
   y los archivos `.rpf`, como ficheros legibles en el disco.
-- **Windows 10/11 x64**, con unos **350 GB libres** para los archivos de trabajo. Pueden ir a otra unidad con
+- **Windows 10/11 x64**, con unos **400 GB libres** para los archivos de trabajo. Pueden ir a otra unidad con
   `--work`.
 - [Python 3.12+](https://www.python.org/downloads/) (marque «Add python.exe to PATH» durante la instalación).
 - [SDK de .NET 8](https://dotnet.microsoft.com/download/dotnet/8.0).
@@ -84,7 +84,7 @@ Las etapas se ejecutan en este orden: `check` → `shaders` → `assets` → `ru
 - **`--wave64-emulate`**: traduce los shaders compute y mesh wave64 de forma exacta cualquiera que sea el tamaño de
   subgrupo de la GPU. Las GPU NVIDIA e Intel usan subgrupos de 32 y lo necesitan. El valor predeterminado, `auto`,
   consulta `vulkaninfo` y activa la emulación salvo que todas las GPU anuncien subgrupos de 64.
-- **`--work`**: elija un disco con al menos 350 GB libres. La traducción de shaders es la etapa más larga; por
+- **`--work`**: elija un disco con al menos 400 GB libres. La traducción de shaders es la etapa más larga; por
   defecto usa la mitad de los hilos del procesador (ajustable con `--jobs`).
 - **`--wav`**: desactivado por defecto, porque el WAV PCM de 16 bits ocupa varias veces más que el Ogg Opus.
 - **Linux y Wine/Proton**: `make_game.py` también funciona en Linux. El cargador es un programa de Windows y se
