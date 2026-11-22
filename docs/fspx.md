@@ -162,15 +162,13 @@ kind 0 at run time beyond what the translated module already carries (its thread
 
 ## Translation status
 
-With `tools/fspx_unpack.py --disasm` and `tools/rdna2spirv.py` on the 29 programs:
+With `tools/fspx_unpack.py --disasm` and `tools/rdna2spirv.py` on the 29 programs (`main` at `aa2988cc` with the
+`v_fma_mix*` literal repair in [design.md](design.md), "Printed encodings"):
 
-- **17 translate and pass `spirv-val`.** 13 of them are the 16 programs that use no dot4 instruction, minus 3 that
-  stop at `v_pk_add_u16`, `image_atomic_add` (2D) and `v_pk_fmac_f16`. The other 4 use dot4 (design.md, "Signed-byte
-  dot products").
-- **9 more programs that use dot4 do not translate yet.** The first thing each stops at:
-  - 6 at an `s_buffer_load_dwordx8` or `_dwordx16` whose destination range ends in `vcc_lo, vcc_hi`;
-  - 2 at a reachable word `llvm-mc` does not decode (the VOP3P words above);
-  - 1 at an `src_scc` operand.
+- **27 translate and pass `spirv-val`**, 11 of the 13 programs that use dot4 among them (design.md, "Signed-byte
+  dot products"). Without the repair, 26: the `v_fma_mix_f32` it is for is refused.
+- **The other 2** (both use dot4) stop at a reachable `v_dot4_i32_i8` VOP3P word with `op_sel` 2 that `llvm-mc` does
+  not decode (the VOP3P words above).
 
 ## Unknown
 
