@@ -186,7 +186,9 @@ Setup on Windows, about 800 MB and no admin rights:
   target. The ROCm wheel has one:
   `py -m venv .venv` then `.venv\Scripts\python -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm-sdk-core==10.0.0"`;
   `clang.exe` ends up in `.venv\Lib\site-packages\_rocm_sdk_core\lib\llvm\bin`. A `.venv` in the working
-  directory or repository is found by itself; otherwise set `LEONIDA_AMD_CLANG` to that `clang.exe`.
+  directory or repository is found by itself, and so is the wheels' `amdclang` on PATH: that launcher has no
+  `ld.lld` beside it, so the oracle uses the `clang.exe` in the folder it reports as `InstalledDir`. Otherwise set
+  `LEONIDA_AMD_CLANG` to that `clang.exe`.
 - **Linux** has a launcher of its own, without ROCm: see the next list. `hw_oracle.c` is the Windows one (it loads
   the driver's DLL).
 - **Host C compiler.** `tools/hw_oracle/hw_oracle.c` is built once into the temp folder by MinGW gcc (on PATH or in
