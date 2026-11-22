@@ -790,8 +790,8 @@ outside this work by rule; names and exact file boundaries stay unknown until a 
 ## Dirt and canned colours (`CGraphicsDefinitionsData`)
 
 One `CGraphicsDefinitionsData` document holds the dirt/grime presets for peds, vehicles and props and the
-colour table they draw from. Seven sections, each a list of `Item key="..."` records (counts; no values or
-names):
+colour table they draw from. Seven sections, each a list of `Item key="..."` records (the table gives counts,
+no values or names):
 
 | Section | Items | Fields per item | `key` |
 |---|---:|---:|---|
