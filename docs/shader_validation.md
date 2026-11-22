@@ -979,6 +979,9 @@ every scalar. `vk_compute_test` reads them back with `VKC_OUT_WORDS` / `VKC_DUMP
   On a discrete RDNA2 card (RX 6700 XT, gfx1031, Windows, Adrenalin 26.8.1, through the HIP DLL of the driver;
   BUILD-162): with `--dpp`, seeds 1 to 8, 1,000 programs each (500 per wave size), all 8,000 match, 984 of them
   `hyp_dpp` and 1,964 `hyp_permlane`.
+  On RDNA4 (RX 9070 XT, gfx1201, Windows, Adrenalin 26.11.2, `amdhip64_7.dll`, AMD clang 23.0.0git from the
+  `rocm-sdk` wheels): the same eight runs, all 8,000 match, with the same 984 `hyp_dpp` and 1,964 `hyp_permlane`
+  programs. gfx1201 is not RDNA2: the match supports the model and settles nothing about the console.
 - **DPP sweep (`--dpp-sweep`, BUILD-162).** The random `--dpp` programs run full waves, four ops and mostly
   `row_mask`/`bank_mask` 0xF, so a rare control or mask pair can go untested for many seeds. `--dpp-sweep` replaces
   the random programs with one short program per case: an EXEC write, then one DPP op. It covers every DPP16 control
@@ -1000,6 +1003,9 @@ every scalar. `vk_compute_test` reads them back with `VKC_OUT_WORDS` / `VKC_DUMP
   run (`--oracle translator,hw`), the translator matches all of them as well: 7,206 wave32 native and 7,206 wave64
   `--wave64-emulate`, with 0 rejected and 0 harness errors. One `vk_compute_test` runs per case, so the translator
   side takes about 90 minutes there; the hardware side takes about one.
+  On the RX 9070 XT (gfx1201, the setup above), `--dpp-sweep --oracle hw --wave both`: 14,412 cases, match 14,412,
+  mismatch 0 in every family, 40 of them `hyp_dpp`, in half a minute. The same DPP rules hold on RDNA4; the
+  translator side was not run there.
   First results (Radeon 880M, driver 26.11.2): 24,000 programs on the hardware, half wave32 and half native
   wave64, seeds 11 to 16 (4,000 programs each), with and without `--dpp`, 12 to 60 ops, with and without
   `--no-maskdata` and `--no-hw-guard`: match 24,000, mismatch 0, hyp_only 0, rejected 0. 7,652 of them contained
