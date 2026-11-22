@@ -419,8 +419,8 @@ rests on a transcription rather than on a side-by-side compile.
 - `gameinput_probe [--seconds N] [--rumble] [--force-feedback]` (by hand, with a pad connected): lists the pads with
   each one's raw HID report tables (or why it has none), plays each motor and trigger for a second with `--rumble`,
   holds a constant force at magnitude 1.0 on motor 0 for a second with `--force-feedback` (skipped, with the reason
-  printed, on a pad the shim reports no force-feedback motor for), then prints the live reading and the newest raw
-  input report.
+  printed, on a pad the shim reports no force-feedback motor for), and prints whether SDL created that effect and is
+  running it, separately from GameInput accepting it, then prints the live reading and the newest raw input report.
 
 ## VERIFY
 
