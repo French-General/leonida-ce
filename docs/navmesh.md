@@ -238,9 +238,11 @@ The `24,480` unique static sector IDs form a complete, gap-free `136 Ã— 180` 
 
 `tools/navmesh_nodes.py` puts the lane graph of `levels.rpf` ([world_lights_paths.md](world_lights_paths.md)) on
 the navmesh: for each node it takes the polygon of the node's tile that contains the node in plan view and is
-closest in height, and counts that polygon's flag bits. For comparison it sums the plan area of the polygons that
-carry each bit over the same tiles. A bit that most road nodes stand on while it covers little of the area marks
-where the roads are.
+closest in height, and counts that polygon's flag bits. A polygon's height is the mean of its vertex heights, not
+the surface height under the node, so on a slope the two differ (the 3 m cutoff below absorbs that). For comparison
+it sums the plan area of the polygons that carry each bit over the same tiles; surfaces above one another, such as a
+bridge over a road or the stacked tiles that share one sector id, each add their own area. A bit that most road
+nodes stand on while it covers little of the area marks where the roads are.
 
 A vertex is `tile minimum + u16 / 65535 * tile extent` (the minimum is the quadtree root's, the extent `+0x60`).
 The node heights confirm it: of the 63,806 nodes with a finite position (63,808 read),
