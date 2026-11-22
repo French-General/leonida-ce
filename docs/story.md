@@ -91,7 +91,7 @@ were the 21,980 page directories.
 | zero-prefix page | 1,782 | 104,870,151 | 188,050,712 | first 8 bytes zero |
 | `0DRP` page directory at +16 | 787 | 6,251,535 | 19,538,880 | version 122; page counts 1 = 578, 2 = 192, 4 = 4, 6 = 3 |
 | `PSIN` | 73 | 164,290 | 556,280 | 70 full six-section chains; 3 without a chain |
-| `63 30 00 00` record page | 45 | 4,470,231 | 14,894,128 | float records, not decoded |
+| `63 30 00 00` mesh page | 45 | 4,470,231 | 14,894,128 | vertex blocks and meshlet groups; see [the section below](#63-30-00-00-mesh-pages) |
 | XML text | 16 | 11,500 | 57,317 | UTF-8 BOM + `<?xml` |
 | other text | 10 | 131,472 | 6,985,204 | printable NUL-terminated strings |
 | raw `RSC8` header | 1,957 | - | - | version 8001; u32@8 sum 32,904,308 |
@@ -101,6 +101,282 @@ headers and the 1,957 `RSC8` headers; the archive has 49 nested headers in total
 fixed header is 0x30 bytes; a NUL-terminated name follows it before a pointer into the
 `0x50xxxxxx` range. The name field was present in the sampled headers. No `RSC7`, `AWC`, `FSSM`,
 `SCRP` or `YSC` container was validated.
+
+### `63 30 00 00` mesh pages
+
+The 45 `shared_minigame000.rpf` streams that start with `63 30 00 00` are mesh geometry, not loose float records: each is a run of
+16-byte-aligned chunks of two kinds, a **vertex block** and a **meshlet group**. `tools/meshlet_page.py` walks
+them; over all 45 pages it parses every chunk and leaves 0 bytes unaccounted for. The same walk over the whole
+archive finds 290 more streams that start with a meshlet group instead (continuation pages, below). Counts are
+from package 1.0.2.1; no value from the pages is stored here.
+
+Confidence: **high** = holds in every chunk of all 45 pages and is checked by the tool; **medium** = consistent
+over all pages, but the meaning is inferred; **open** = not decoded.
+
+**Vertex block** (137 in the 45 pages, 301,916 vertices; 10 to 27,280 vertices per block):
+
+| Offset | Field | Measured | Confidence |
+|---:|---|---|---|
+| +0x00 to +0x58 | 23 slot words: low byte = tag, high 24 bits = byte offset / 2 from the block start; 0 = slot unused | slots 0-4 used, 5-22 zero in all 137 | high |
+| +0x00 | slot 0 = `63 30 00 00`: tag 0x63, offset 0x60 | all 137; this is the page magic | high |
+| +0x5C | u32 | 0x200 in all 137 | high (value), open (meaning) |
+| +0x60 | vertex streams, stored in slot order 0, 2, 1, 3, 4 | sizes below in all 137 | high |
+
+| Slot | Tag | Bytes/vertex | Content | Blocks | Confidence |
+|---:|---:|---:|---|---:|---|
+| 0 | 0x63 | 12 | float3 position | 137 | high (layout); medium (position): all 301,916 finite and within ±300 of the origin |
+| 1 | 0x26 | 4 | 4 bytes, alpha-like 4th byte | 120 | medium: 4th byte is 255 for all 300,074 vertices; RGBA8 colour is the likely reading |
+| 2 | 0x63 | 12 | float3 normal | 137 | high: length 1 ± 0.02 for all 301,916 |
+| 3 | 0x42 | 8 | float2 | 137 | medium: all finite; texture coordinates are the likely reading |
+| 4 | 0x42 | 8 | float2 | 120 | medium: all finite; a second texture coordinate set is the likely reading |
+
+The vertex count is (slot 2 offset − 0x60) / 12; every other slot's size is its stride times that count, and the
+block ends 8 × count bytes after its last slot. Blocks come in two layouts: 120 with all five slots and 17 with
+slots 0, 2 and 3 only. 811,377 of the 905,748 position floats have a zero low byte, so most positions look
+quantised to 16 mantissa bits. The positions are local (model space): every coordinate lies within ±300 of the
+block's origin, so they are not compared with the map bounds in `docs/world.md`.
+
+**Meshlet group** (107 in the 45 pages):
+
+| Offset | Field | Measured | Confidence |
+|---:|---|---|---|
+| +0 | u32: bit 31 set, bits 0-30 = meshlet count K | 2,119 meshlets | high |
+| +4 | u32 triangle count T | 254,180 triangles | high |
+| +8 | u32 vertex reference count V | 263,895 references | high |
+| +12 | K × 16-byte meshlet records | see below | |
+| +12 + 16K | T × u32 triangles: three 7-bit meshlet-local indices (bits 0-6, 7-13, 14-20), meshlet index (bits 21-31) | every index below its meshlet's vertex count; every meshlet index matches its record | high |
+| +12 + 16K + 4T | V × u16 vertex references into a vertex block | | high |
+
+Meshlet record:
+
+| Offset | Field | Measured | Confidence |
+|---:|---|---|---|
+| +0 | u32: bits 0-6 = vertices − 1, bits 7-13 = triangles − 1 | sums equal V and T in all 107 groups; 1,971 of 2,119 meshlets have 128 vertices | high |
+| +0 | bits 14-31 | not decoded; vary between meshlets | open |
+| +4 | u16 first vertex reference, u16 first triangle | running sums in all 2,119 | high |
+| +8 | u32 | 0x007FF7FF in 2,092 of 2,119 | open (likely culling bounds) |
+| +12 | u32 | 0x7FF in 2,087 of 2,119 | open |
+
+So the meshlets hold at most 128 vertices and 128 triangles, which fits mesh-shader geometry. In every group the
+references cover 0 to max exactly once or more (no gaps), so a group indexes one vertex block of that many
+vertices. 78 of the 107 groups match a block of the same vertex count in the same page and 104 in the same or an
+adjacent page (in archive order); the other 3 are small and match no block in those pages. A page can therefore hold a group
+whose block is in the page before it.
+
+**Pages.** 18 pages are one block and one group; the others interleave several blocks and groups (one page has
+3 blocks and no group). 39 of the 45 pages are distinct by SHA-256 (one page occurs twice and one six times).
+
+**Continuation pages.** A full-archive walk also accepts streams that start with a meshlet group which passes
+every check above: 290 such streams (8,237,552 bytes inflated), with 748 groups, 7,015 meshlets, 742,141 triangles
+and 5 vertex blocks. 109 parse to the end, 16 end inside a group that continues in the next stream, and 165 run
+into a `42 40 00 00` chunk. That chunk uses the same slot-word header (slot 0 is tag 0x42 at offset 0x80) with other
+tags (0x21, 0x28), so the `42 40 00 00` resource pages are probably the same vertex-block family with other vertex
+formats. Their strides are not measured here, and the tool stops at them instead of guessing.
+
+| Scope | Streams | Blocks | Vertices | Groups | Meshlets | Triangles |
+|---|---:|---:|---:|---:|---:|---:|
+| `63 30 00 00` pages | 45 | 137 | 301,916 | 107 | 2,119 | 254,180 |
+| group-led pages | 290 | 5 | 608 | 748 | 7,015 | 742,141 |
+| total | 335 | 142 | 302,524 | 855 | 9,134 | 996,321 |
+
+**`42 40 00 00` vertex blocks (ASSET-146).** These are sized now, and `tools/meshlet_page.py` walks past them
+instead of stopping. The header is 0x80 bytes:
+
+| Offset | Field | Measured | Confidence |
+|---:|---|---|---|
+| +0x00..+0x58 | 23 slot words, encoded as in the `63 30` block; slot 0 is tag 0x42 at +0x80 | all blocks | high |
+| +0x5C | u32 | 0x200, the same word as the `63 30` block's +0x5C | high (value), open (meaning) |
+| +0x60..+0x68 | f32 × 3, position bias | all blocks | high (see below) |
+| +0x6C | u32, axis order of the stored position | 0, 1 or 2 in every block | high (see below) |
+| +0x70..+0x78 | f32 × 3, position scale | all positive | high (see below) |
+| +0x7C | f32, scale of the type-8 (snorm16) UV slots | 4.0f in every block | high (value); meaning from rpf9-explorer |
+
+**The slot tag byte encodes stride and type.** Bits 5-7 times 4 are the stride and the low nibble is the type,
+`tag = (stride / 4) << 5 | type`. This is how `third_party/rpf9-explorer/Core/RageModelDecoder.cs` (lines 700-748)
+reads vertex slots. It sizes all 99,184 slot words of the archive's `63 30` and `42 40` blocks:
+
+| Tag | Type | Stride | Slots (blocks) | Reading |
+|---|---:|---:|---|---|
+| 0x63 | 3 | 12 | `63 30` 0, 2 | 3 × f32 (position, normal) |
+| 0x42 | 2 | 8 | `63 30` 3, 4; `42 40` 0 (13,545), 3, 4, 14, 15 | 2 × f32; in `42 40` slot 0 the packed position |
+| 0x26 | 6 | 4 | `63 30` 1, 12; `42 40` 1, 12, 13 | RGBA8 colour |
+| 0x28 | 8 | 4 | `42 40` 3, 4, 14, 15 | 2 × snorm16 UV × the +0x7C scale (rpf9-explorer) |
+| 0x21 | 1 | 4 | `42 40` 2 (13,119) | octahedral normal, 10 + 10 bits (below) |
+| 0x27 | 7 | 4 | `42 40` 2, 11, 18 | 10:10:10 unit vector: the normal in slot 2, a tangent in slots 11 and 18 (below) |
+
+The slots used in `42 40` blocks are 0-4, 11-15 and 18; slot 15 occurs in 78 blocks and slot 18 in 770.
+`tools/meshlet_page.py` sizes slots with this rule (`tag_stride`), for the types above only, and reads the same
+1,569 streams with identical totals. The vertex count is the slot-0 span divided by 8, and every stream is
+stride × count bytes. Of every 16-byte-aligned `42 40 00 00` word in `shared_minigame000.rpf`,
+14,671 have a header that fits this rule exactly. Each of them is followed by another `42 40` block (9,234), a
+meshlet group (5,109), a group that continues in the next stream (216), the end of the stream (110) or a `63 30`
+block (2), so nothing is left between chunks. 246 more hits have slot tags with no stride; they are not block
+headers and are left alone. One `63 30` block also has a slot 12 (tag 0x26, 4 bytes) between slots 1 and 3; it
+sizes with the same tag rule.
+
+**Slot 0 is a packed position.** It's the `(8, 16)` position form that
+`third_party/rpf9-explorer/Core/RageModelDecoder.cs` (lines 772-790) already reads for models. Take the 8 bytes as one
+u64 `q`:
+- `a` = bits 8-31 (24 bits);
+- `b` = bits 32-47 shifted up 8, or'd with bits 0-7 (24 bits);
+- `c` = bits 48-63 (16 bits).
+
+Then `(a, b, c) = bias + scale × (a, b, c)`. The axis word says how the three are stored: 0 is (z, y, x), 1 is
+(y, z, x), 2 is (x, y, z). `tools/meshlet_page.py` decodes the positions with this rule (`positions_4240`) and reports
+counts only.
+
+I checked the rule independently over `shared_minigame000.rpf`, counts only:
+- **Field ends.** Across triangle edges of the 757 groups in the first 300 streams, the chance that a bit of `q`
+  differs between the two ends falls steadily towards bits 31, 47 and 63 (0.008, 0.008, 0.020) and jumps back to
+  about 0.45 at bits 32 and 48. So the fields end exactly there. Bits 0 and 8 differ about half as often as their
+  neighbours (0.24); they are the lowest bits of `b` and `a`.
+- **Scales.** Over 1,517 blocks, the edge-length ratio between the first two 16-bit fields follows the ratio of
+  +0x70 to +0x74 (r = −0.59 on the logs). For x and y the bias plus half of `scale × 2^24` lands on 0 for many
+  objects: within 5% of |bias| for 32% of axes, against at most 1.3% for any other power of two tried.
+- **Neighbouring faces.** These are the counts `--faces` gives over all 1,569 streams:
+
+| Positions | Finite | Within 300 m | Shared edges | Faces within ~25° (dot > 0.9) | Opposed (dot < −0.9) |
+|---:|---:|---:|---:|---:|---:|
+| 15,956,983 | 15,956,983 | 15,945,428 | 17,335,198 | 14,501,371 (83.7%) | 44,414 (0.26%) |
+
+Deliberately wrong reads of the first 300 streams don't hold up:
+- **The three u16 at bytes 0-5 as a position:** 40.9% within 25° and 20.0% opposed. The rule gives 79.3% and 0.09%.
+- **The low bytes swapped between `a` and `b`:** the same at 25°, but fewer neighbours within 0.1° than with no low
+  bytes at all. Within 0.1° the counts are 7.56% swapped, 8.59% with the high 16 bits only, and 9.19% with the rule.
+
+The 4-byte attribute streams (tags 0x21, 0x26, 0x27, 0x28) are still not decoded.
+
+With these blocks sized, the archive walk accepts 1,569 streams and leaves 0 unparsed:
+
+| Scope | Streams | `63 30` blocks | `42 40` blocks | Vertices | Groups | Meshlets | Triangles |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| before | 335 | 142 | not sized | 302,524 | 855 | 9,134 | 996,321 |
+| now | 1,569 | 145 | 13,545 | 302,584 + 15,956,983 | 12,697 | 159,387 | 16,868,805 |
+
+1,234 streams start with a `42 40` block. 7,759 groups have the vertex count of a `42 40` block in the same
+stream. 520 streams end inside a group that continues in the next one; 5 stop at a `42 40` word whose header
+doesn't fit. The `63 30` checks are unchanged on the 3 extra blocks: all positions finite and all normals of unit
+length.
+
+**Slot 2 is the vertex normal.** With tag 0x21 (type 1) it is octahedral: u = bits 0-9 and v = bits 10-19, each
+read as unorm `x / 511.5 − 1`, unfolded as usual (z = 1 − |u| − |v|, and where z < 0, x and y become
+(1 − |v|)·sign(u) and (1 − |u|)·sign(v)). Bits 20-31 are not decoded; their top two bits are mostly 2 or 3, which
+would fit a tangent angle and sign. With tag 0x27 (type 7, 363 blocks) it is x, y, z in bits 0-9, 10-19 and 20-29,
+in the same unorm. The normals are in world order whatever the +0x6C axis word says, which also confirms the
+position reorder above. `tools/meshlet_page.py --normals` compares each stored normal with the sum of its vertex's
+face normals:
+
+| Archive | Vertices | Within 8° | Within 25° | Opposed |
+|---|---:|---:|---:|---:|
+| `shared_minigame000.rpf` | 14,411,107 | 12,394,835 (86.0%) | 13,271,947 (92.1%) | 210,301 (1.5%) |
+| `core_restofworld.rpf` | 451,593 | 299,356 (66.3%) | 331,910 (73.5%) | 51,184 (11.3%) |
+
+On a sample of 79,157 minigame vertices, the readings tried before this one stay well below it, at a mean dot of
+0.56-0.8: plain 10:10:10, a smallest-three quaternion, and 15- or 16-bit octahedral. In `core_restofworld`, 70%
+of the 347 groups with a type-1 normal have fewer than 5% opposed, and 2% are mostly opposed (more than half),
+which fits mirrored parts. The rest may be groups that the span rule binds to the wrong block.
+
+**Meshlet record words +8/+12 hold the meshlet's centre.** Three 12-bit fields give x, y and z: w2 bits 0-11,
+w2 bits 12-23 and w3 bits 0-11. Each is in 1/16 m steps around 2047, so the centre is `(field − 2047) / 16`, over
+±128 m, and the default `0x007FF7FF / 0x7FF` is the origin. When w2 bit 28 is set, the step is 1/8 m instead,
+`(field − 2047) / 8` over ±256 m (below). `tools/meshlet_page.py --centres` compares each stored
+centre with the centre of its meshlet's vertex box, using the `42 40` positions above. Over all 1,569 streams:
+
+| Meshlets | Default words | Axes | Same 1/16 m step | Within one step |
+|---:|---:|---:|---:|---:|
+| 142,613 | 68 | 427,839 | 214,204 (50.1%) | 307,158 (71.8%) |
+
+The rest are further off. The stored centre may be a bounding-sphere centre rather than the box centre: the mean
+of the vertices fits worse (about 30% in the same step on the first 400 streams, against 51.8% for the box).
+Within a block of 40 or more meshlets, the fields are almost perfectly ordered by the box centre: median rank
+correlation 0.997 (x), 0.997 (y) and 0.983 (z) over 387 blocks. Readings that are deliberately wrong fit far worse on the first 400 streams:
+
+| Reading | Same step |
+|---|---:|
+| the rule | 51.8% |
+| offset 2048 | 11.3% |
+| 1/8 m steps | 0.9% |
+| x and y swapped | 17.0% |
+
+The earlier test on `63 30` blocks found no correlation, and the reason is that their records hardly vary: the
+groups matched to a `63 30` block keep the default words in 2,417 of 2,452 meshlets.
+
+**Word 0 bits 16-31 hold the meshlet's bounding-sphere radius, as an f16**, measured around the stored centre. Bits
+14-15 are clear in all 61,170 records of the first 400 streams. Against the radius from the box centre, the
+correlation is 0.999 on those streams. `--centres` checks the radius against the farthest vertex from the stored
+centre, three ways: it covers that vertex; it covers it once the centre's rounding of up to √3/32 m is allowed for;
+and it is tight, at most 1.25 × that distance plus the rounding:
+
+| Archive | Meshlets | Covers | Covers within rounding | Tight |
+|---|---:|---:|---:|---:|
+| `shared_minigame000.rpf` | 142,613 | 137,626 (96.5%) | 140,724 (98.7%) | 142,518 (99.9%) |
+| `core_restofworld.rpf` | 4,899 | 4,771 (97.4%) | 4,895 (99.9%) | 4,883 (99.7%) |
+
+So the record carries a culling sphere (centre plus radius) for each meshlet.
+
+**Word +12 bits 14-30 hold the meshlet's normal cone.** The axis is octahedral, 6 + 6 bits: u = bits 14-19 and
+v = bits 20-25, each read as unorm `x / 31.5 − 1`, unfolded like the normals above. Bits 26-30 give the spread:
+sin(half-angle) = (31 − f) / 31. All-zero bits 12-31 (76% of records) is no cone. Bits 12-13 and bit 31 are always
+clear. On the first 400 streams, the median smallest dot between a face normal and the stored axis follows
+√(1 − ((31 − f)/31)²) within 0.033 on average; linear, square-root, squared and sine readings of the field miss by
+0.14-0.32. `--cones` counts:
+
+| Archive | Cones | Axis within 25° of the mean normal | Every face inside | … within 0.05 |
+|---|---:|---:|---:|---:|
+| `shared_minigame000.rpf` | 43,415 | 35,615 (82.0%) | 18,483 (42.6%) | 42,454 (97.8%) |
+| `core_restofworld.rpf` | 1,221 | 914 (74.9%) | 463 (37.9%) | 1,217 (99.7%) |
+
+So the cone is rounded to the nearest step, not widened to be conservative. With the centre and radius it completes
+a meshlet's culling data.
+
+**w2 bit 28 doubles the centre's step.** w2 bits 24-31 are 0 or 16, so bit 28 is the only one that varies. It is
+set on 1,732 meshlets of the minigame archive, and none in `core_restofworld`. Those meshlets are large (median
+radius 33 m), face upward, and sit 100 m or more from the origin. Read with 1/16 m steps, their radius covers the
+farthest vertex from the stored centre in 0 of 1,732. Read with 1/8 m steps, it covers it in 1,697 (98.0%), and in
+1,730 (99.9%) once the centre's rounding is allowed for. A least-squares fit of box centre against field on them
+gives slopes of 1/8.07, 1/8.05 and 1/8.08 per axis. `--centres` counts them as `coarse_steps`; the centre and
+radius tables above use the right step for each meshlet. Bit 28 may be the low bit of a scale exponent, but only
+0 and 1 occur.
+
+**Slots 11 and 18 are tangents.** Their type-7 words are unit vectors in the same 10:10:10 unorm, perpendicular to
+the vertex's stored normal. Bits 30-31 are always 3 or 0, which fits the bitangent sign +1 or −1. Over the minigame
+archive (`--normals`, counts only):
+- 7,520,441 tangent words, 7,435,001 (98.9%) of them within |dot| < 0.05 of perpendicular;
+- sign bits 6,457,714 × 3 and 1,062,727 × 0, and never 1 or 2.
+
+`core_restofworld.rpf` has no tangent slots.
+
+**The rules hold in a second archive.** `core_restofworld.rpf` with `--faces --centres --normals`:
+- all 151 mesh streams parse, with 502 `42 40` blocks, 488,265 positions (all finite, all within 300 m) and
+  6,564 meshlets;
+- 69.4% of 699,618 shared edges have neighbouring faces within ~25°, and 0.37% are opposed;
+- 10,555 of 14,697 centre axes (71.8%) are in the same 1/16 m step, and 87.6% within one.
+
+**And in `story000.rpf`, the main story archive.** All 7,577 mesh streams parse with every check on (`--faces
+--centres --normals --cones`, counts only). Six of them are 256 KiB pages where texture-like data follows the mesh
+chunks on a 256-byte boundary behind zero padding; the walk stops there (`stopped_at_other_data`). They hold:
+
+| `42 40` blocks | Positions | Meshlets | Triangles |
+|---:|---:|---:|---:|
+| 173,877 | 29,602,924 | 405,418 | 38,626,760 |
+
+| Check | Count |
+|---|---:|
+| positions finite | all |
+| positions within 300 m | 29,572,450 (99.9%) |
+| shared edges with neighbouring faces within ~25° | 33,342,470 of 36,707,506 (90.8%); 1.4% opposed |
+| normals within 8° / 25° of their faces | 76.5% / 94.6% of 20,801,089; 2.1% opposed |
+| tangents perpendicular to the normal | 30,473,135 of 30,569,246 (99.7%) |
+| radius covers the farthest vertex from the stored centre | 257,091 of 275,832 meshlets (93.2%); 94.8% within rounding |
+| cones: axis within 25° / every face inside within 0.05 | 89.5% / 94.2% of 228,244 |
+
+The stored centres match the box centre less often here: 25.7% of axes in the same step, 41.5% within one,
+against 50.1% / 71.8% in the minigame archive. 625 meshlets use the 1/8 m step. Since the radius still covers the
+farthest vertex from the stored centre in 93.2%, the decoding holds; these assets seem to store a centre other
+than the box midpoint (a sphere centre would fit).
+
+Still open: the +0x5C word, the type-1 normal's
+bits 20-31, and what the `42 40` colour and UV slots hold beyond rpf9-explorer's reading.
 
 ### `story000_script.rpf`, full
 
@@ -248,7 +524,13 @@ sizes, signatures and header fields; it does not write resource payloads or carv
 python -I tools/story_index.py <archive.rpf> <out.csv|out.json> [--start N] [--limit BYTES]
 python -I tools/rpf9_carve.py <archive.rpf> <out_dir> --index-only [--start N] [--limit BYTES]
 python -I tests/test_story_index.py
+python -I tools/meshlet_page.py <archive.rpf | carved-dir | page.bin> [...] [--json out.json] [--quiet]
+python -I tests/test_meshlet_page.py
 ```
+
+`meshlet_page.py` writes counts and layout checks only (chunk kinds, vertex, meshlet and triangle counts, and
+how many values pass each check), never vertex or index values. It exits 1 if a page fails to parse and 2 if an
+input does not exist.
 
 `--start` must be 0 or more and `--limit` at least 1 (decimal or `0x` hex). A value outside that, or a `--start`
 past the end of the archive, stops `story_index.py` with a one-line error and exit code 2 and writes nothing.
@@ -256,4 +538,9 @@ An empty archive gives an index with no files.
 
 `story_index.py` is stdlib-only. It classifies the same zlib/Bink walk as `rpf9_carve.py`, parses
 the `PSIN` section chain, and reports `0DRP`/`RSC8`/`9FPR` headers when they start a stream or a
-carved file. It does not recurse into the raw embedded archives.
+carved file. It does not recurse into the raw embedded archives. A `clip-stream` row is the tagged
+auxiliary table of a `0DRP` second system page, checked by the same `aux_table` as `anim_index.py`
+(#2496): u32 count 2 or 3, count {u32 tag, u32 payloadBytes} pairs with first tag `0x101`, and every
+payload inside the stream. Its `count` is the entry count and its detail lists the tags and payload end;
+there is no version and no fixed 24-byte header. The "clip stream" row in the 1 GiB table above was
+counted with the older eight-byte prefix check (u32 2 or 3, then `01 01 00 00`).

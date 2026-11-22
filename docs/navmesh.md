@@ -182,7 +182,7 @@ layout, fixed `0xF0`-byte header, `14.36 GiB` / `15,420,757,856` bytes inflated 
 | `+0x80` | 8 | `ptr64` | `aiSplitArray` of vertex indices (`2` B: `u16`) | Valid, total `== u32@0x90`, all `< u32@0xC0` on `27,644 / 27,644` |
 | `+0x88` | 8 | `ptr64` | `aiSplitArray` of adjacent-poly edges (`12` B) | Valid & total `== u32@0x90` on `27,644 / 27,644` |
 | `+0x90` | 4 | `u32` | Index / adjacency pool size | Sum `493,024,188`, max `235,411`; equals `sum(poly.num_verts)` on `27,644 / 27,644` |
-| `+0x98` | 8 | `ptr64` | `aiSplitArray` of polygons (`44` B) | Valid, total `== u32@0xC4` (`124,768,148` polys, max `71,803`), contiguous chain & `poly+0 == u32@0xC8` on `27,644 / 27,644` |
+| `+0x98` | 8 | `ptr64` | `aiSplitArray` of polygons (`44` B) | Valid, total `== u32@0xC4` (`124,768,148` polys, max `71,803`), contiguous chain, `poly+0 == u32@0xC8` and `poly+4 == (index start << 4) \| count` on `27,644 / 27,644` |
 | `+0xA0` | 8 | `ptr64` | Spatial quadtree root (`96` B nodes, `32` B leaves) | Full tree (`2,337,904` nodes, `1,760,339` leaves, max depth `9`) valid & all leaf indices `< u32@0xC4` on `27,644 / 27,644` |
 | `+0xA8` | 8 | `ptr64` | Nullable special-link array (`32` B, count `u32@0xD4`) | Non-null iff `flags & 2` (`8,817` pages); in-bounds `27,644 / 27,644` |
 | `+0xB0` | 8 | `ptr64` | Nullable special-link index table (`u16`, count `u32@0xD8`) | Non-null iff `flags & 2`; in-bounds & all entries `< u32@0xD4` on `27,644 / 27,644` (`2` tiles have `d8 < d4`) |
@@ -196,6 +196,13 @@ layout, fixed `0xF0`-byte header, `14.36 GiB` / `15,420,757,856` bytes inflated 
 
 Reserved slots `+0x18..+0x1f`, `+0x6c..+0x6f`, `+0x78..+0x7f`, `+0x94..+0x97`, `+0xd0..+0xd3`, `+0xe0..+0xe7`, and
 `+0xec..+0xef` are zero on `27,644 / 27,644` pages.
+
+The `+4` word of a polygon packs `(index start << 4) | count`; the runs tile the index pool in order
+(`tools/navmesh_decode.py --deep` checks it on all `124,768,148` polygons, 0 failures), which caps a polygon at 15
+vertices. 6stars independently reads the same packing. Its polygon `+0x28` bit 17 and `+0x18` bit 27
+road/pavement labels were not adopted: a 1,027,984-polygon sample over 238 tiles sets both bits on 258 polygons, so
+they are not a partition and neither meaning is confirmed. No 6stars code was copied; the repository has no
+licence.
 
 ### Flags (`u32@0x10`) and 512 Ã— 512 world grid
 
@@ -262,6 +269,37 @@ remain **open**.
 5. **Band-3 `grid` subsystem and EOF `PSIN` v79.** The Band-3 subsystem identity, `u64` key encoding and `u32[N]`
    payload bits are open, as is why the final `PSIN` (version `79`) terminates before `LSNS` ends.
 
+## Vehicle navmesh settings (`CVehiclePoints`, `common.rpf`)
+
+Navmeshes on vehicles that peds walk around on are configured outside this archive, by 32 `CVehiclePoints` XML
+documents in `common.rpf` (see [gamedata.md](gamedata.md)). One document per vehicle; counts only, no names.
+
+| Field | Documents | Values |
+|---|---:|---|
+| `DefinitionName`, `ModelName` | 32 | equal in all 32; 31 distinct (one model has two different documents) |
+| `Flags`, `iNumBoardingPoints` | 32 | one value each across all 32; `iNumBoardingPoints` is 0 |
+| `Points`, `Props`, `AuthoredMeshName` | 32 | empty in all 32 |
+| `fNavOverrideRecastCellSize` | 31 | 4 distinct values: 0, 0.03125, 0.0325, 0.0625 |
+| `fNavOverrideRecastCellHeight` | 26 | 2 distinct values, 0 or 0.04 |
+| `fNavOverrideAgentRadius` | 30 | 4 distinct values, 0 to 0.15 |
+| `fNavOverrideAgentHeight` | 30 | 0 or 1.2 |
+| `fNavMaxHeightChange`, `fNavMinZDist` | 30 | constant (0.35 and 0.5) |
+| `fMinPatchAreaBeforeCulling` | 31 | 6 distinct values, 0.1 to 4 |
+| `ModDefs/Item` | 6 documents, 49 items | `ChassisModName`, `UtilityModName`, `PropsetExteriorModName`, `InteriorModName`, `CargoModName` (always empty), `RoofModName` (on 17) |
+
+The field names are Recast's (cell size and height, agent radius and height, a minimum patch area), so a vehicle
+navmesh is built with Recast-style parameters per model, where 0 reads as "no override". The cell sizes are
+fine (at most 0.0625 world units) compared with a world navmesh, as a deck or wagon bed would need.
+
+Cross-checks against the local archive catalog: 25 of the 31 model names are `.yft` base names (6 are not in
+the catalog), and all 25 are also among the 319 models of the vehicle distant-light recipes; 4 are among the 252
+rated vehicles. Of the mod part names, only the 5 `RoofModName` values that are set resolve to a `.yft`; the
+49 chassis, 32 utility, 35 exterior-propset and 4 interior names match no archive entry, so they are probably
+fragment-part or kit names rather than models.
+
+Not measured here (hypothesis): whether the vehicle navmeshes are generated at runtime from these parameters or
+stored elsewhere, and which vehicles the 31 are (wagons, boats and trains would fit the field set).
+
 ## Tools
 
 - `tools/navmesh_index.py` (stdlib-only) performs the quick `0DRP` header inventory (`offset`, sizes, version, `+0x20`,
@@ -271,9 +309,9 @@ remain **open**.
   JSON and optional numeric CSV metadata. It never writes payload bytes and never touches the TOC.
 
 ```powershell
-python -I tools/navmesh_decode.py <package>\navmeshes.rpf --out navmesh-decode.json --csv navmesh-decode.csv
-python -I tools/navmesh_decode.py <package>\navmeshes.rpf --deep --out navmesh-decode-deep.json
-python -I tools/navmesh_decode.py <carve-dir> --out carved-decode.json
+python -I tools/navmesh_decode.py <package>\navmeshes.rpf --out <temp>/navmesh-decode.json --csv <temp>/navmesh-decode.csv
+python -I tools/navmesh_decode.py <package>\navmeshes.rpf --deep --out <temp>/navmesh-decode-deep.json
+python -I tools/navmesh_decode.py <carve-dir> --out <temp>/carved-decode.json
 python -I -W error::ResourceWarning tests/test_navmesh_decode.py -v
 python -I tests/test_navmesh_index.py
 ```

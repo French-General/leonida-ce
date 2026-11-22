@@ -1,4 +1,4 @@
-# Textures: the BCPack gap
+# Textures: TTPF pools and BCPack decoding
 
 Measured on 2026-11-21 from one retail Xbox Series install (1.0.2.1). The corpus is all 57
 RDS5 texture pools: 46 under `data/ttdb/**` and 11 under `pack/<name>/data/ttdb/**`, 57.94 GiB
@@ -7,41 +7,63 @@ field.
 
 ## Outcome
 
-| | Textures |
-|---|---:|
-| catalog entries | 357,115 |
-| exported with the complete source mip chain | 98,603 |
-| exported with fewer mips | 210,292 |
-| exported at least one mip | 308,895 |
-| skipped | 48,220 |
+| | Initial baseline | After layout/format fixes (zlib/raw) | Projected with BCPack (BC1–BC7)* |
+|---|---:|---:|---:|
+| catalog entries | 357,115 | 357,115 | 357,115 |
+| exported with the complete source mip chain | 98,603 | 305,959 | 357,115 |
+| exported with fewer mips | 210,292 | 16,423 | 0 |
+| exported at least one mip | 308,895 | 322,382 | 357,115 |
+| skipped | 48,220 | 34,733 | 0 |
+
+\* *Codec-availability projection from `tools/ttpf_mips.py scan` across all 57 pools, not a full
+DDS export run. In full-corpus chunk checks with locally calibrated history tables
+(`--allow-provisional --history <path>`), BC6H decodes 268 / 268 chunks (0 strict, 100%
+provisional) and BC7 decodes 5,150 / 5,167 chunks (583 strict, 99.67% provisional), while
+**17 / 5,167 BC7 chunks (0.33%)** still cleanly refuse in provisional mode when unknown built-in
+history references exceed the consistency budget (see §5 below).*
+
+A skipped row has `File: null` and a `Limitation`. Either the catalog marks the texture as
+unextractable, or its content does not decode (`NotSupportedException`, `InvalidDataException`).
+Both are properties of the pool, so `rpf9dump` still exits 0 and publishes the manifest. A failure
+to read the pool or write a DDS is different. It exits 1 and withholds `manifest.json`, and a rerun
+resumes from the DDS files already written.
 
 **Bottom line:** the compact mip chain is decoded and validated below, and a clean-room
-stdlib-only BCPack decoder (`tools/bcpack.py`, `tools/bcpack_tables.py`) now decodes the
-rANS entropy layer for all six active modes (BC1, BC3, BC4, BC5, BC6H, BC7) and rebuilds
-BC1, BC3, BC4 and BC5 blocks (95.0% of all BCPack chunks, 89.6% of BCPack bytes). BC6H and
-BC7 block rebuilders are left for the follow-up PR; `rpf9dump`'s C# `TtpfReader` still uses
-the baseline zlib/raw path until ported.
+stdlib-only BCPack decoder (`tools/bcpack.py`, `tools/bcpack_tables.py`,
+`tools/bcpack_tables_bptc.py`) now decodes the rANS entropy layer and rebuilds BC blocks
+for all six active modes (BC1, BC3, BC4, BC5, BC6H and BC7 — 100% of BCPack codecs in the
+corpus). Strict confirmed-history mode is the default; `--allow-provisional` enables the
+provisional and last-resort history entries, and `--history <path>` supplies locally
+calibrated BC6H/BC7 initial history JSON tables at run time (no fitted BC6H/BC7 history
+data is embedded in the repository). `rpf9dump`'s C# `TtpfReader` (submodule pin `e293917`,
+`breadbbbb/rpf9-explorer#7`) now decodes compact 2D mip tails, multi-slice layouts, DXGI 11,
+and BCPack BC1, BC3, BC4 and BC5 chunks in strict mode; BC6H, BC7 and provisional-history
+chunks remain skipped by `rpf9dump` and can be completed by `tools/ttpf_assets.py`.
 
 The compact layout rule moves 206,661 2D textures into complete exports and 1,218 more into
 partial exports (`305,264` complete, `16,419` partial, `35,432` skipped under zlib/raw).
 Resolving the 697 multi-slice descriptors (127 2D arrays — including the 19 two-slice arrays
 formerly misread as DXGI 156/199/211/226 — 567 cubemaps, and 3 3D volumes; see
-`docs/textures_arrays.md`) adds 690 more complete exports and 4 partials under zlib/raw,
-bringing the zlib/raw totals to **305,954 complete**, **16,423 partial** and **34,738 skipped**
-(33,507 2D reader BCPack, 1,223 compact all-BCPack, 3 array all-BCPack and 5 DXGI 11; **0**
-remaining layout skips).
+`docs/textures_arrays.md`) adds 690 more complete exports and 4 partials under zlib/raw, and
+adding DXGI 11 (`R16G16B16A16_UNORM`, 8 BPP) resolves the last 5 format skips, bringing the
+zlib/raw totals to **305,959 complete**, **16,423 partial** and **34,733 skipped** (33,507 2D
+reader BCPack, 1,223 compact all-BCPack and 3 array all-BCPack; **0** remaining layout or
+format skips).
 
-Adding BCPack BC1, BC3, BC4 and BC5 in `tools/ttpf_mips.py` unlocks **47,886** more complete
-chains across the 57 pools (47,882 2D + 4 multi-slice arrays), bringing the projected split to
-**353,840 complete** (99.08% of catalog entries), **2,518 partial** and **757 skipped** (5 DXGI
-11 plus 752 remaining BC6H/BC7 BCPack skips; **0** layout skips and **0** skipped multi-slice
-descriptors).
+Adding all six BCPack codecs (BC1, BC3, BC4, BC5, BC6H and BC7) in `tools/ttpf_mips.py`
+unlocks **51,156** more complete chains across the 57 pools (51,149 2D + 7 multi-slice 2D
+arrays), bringing the codec-availability projection to **357,115 complete** (100% of catalog
+entries), **0 partial** and **0 skipped** (**0** remaining BCPack codec skips, **0**
+layout/format skips and **0** skipped multi-slice descriptors). On actual chunk decode over all
+57 pools, BC6H requires `--allow-provisional --history <path>` (268 / 268 chunks) and
+**17 / 5,167 BC7 chunks (0.33%)** still cleanly refuse in provisional mode (see §5 below).
 
 This is the same 308,895 / 48,220 baseline already recorded in `docs/design.md`. The recount
 splits the 48,220 by cause: the old "(BCPack or unmapped)" label hides 14,713 skips whose
 recorded limitation is a layout/format check, not the codec, and overstates unmapped, which
-is zero. Together, the compact 2D and multi-slice layout rules resolve all 697 multi-slice
-descriptors and 14,011 2D compact descriptors, leaving only BCPack and 5 DXGI 11 records.
+is zero. Together, the compact 2D, multi-slice and DXGI 11 rules resolve all 697 multi-slice
+descriptors, 14,011 2D compact descriptors and 5 DXGI 11 descriptors, leaving only BCPack
+under zlib/raw.
 
 ## Skip breakdown
 
@@ -53,9 +75,9 @@ descriptors and 14,011 2D compact descriptors, leaving only BCPack and 5 DXGI 11
 | former "compact element size unknown" (19 two-slice 2D arrays; see `docs/textures_arrays.md`) | — | 0 |
 | 2D array / cubemap / volume descriptor (`dimension != 1` or `depth > 1`; see `docs/textures_arrays.md`) | 678 | 0 |
 | array layout resolved, but every mip is BCPack | — | 3 |
-| element format not in the parser table (DXGI 11, `R16G16B16A16_UNORM`) | 5 | 5 |
+| element format not in the parser table (DXGI 11, `R16G16B16A16_UNORM`) | 5 | 0 |
 | no mapped allocation ("unmapped shard") | 0 | 0 |
-| **total** | **48,220** | **34,738** |
+| **total** | **48,220** | **34,733** |
 
 The "before" compact row becomes the measured rows below it after the layout rules: records
 the rule sizes but cannot decode under zlib/raw because every mip is BCPack. The 1,218 mixed
@@ -195,8 +217,14 @@ measurement and the proposed reader rule cannot drift apart.
 
 The rule is only claimed for 2D descriptors with a 1/2/4/8/16-byte element. The 12-byte DXGI
 formats 6/7/8 do not occur in the measured 2D set, so `compact_surface_layout` rejects them
-rather than guessing a Gfx10 log pattern. Uncompressed tiling is also not validated: the
-allocation size is computed, but no DDS is written for those formats.
+rather than guessing a Gfx10 log pattern. 2D uncompressed tiling is validated across all
+2,911 non-volume uncompressed records in the 57 pools (1/2/4/8 BPP under `SW_4KB_S` and
+RDNA2/RbPlus `SW_64KB_D`, confirmed against Mesa `src/amd/addrlib/src/gfx10/gfx10SwizzlePattern.h`
+`GFX10_SW_4K_S_RBPLUS_PATINFO` and `GFX10_SW_64K_D_RBPLUS_PATINFO`): for 64 KiB 4 BPP
+(`DXGI 28/29/87/91`), RDNA2/RbPlus `SW_64KB_D` swaps intra-tile address bits 6 and 7 relative
+to Navi 1x (`(3, -3)` = `X2, Y2` instead of `(-3, 3)` = `Y2, X2`), while 1/2/8/16 BPP are
+unchanged between Navi 1x and RDNA2. `tools/ttpf_mips.py` decodes and exports the validated
+uncompressed formats (`10/11/28/29/49/54/56/61/65/87/91`) as DX10 DDS with `DDSD_PITCH`.
 
 ### `non_tail` is not the layout boundary
 
@@ -261,16 +289,20 @@ What the layout change does to the 14,030:
 - The 1,223 BCPack skips are compact records whose every mip is BCPack; they were counted in
   the 14,030 before and are not part of the 33,507.
 
-The five DXGI 11 (`R16G16B16A16_UNORM`) records are a separate one-line gap: DXGI 11 is 8
-bytes per element, but the vendored element table has no entry. Their layout then matches,
-but uncompressed tiling is not validated, so they are not exported here.
+The five DXGI 11 (`R16G16B16A16_UNORM`, 8 BPP, all 1-mip `SW_4KB_S`) records (`maps_2_7`
+#11324, `maps_5_7` #2425 and #13651, `maps_7_7` #7490 and #13893) are now mapped in
+`ELEMENT_BYTES` (`11: 8`). All five match `surface_layout` byte-exact, place 100% of their
+active 8-byte elements strictly at the `detile()` addresses (`0` non-zero bytes in padding
+slots across the 4 KiB tiles), and export cleanly as DX10 DDS.
 
 ### Sample validation
 
-`tools/ttpf_mips.py check` detiles one chain, decodes BC1/BC3/BC4/BC5 and compares each mip
-with a 2x2 box downsample of its parent at BC-block resolution (one block is 4x4 pixels). A
-correct chain is 0–4 levels, as in the SixNG notes; the control is the first tail mip detiled
-at origin (0,0).
+`tools/ttpf_mips.py check` detiles one chain, decodes BC1/BC3/BC4/BC5/BC6H/BC7 and validated
+2D uncompressed formats (`10/11/28/29/49/54/56/61/65/87/91`; pure stdlib; HDR float16 formats
+`10/54/95/96` are compared after a signed Reinhard tone-map `255 * v / (1 + |v|)`) and compares
+each mip with a 2x2 box downsample of its parent (at 4x4 block resolution for BC, or pixel
+resolution for uncompressed). A correct chain is 0–4 levels, as in the SixNG notes; the
+control is the first tail mip detiled at origin (0,0).
 
 | Pool # | Descriptor | Mips | non_tail / first_tail | Max error | Tail control |
 |---|---|---:|---:|---:|---:|
@@ -283,15 +315,57 @@ at origin (0,0).
 | `maps_1_7` #1500 | 128×256 BC4 | 6 | 1 / 2 | 0.34 | 72.08 |
 | `decorations_0_3` #818 | 128×128 BC5 | 6 | 1 / 2 | 0.02 | 85.48 |
 | `interiors_1_3` #507 | 256×256 BC3 | 7 | 1 / 2 | 1.21 | 51.84 |
+| `terrain_4_7` #23 | 512×512 BC7 (`98`) | 3 | 3 / 3 | 0.49 | — |
+| `maps_4_7` #6034 | 1024×1024 BC7 (`98`, 64 KiB) | 9 | 3 / 3 | 0.33 | 94.76 |
+| `interiors_0_3` #3 | 512×512 BC7 sRGB (`99`) | 8 | 3 / 4 | 1.15 | 68.09 |
+| `interiors_2_3` #3268 | 1024×1024 BC6H UF16 (`95`, 64 KiB) | 9 | 3 / 3 | 0.35 | 110.21 |
+| `lighting` #346 | 512×512 BC6H SF16 (`96`) | 10 | 3 / 4 | 0.68 | 15.41 |
+| `terrain_0_7` #5207 | 512×512 `R8G8B8A8_UNORM` (`28`, 64 KiB) | 8 | 3 / 3 | 0.29 | 160.44 |
+| `peds_3_3` #4922 | 256×256 `R8G8B8A8_UNORM` (`28`, 4 KiB) | 7 | 3 / 3 | 0.28 | 13.23 |
+| `vfx` #654 | 1024×1024 `R8_UNORM` (`61`, 64 KiB) | 3 | 3 / 3 | 0.01 | — |
+| `vfx` #869 | 1024×512 `R8_UNORM` (`61`, 4 KiB) | 3 | 3 / 3 | 0.11 | — |
+| `peds_0_3` #2958 | 512×512 `A8_UNORM` (`65`, 4 KiB) | 8 | 3 / 3 | 0.00 | 255.00 |
+| `interiors_3_3` #1033 | 1024×1024 `A8_UNORM` (`65`, 64 KiB) | 9 | 3 / 3 | 0.50 | 58.31 |
+| `graphics` #647 | 128×128 `B8G8R8A8_UNORM` (`87`, 4 KiB) | 8 | 1 / 2 | 0.00 | 61.09 |
 
 `interiors_0_3` #19 is a partial export: the reader emits one mip, while all seven decode and
 match. `graphics` #43 and `interiors_2_3` #468 are tuples outside the table; `maps_0_7` #3217
 is mode 34 with `non_tail = 0`, which would leave zero standalone mips even if the mode gate
 passed.
 
-BC7 was checked on two samples with an external decoder (Pillow, not a dependency of the
-tool): `terrain_4_7` #23 (512×512, 3 mips, 0.35–0.49) and `maps_4_7` #6034 (1024×1024, mode
-32, 64 KiB, 0.00–0.33, control 4.44).
+The same BC6H/BC7 decoders also cover multi-slice chains and BCPack chains in `check`:
+`graphics` #236 (256×256×48 BC7 2D array, 9 mips, 64 KiB) passes all 48 slices (`max_error =
+0.37` vs slice-major control `40.74`), `lighting` #474 (256×256×6 BC6H UF16 cubemap, 7 mips)
+passes all 6 faces (`max_error = 0.25` vs tail control `95.82`), and `graphics` #86 (64×64×6
+BC7 cubemap, 7 mips) passes all 6 faces (`max_error = 3.46` vs tail control `40.1`).
+Note that prefiltered lighting profiles whose lower mips intentionally fade toward `1.0` or
+convolve with a specular lobe will naturally exceed the box-downsample threshold even when
+detiled accurately.
+
+Across all 57 pools, the 2,911 non-volume uncompressed records break down as `fmt 10` (1),
+`fmt 11` (5), `fmt 28` (1,766 2D + 8 2D arrays), `fmt 29` (1 2D + 1 2D array), `fmt 54`
+(946 2D), `fmt 61` (8 2D), `fmt 65` (121 2D), `fmt 87` (49 2D + 1 cubemap) and `fmt 91` (4 2D);
+`fmt 49` and `fmt 56` have `0` entries in the TTPF pools (both are still decoded in `check`
+and covered by synthetic unit tests). Full-corpus uncompressed validation:
+
+- **64 KiB 4 BPP (`SW_64KB_D @ RbPlus`):** with the Navi 1x bit order `(-3, 3)` at bits 6..7,
+  only 11 of 167 multi-mip 64 KiB `DXGI 28` textures passed (median `12.16` on 2D, `16.40` on
+  2D arrays, max `36.64`). Switching `PATTERNS_64K[2]` to RDNA2/RbPlus `(3, -3)` (Mesa
+  `GFX10_SW_64K_D_RBPLUS_PATINFO`) brings **167 / 167** to pass: 155/155 mode-0 2D (`0.17–0.35`,
+  median `0.26`), 4/4 mode-1 2D (`0.02–0.15`), and 8/8 2D arrays (`0.25–0.30`; e.g. `peds_1_3`
+  #2581 `max_error = 0.30` vs slice-major control `45.28`).
+- **4 KiB 4 BPP (`SW_4KB_S`):** 3/3 multi-mip `DXGI 28` (`0.13–0.28`), 6/6 multi-mip `DXGI 87`
+  (`0.00–5.52`), plus 1-mip `DXGI 87` cubemap `graphics` #597 (3.2× smoother neighbor gradient
+  after detiling).
+- **1 BPP (`DXGI 61/65`, 4 KiB & 64 KiB):** 7/7 multi-mip `DXGI 61` (`0.01–0.12`), 15/15
+  64 KiB `DXGI 65` (`0.00–0.50`), and 82/83 4 KiB `DXGI 65` (`0.00–0.28`; the single outlier
+  `props_1_3` #8392 is an alpha mask whose mip 5 intentionally fades to all zeros, with mip 2
+  tail error `8.65` vs tail-origin control `33.25`).
+- **2 BPP (`DXGI 54`, all 1-mip) and 8 BPP (`DXGI 10/11`, all 1-mip):** `DXGI 54` shows
+  4.7×–13.8× lower neighbor gradient after detiling on both 4 KiB and 64 KiB (with `PATTERNS_64K[1]`
+  matching Mesa `GFX10_SW_64K_D_RBPLUS_PATINFO` and beating alternative bit permutations across
+  8 sampled 64 KiB maps); all 5 `DXGI 11` records and `DXGI 10` (`graphics` #832) have `0`
+  non-zero bytes outside their detiled active-element slots.
 
 For `interiors_0_3` #19 the tool reports the byte layout: mip 0 (512×256, 128×64 blocks) at
 24,576, mip 1 (256×128, 64×32) at 8,192, mip 2 (128×64, 32×16) at 4,096, then the 4 KiB tile
@@ -311,18 +385,19 @@ chunk size, which includes tile padding.
 | compact skips that become complete | 11,570 | 35,727 | 2.91 GiB |
 | **newly complete** | **206,661** | **1,100,865** | **4.59 GiB** |
 
-The total export split before and after the 2D compact and multi-slice layout rules (zlib/raw
-only; see `docs/textures_arrays.md` for the +690 complete / +4 partial multi-slice breakdown):
+The total export split before and after the 2D compact, multi-slice and DXGI 11 rules (zlib/raw
+only; see `docs/textures_arrays.md` for the +690 complete / +4 partial multi-slice breakdown,
+plus +5 DXGI 11 complete):
 
-| | Before | After 2D compact | After + multi-slice | Change |
+| | Before | After 2D compact | After + multi-slice + DXGI 11 | Change |
 |---|---:|---:|---:|---:|
-| complete chain | 98,603 | 305,264 | 305,954 | +207,351 |
+| complete chain | 98,603 | 305,264 | 305,959 | +207,356 |
 | partial | 210,292 | 16,419 | 16,423 | −193,869 |
-| skipped | 48,220 | 35,432 | 34,738 | −13,482 |
+| skipped | 48,220 | 35,432 | 34,733 | −13,487 |
 | **total** | **357,115** | **357,115** | **357,115** | |
 
-The 34,738 remaining zlib/raw skips are exactly 33,507 2D reader BCPack + 1,223 compact
-all-BCPack + 3 array all-BCPack + 5 DXGI 11 (**0** layout skips). The 16,423 partials are
+The 34,733 remaining zlib/raw skips are strictly BCPack: 33,507 2D reader BCPack + 1,223 compact
+all-BCPack + 3 array all-BCPack (**0** layout or format skips). The 16,423 partials are
 1,166 compact records that still miss BCPack mips, 14,035 other partials, 1,218 compact
 records converted from a skip to a partial export, and 4 partial 2D arrays. Nothing in this
 section decodes BCPack.
@@ -391,6 +466,58 @@ This mapping is the strongest evidence that the codec field is the GDK's
 `DSTORAGE_BCPACK_MODE` (1 = BC1 … 7 = BC7), not a generic compression id. The field is per
 chunk, so a texture can mix zlib and BCPack mips; 15,201 partial exports do.
 
+### From a chunk entry to `bcpack.decode`
+
+`tools/bcpack.py` takes the codec as the BCPack mode (1–7), not the on-disk tag. Per codec:
+
+| Blocks | Tag in the chunk entry | `decode` codec | Lane widths in stream order (bits) | Symbols per lane per block |
+|---|---:|---:|---|---:|
+| BC1 | `0x04` | 1 | 8,8,5,6,5,5,6,5,8,8,8,8 | 1 |
+| BC3 | `0x0c` | 3 | 4,4,8,6,6,6,6,5,6,5,8,8 | 2 |
+| BC4 | `0x10` | 4 | 8,8,8,8,6,6,6,6,6,6,6,6 | 1 |
+| BC5 | `0x14` | 5 | 4,4,8,8,6,6,6,6,6,6,6,6 | 2 |
+| BC6H | `0x18` | 6 | 4,4,8,8,8,5,5,5,6,6,6,8,8,8,8,5 | 2 |
+| BC7 | `0x1c` | 7 | 4,4,8,8,8,8,8,7,7,5,6,8,8,8,8,5 | 2 |
+
+The widths are `LANE_WIDTHS` in `tools/bcpack.py`. The tag is `(v >> 24) & 0x3c`, the codec field
+above shifted left by 2; tags `0x00` (raw) and `0x20` (zlib) are not BCPack and are handled
+before it. Each lane emits `decoded_bytes / 8` symbols (`ELEMENT_BYTES = 8`), so the decoded
+byte count of the chunk must be passed as `out_size` and must be a whole number of blocks.
+
+For entry `v` and the next entry `nxt` (this is what `TtpfReader` in `tools/ttpf_mips.py` does):
+
+- input: the bytes from `(v & 0x3FFFFFF) * 256` up to `(nxt & 0x3FFFFFF) * 256 − (v >> 52)`;
+- `out_size`: `((nxt >> 30) & 0x3FFFFF) * 4096 − ((v >> 30) & 0x3FFFFF) * 4096`.
+
+The decoded blocks are still in the surface's tiled storage order; `ttpf_mips.py` detiles them
+before writing a linear DDS.
+
+A synthetic one-block BC7 chunk (no game data; the encoder is in `tests/test_bcpack.py`) with a
+byte-exact result in strict mode, which `tests/test_bcpack.py` runs as
+`test_bc7_fixed_stream_strict`:
+
+```python
+import sys
+sys.path.insert(0, "tools")
+import bcpack
+
+packed = bytes.fromhex("""
+101010101010101004040303030304040101010101010140
+000000000000024002027546281800000101df5f4b7c0341
+020202411010101004040403101010104004100103030304
+4001080001010104000000080000000041020994e4db27a4
+410511fe6b020005
+""")
+blocks, provisional = bcpack.decode_with_info(packed, 7, 16)
+assert blocks == bytes.fromhex("40 31 72 04 a5 68 19 be 02 34 56 78 9a bc de f0")
+assert not provisional   # strict mode: nothing unconfirmed was used
+```
+
+`decode_with_info` returns the set of unconfirmed history entries used; it is empty in
+strict mode, which raises `BcpackProvisionalError` instead of using one.
+(Byte-exact blocks, a clean entropy end state and a DDS with fitted colours are three
+different levels of confirmation; this example shows the first.)
+
 ### The descriptor `mode` is tiling, not codec
 
 The ETPF descriptor's `mode` field (`b >> 23`) is the mip/tile family: mode 0 uses 64 KiB
@@ -407,18 +534,67 @@ rather than by array order:
 
 | Parameter | Common formats | Measured role |
 |---|---|---|
-| `0xC8E8C282` | BC1/BC3/BC7 sRGB, some BC1/BC7 UNORM | sRGB albedo |
-| `0xC6F46E79` | BC7 UNORM, BC1 UNORM | tangent-space normal map |
-| `0x1E77BF4C` | BC5 UNORM, some BC1/BC7 | normal/detail normal |
-| `0x739E3D0D` | BC7 UNORM, some BC1 | ORM/mask |
-| `0x8ADB8480` | BC4 UNORM | mask |
+| `0xC8E8C282` | BC1/BC3/BC7 sRGB, some BC1/BC7 UNORM | **sRGB albedo** when present |
+| `0xC6F46E79` | BC7 UNORM, BC1 UNORM | `speculartex`: specular/gloss (packed), not a normal map |
+| `0x1E77BF4C` | BC5 UNORM, some BC1/BC7 | `bumptex`: tangent-space normal/detail normal |
+| `0x739E3D0D` | BC7 UNORM, some BC1 | `speculartex2`: ORM/mask (packed) |
+| `0x8ADB8480` | BC4 UNORM | `materialid`: ID/palette map |
 
 The counts in the 246-record character corpus are 215 references each for `0xC6F46E79`,
-`0x1E77BF4C` and `0x739E3D0D`, 164 for `0x8ADB8480`, and 64 for `0xC8E8C282`. Not every
-material carries an albedo: the jacket, crop tee and some sports pieces have no `0xC8E8C282`
-entry. Exporters must **not** fall back to the first texture in that case; a normal map painted
-as a base colour is the usual symptom. The hashes are treated as measured corpus semantics, not
-as a claim that they are globally unique across every shader.
+`0x1E77BF4C` and `0x739E3D0D`, 164 for `0x8ADB8480`, and 64 for `0xC8E8C282`. The garment
+shaders (`d5ed50f4`, `ea8d09d0`, `39ddb9ca`) do not declare a `0xC8E8C282` slot at all, so the
+jacket, the crop tee and every other garment on them have no albedo by shader design, not because
+a texture is missing. Not every garment is on them: the bikini top and the undies are on other
+shaders and account for nine of the `0xC8E8C282` references, six and three material rows
+([character_models.md](character_models.md)). Exporters must **not** fall back to the first
+texture when a material has no such slot; a `speculartex`
+sheet painted as a base colour is the usual symptom. The hashes are treated as measured corpus
+semantics, not as a claim that they are globally unique across every shader.
+
+`tools/character_textures.py` classifies a decoded `model.json`: it prints each material's slot
+hash, role and texture name, resolves only the five measured character slots, and reports any
+other hash as `unknown 0x...`. A garment-shader material (`d5ed50f4`, `ea8d09d0`, `39ddb9ca`)
+with no `0xC8E8C282` binding is flagged `garment-no-albedo`, so a renderer keeps that part clay
+instead of painting `speculartex` as colour. `--json` and `--csv` write the same rows to a
+report, which may not overwrite an input:
+
+    python -I tools/character_textures.py <model.json|dir> [--json FILE] [--csv FILE]
+
+### Map material texture parameters
+
+The character table above covers 246 records. Map drawables (buildings, roads, terrain, props) use more
+parameters. Five more names come from the case-sensitive joaat of the parameter name, the same check that
+names `0xC8E8C282` (`diffusetex`) in rpf9-explorer's `ModelTextureBindings`:
+
+| Parameter | Name (joaat) |
+|---|---|
+| `0x1E77BF4C` | `bumptex` |
+| `0xC6F46E79` | `speculartex` |
+| `0x739E3D0D` | `speculartex2` |
+| `0x3FB7964F` | `tinttexture` |
+| `0xC075F9B6` | `lookuptexture` (terrain materials) |
+
+Content check on map drawables: a random sample of 1,500 `.ydr`/`.yft` models (seed 7), each referenced
+texture counted once per parameter. A texture is "normal-map-like" when its mean colour (BC1 colour-0
+endpoints, BC7 mode-6 endpoints) has blue > 190 and red and green within 45 of 128; BC5 is two-channel.
+
+| Parameter | Normal-map-like | Not normal-like | BC5 | Formats (DXGI: count) |
+|---|---:|---:|---:|---|
+| `0x1E77BF4C` `bumptex` | 1,394 | 74 | 131 | 71: 1,659, 83: 131, 98: 106 |
+| `0xC6F46E79` `speculartex` | 69 | 1,469 | 0 | 71: 1,650, 98: 372, 28: 4 |
+| `0x739E3D0D` `speculartex2` | 5 | 851 | 0 | 98: 738, 71: 225, 72: 1 |
+| `0xC8E8C282` `diffusetex` | 28 | 1,887 | 0 | 72: 1,322, 99: 709, 78: 145 |
+| `0x3FB7964F` `tinttexture` | 0 | 61 | 0 | 72: 61, 99: 2, 78: 1 |
+
+So on map materials `bumptex` is the tangent-space normal map and `speculartex` is not a normal map.
+The character corpus re-check resolves the same way: `0xC6F46E79` is `speculartex` on characters too,
+and `0x1E77BF4C` (`bumptex`) is the normal map. The earlier character row that said otherwise has been
+corrected.
+
+Three more parameters hold sRGB colour-like textures on map materials and are not in `ModelTextureBindings`
+(names not found): `0x17D3B5C2` (72: 47), `0x6994EF3F` (99: 25) and `0x7485DAFB` (99: 162, 78: 15, 72: 12;
+a tiling detail layer next to the two-layer `lyr0diffusetex`/`lyr1diffusetex` blend). `tinttexture` holds an
+ID/palette map on most materials and is not a base colour outside terrain.
 
 ## BCPack block structure and limits
 
@@ -564,7 +740,8 @@ decodes at 36.6 dB median on held-out textures and says 621 of 3,276 pair textur
 known; the gap is the unpublished window and the unresolved codebook entries, not a
 byte-exact validation. The code is not adopted here.
 
-A decoder still needs:
+At the time of that initial probe (before the clean-room decoder below was implemented), a
+decoder still needed:
 
 1. the 256-slot pre-start predictor window (the largest blocker: 160/200 pair chunks);
 2. a stable 256-entry index codebook (two fits agree on 248/256; 8 rare mirror pairs are open);
@@ -572,6 +749,12 @@ A decoder still needs:
 4. record layouts and semantics for BC3, BC5, BC6H and BC7 (BC4 lane 1 is exact; the rest are
    not);
 5. a reference plaintext pair or a published bitstream specification for a byte-exact check.
+
+Items 1–4 are now resolved by the clean-room decoder documented in
+[Clean-room BCPack bitstream specification and decoder](#clean-room-bcpack-bitstream-specification-and-decoder)
+below (`tools/bcpack.py`, `tools/bcpack_tables.py`, `tools/bcpack_tables_bptc.py` and
+`tools/bcpack_history_calib.py`); item 5 remains external because no plaintext reference
+encoder ships with the package.
 
 ### The shipped binaries
 
@@ -589,50 +772,27 @@ or dispatcher was found.
 |---|---|---|
 | [DSTORAGE_BCPACK_MODE](https://learn.microsoft.com/en-us/gaming/gdk/docs/reference/system/dstorage/enums/dstorage_bcpack_mode) | Modes 1–7 are BC1, BC2, BC3, BC4, BC5, BC6H, BC7; Xbox Series only | [Microsoft Learn Terms of Use](https://learn.microsoft.com/en-us/legal/termsofuse): informational, personal/non-commercial use; linked and paraphrased, no text or code copied |
 | [DirectStorage overview](https://learn.microsoft.com/en-us/gaming/gdk/docs/features/console/storage/directstorage/directstorage-overview) | BCPack is a custom entropy coder for BCn data; colour endpoints are separated from palette indices and coded with rANS; decompression order is DEFLATE, BCPack, swizzle | Same Microsoft Learn terms; linked and paraphrased |
-| [US Patent 11,234,023](https://patents.google.com/patent/US11234023B2) | Public rANS architecture, banded exponential frequency model structure, and reference table check | Public patent disclosure; concepts only |
-| [Khronos Data Format Specification (BPTC / S3TC / RGTC)](https://registry.khronos.org/DataFormat/specs/1.3/dataformat.1.3.html) | Standard BC1, BC3, BC4, BC5, BC6H and BC7 block layouts | Public specification |
+| [US Patent 11,234,023](https://patents.google.com/patent/US11234023B2) | Public MDU rANS architecture, fragment-header/model/lane-schedule description, and banded exponential frequency model structure | Public patent disclosure; concepts only, linked and paraphrased |
+| [silicon-rans](https://github.com/microsoft/silicon-rans) | Exact MDU rANS tables (`mdu_minirans.v`) and legal end states used for the 200-chunk entropy check | [MIT](https://github.com/microsoft/silicon-rans/blob/main/LICENSE); tables used as facts, no Verilog copied into this repository |
+| [Khronos Data Format Specification (BPTC / S3TC / RGTC)](https://registry.khronos.org/DataFormat/specs/1.3/dataformat.1.3.html) | Standard BC1, BC3, BC4, BC5, BC6H and BC7 block layouts and partition/anchor tables | Public specification |
 | [SixNG, `formats/06-bcpack.md`](https://github.com/walkthestars/GTA6-Asset-Info/blob/main/formats/06-bcpack.md) | Independent container/header observations and the exact-end-state hard check | [GPL-3.0](https://github.com/walkthestars/GTA6-Asset-Info/blob/main/LICENSE); notes only, no code copied |
 | [SixNG, `formats/05-ttpf.md`](https://github.com/walkthestars/GTA6-Asset-Info/blob/main/formats/05-ttpf.md) | Independent codec-id table and pool structure | GPL-3.0; notes only |
-| [rpf9-explorer](https://github.com/breadbbbb/rpf9-explorer) | `TtpfReader` throws "An Xbox BCPack decompression backend is required."; no decoder | [MIT](https://github.com/breadbbbb/rpf9-explorer/blob/main/README.md); no code copied |
-| [silicon-rans](https://github.com/microsoft/silicon-rans) | Exact MDU rANS tables (`mdu_minirans.v`) and legal end states used for the 200-chunk check | [MIT](https://github.com/microsoft/silicon-rans/blob/main/LICENSE); tables used as facts, no Verilog copied into this repository |
-| [US11234023B2](https://patents.google.com/patent/US11234023B2/en) | Public MDU fragment-header, model and lane-schedule description | Public patent; linked and paraphrased, no code copied |
-| [bcpack-rs](https://github.com/Ahmet-Dedeler/bcpack-rs) | Candidate BC1 entropy/endpoint/index work and the 40-chunk mip-consistency number | [MIT OR Apache-2.0](https://github.com/Ahmet-Dedeler/bcpack-rs/blob/master/LICENSE-MIT); research only, no code copied; its full predictor window is unpublished |
-| [GitHub search `bcpack`](https://github.com/search?q=bcpack&type=repositories) | On 2026-11-21: SixNG (GPL-3.0 notes) and bcpack-rs (MIT/Apache research); no verified decoder | Search |
+| [rpf9-explorer](https://github.com/breadbbbb/rpf9-explorer) | The `TtpfReader` catalog checks, limitation strings, and lack of a BCPack decoder | [MIT](https://github.com/breadbbbb/rpf9-explorer/blob/main/README.md); no code copied |
+| [bcpack-rs](https://github.com/Ahmet-Dedeler/bcpack-rs) | Candidate BC1 entropy/endpoint/index research cited in the prior 200-chunk check above | [MIT OR Apache-2.0](https://github.com/Ahmet-Dedeler/bcpack-rs/blob/master/LICENSE-MIT); research only, no code copied |
 | SCARAB | No public GTA VI source found; the public SCARAB repositories are an unrelated GPL-3.0 Hollow Knight mod manager | Search on 2026-11-21; no facts used |
 
 Microsoft's documentation gives the algorithm class and the mode enum, not the bitstream. The
 public enum is documented for Xbox Series consoles; this note does not cover an Xbox One
-variant. There is now a public *candidate* BC1 implementation (`bcpack-rs`), but it is not a
-specification: it depends on an unpublished preset window and has no byte-exact plaintext
-check. The SixNG notes still say 0% decoded, and the container and block-count facts above do
-not change with the candidate.
-| [rpf9-explorer](https://github.com/breadbbbb/rpf9-explorer) | The `TtpfReader` catalog checks and limitation strings measured here | [MIT](https://github.com/breadbbbb/rpf9-explorer/blob/main/README.md) |
+variant.
 
 ## Clean-room BCPack bitstream specification and decoder
 
-The five unknowns noted in the first measurement are resolved in `tools/bcpack.py` and
-`tools/bcpack_tables.py` (pure Python standard library, no GDK/NDA code, no keys, no game
-assets). The console-side hardware decompressor and GDK implementation are not linked,
-copied or referenced; only plain retail chunk bytes were analysed against public BCn and
-rANS specifications.
+The unknowns noted in the earlier measurements are resolved in `tools/bcpack.py`,
+`tools/bcpack_tables.py` and `tools/bcpack_tables_bptc.py` (pure Python standard library,
+no GDK/NDA code, no keys, no game assets). The console-side hardware decompressor and GDK
+implementation are not linked, copied or referenced; only plain retail chunk bytes were
+analysed against public BCn and rANS specifications.
 
-A clean-room decoder needs a published bitstream description or a byte-exact reference
-implementation under a compatible licence. The public MDU tables and the candidate BC1 rules
-cover the entropy layer, but no complete window/codebook or reference pair was found. The
-public facts stop short of a block decoder:
-
-1. **Predictor window.** The fixed 256-slot back-reference window is not published; 160 of the
-   200 pair chunks above need it, and a zero window fails (median 7.50 dB).
-2. **Index codebook.** Two independent fits agree on 248/256 entries, but 8 rare mirror pairs
-   remain open, and 3-colour block handling is not settled.
-3. **Record layout.** Lane 1 is exact; lane 0's 6/7-byte record and its in-band fragment
-   headers are mapped, but varying plane and extension lanes still have no understood
-   byte-length field.
-4. **Lane semantics.** The BC1 candidate maps lane 0 to a back-reference and lanes 8–11 to
-   2×2 quadrants; that is fitted, not byte-exact. BC3–BC7 pixel semantics are unstudied.
-5. **Block order and timing.** The candidate uses Gfx10 stored order; mip consistency supports
-   it, but no plaintext reference proves it. Exactly when a lane reads versus decodes within a
-   round is still a hypothesis.
 ### 1. Entropy layer (all six active codecs)
 
 Each BCPack chunk encodes `N = decoded_size / 8` synchronized lane elements across `nl`
@@ -647,10 +807,6 @@ hdr1                               n = hdr1 + 1                (h3 = 0)
 hdr1, hdr2                         n = hdr1 + 256*hdr2 + 257   (h3 = 1)
 ```
 
-**What is missing, in one line:** the 256-slot pre-start predictor window, a stable 256-entry
-index codebook, 3-colour handling, the varying/extension lane layouts, the BC3/5/6H/7
-semantics, and a plaintext reference for a byte-exact check. The container, the entropy
-framing and the BC1/BC4 constant lane are known; the pixels are not.
 - Symbol width `w = default_width[lane] - z` (`1 <= w <= 10`).
 - `q` (`0..15`) selects the banded exponential probability model for width `w`: band `0`
   covers symbol `0` and band `p >= 1` covers `[2^(p-1), 2^p)`, with total weight `65536`.
@@ -691,8 +847,8 @@ Byte-to-lane interleaving is fixed by a deterministic per-cycle scheduler:
 | 3 | BC3 | 12 | `4 4 8 6 6 6 6 5 6 5 8 8` | 2 (16 B) | Implemented (`tools/bcpack.py`) |
 | 4 | BC4 | 12 | `8 8 8 8 6 6 6 6 6 6 6 6` | 1 (8 B) | Implemented (`tools/bcpack.py`) |
 | 5 | BC5 | 12 | `4 4 8 8 6 6 6 6 6 6 6 6` | 2 (16 B) | Implemented (`tools/bcpack.py`) |
-| 6 | BC6H | 16 | `4 4 8 8 8 5 5 5 6 6 6 8 8 8 8 5` | 2 (16 B) | Entropy only (follow-up PR) |
-| 7 | BC7 | 16 | `4 4 8 8 8 8 8 7 7 5 6 8 8 8 8 5` | 2 (16 B) | Entropy only (follow-up PR) |
+| 6 | BC6H | 16 | `4 4 8 8 8 5 5 5 6 6 6 8 8 8 8 5` | 2 (16 B) | Implemented (`tools/bcpack.py`) |
+| 7 | BC7 | 16 | `4 4 8 8 8 8 8 7 7 5 6 8 8 8 8 5` | 2 (16 B) | Implemented (`tools/bcpack.py`) |
 
 For BC1, BC3, BC4 and BC5:
 
@@ -707,100 +863,188 @@ For BC1, BC3, BC4 and BC5:
 - **Index lanes** store ranks into fixed codec lookup tables: 256-entry 2×2 quadrant tables
   for BC1 colour and BC3 colour, and 64-entry 3-bit index-pair tables for BC3 alpha, BC4
   and BC5.
-- Blocks are decoded in the surface's native tiled memory order, so standard AMD Gfx10
-  detiling (`tools/ttpf_mips.py`) applies unchanged after BCPack decompression.
 
-### 4. Built-in codec history tables (strict vs. provisional)
+For BC6H and BC7 (16 lanes, 2 elements per 16-byte block):
 
-The 256-entry built-in initial endpoint history tables and symbol-rank tables are fixed
-codec constants shared by all DirectStorage BCPack streams, not game texture data. They
-were recovered clean-room by algebraic and statistical fitting against independently
-decodable blocks and mip-chain consistency on a retail copy, and stored without corpus
-metadata in `tools/bcpack_tables.py`:
+- **Lanes 0 and 1** carry independent 8-bit backward reference distances (bit-interleaved
+  4-bit nibbles): `di = interleave(lane1[2i], lane1[2i+1])` for the index predictor and
+  `de = (di + unzig(interleave(lane0[2i], lane0[2i+1]))) & 255` for the endpoint predictor.
+  As with BC1–BC5, `d = 0` predicts from a fixed zero/midpoint state, `0 < d <= i` from
+  block `i - d`, and `d > i` from entry `256 + i - d` of the format's built-in 256-entry
+  endpoint or index history.
+- **BC6H (`codec 6`):** lane 15 carries `(mode - 1, partition)` (modes 1–14 mapping to the
+  14 D3D11/Khronos BC6H mode codes; 2-region modes use the first 32 BC7 2-subset partitions
+  and anchors). Lanes 2–4 carry 16-bit interleaved base endpoint (`w`) deltas, lanes 5–7
+  carry 10-bit interleaved `x` deltas, and lanes 8–10 carry 6-bit `y`/`z` deltas; modes 13
+  and 14 remap the upper bits of `w` into standard BC6H bit order. Lanes 11–14 carry
+  de-interleaved 4-bit row index deltas (rows 0–2 put even pixels on odd bits; row 3 swaps
+  bit parity).
+- **BC7 (`codec 7`):** lane 15 carries a pair `(a, b)` ranked by `((a + 1) * (b + 1), a)`
+  into a 286-entry `(mode, partition, rotation, index_selection)` signature table. Lanes
+  2–10 carry per-subset RGBA endpoint deltas (with p-bits stored in the LSB of channel 0
+  when present; modes 4–5 reuse lanes 6, 7, 8, 10 for the secondary 2-bit index set). Lanes
+  11–14 carry the primary row index deltas with the same de-interleave parity as BC6H.
+  Anchor index top bits and mode-1 shared p-bits provide an exact per-block consistency
+  check.
+- For all six codecs, blocks are decoded in the surface's native tiled memory order, so
+  standard AMD Gfx10 detiling (`tools/ttpf_mips.py`) applies unchanged after BCPack
+  decompression.
 
-| Format | Confirmed history entries | Provisional history entries | Notes |
-|---|---:|---:|---|
-| BC1 | 248 | 7 | Entry 0 unreferenced; provisional entries (6, 9, 67, 68, 71, 74, 122) uncertain by ≤1 green step |
-| BC3 | 0 | 35 | All 256 colour-quadrant and 64 alpha-pair rank entries populated; history entries provisional |
-| BC4 | 0 | 55 | 64 pair entries populated; UI pool chunks reference additional unfitted history entries |
-| BC5 | 3 | 211 | 64 pair entries populated; remaining history entries provisional |
+### 4. Codec tables and history loading (strict vs. provisional)
+
+`tools/bcpack_tables_bptc.py` embeds **only** public D3D11 / Khronos BPTC specification
+data (2- and 3-subset partition masks and anchor pixel indices) and the 286-entry BC7
+lane-15 signature permutation (`BC7_CONFIG`, built programmatically from closed-form
+descending ranges for modes 1 and 3–7 plus the mode-0/mode-2 partition order, with 10
+inferred-only mode-2 ranks flagged in `BC7_CONFIG_INFERRED`).
+
+BCPack's 256-entry initial endpoint/index history buffers for BC6H and BC7 are unpublished
+codec constants that cannot be derived from public specifications alone; they are **not**
+embedded in `tools/bcpack_tables_bptc.py`. Self-contained BC6H/BC7 chunks (delta chains
+staying within the chunk) decode strictly with `history=None`. Chunks that reference
+built-in initial history cleanly refuse with a `--history <path>` hint until a locally
+generated JSON file or directory (`bc6h.json` / `bc7.json`, e.g. from
+`tools/bcpack_history_calib.py`) is supplied at run time:
+
+- **BC1–BC5 JSON schema (optional `bc1.json`..`bc5.json` or `"bc1"`..`"bc5"` keys):**
+  `codec`, `confirmed` and `provisional` maps from entry index (`"0"`..`"255"`) to endpoint
+  tuples (`6` ints for BC1, `8` for BC3, `2` for BC4, `4` for BC5), plus optional
+  `"replace": true` (default `false`, merging onto `tools/bcpack_tables.py`).
+- **BC6H JSON schema (`bc6h.json` or `"bc6h"` key):** `endpointHistory` (256-list or
+  index-keyed dict of `3×4` ints), `indexHistory` (16 ints), `endpointClass` and
+  `indexClass` (`0` = unknown, `1` = fitted/provisional, `2` = last-resort, `3` =
+  reference-confirmed at the recorded precision). Optional `endpointConfirmedBits`
+  (`3×4` leading-bit counts, bounded by `16,10,6,6` per channel) and
+  `indexConfirmedBits` (16 leading-bit counts, each `0..4`) use the same 256-list
+  or index-keyed dict forms. Strict decoding requires class 3 and enough confirmed
+  bits for every field the mode reads; provisional decoding labels insufficient
+  precision. Omitted rows in an explicit depth table confirm no bits. Without a
+  depth table, legacy class-3 entries retain full precision. Regenerate older
+  calibration outputs to record their actual precision: exact references confirm
+  only the bits their modes observe, including three-bit versus four-bit indices.
+- **BC7 JSON schema (`bc7.json` or `"bc7"` key):** `historyEndpoints`,
+  `historyEndpointBits`, `historyEndpointConfirmedBits` (24 ints or `[3][2][4]`),
+  `historyIndices`, `historyIndexBits`, `historyIndexConfirmedBits` (32 ints or `[2][16]`),
+  and `historyEndpointLastResort` (`[k, sub, e, c]` or `[k, slot]` pairs).
+
+For BC1–BC5, `tools/bcpack_tables.py` (added earlier) holds the rANS probability tables and
+default BC1/BC3/BC4/BC5 rank/history tables (extendable or replaceable via `--history`):
+
+| Format | History source | Strict vs. provisional status | Notes |
+|---|---|---|---|
+| BC1 | `tools/bcpack_tables.py` (+ optional `--history`) | 248 confirmed / 7 provisional | Entry 0 unreferenced; provisional entries (6, 9, 67, 68, 71, 74, 122) uncertain by ≤1 green step |
+| BC3 | `tools/bcpack_tables.py` (+ optional `--history`) | 0 confirmed / 35 provisional | All 256 colour-quadrant and 64 alpha-pair rank entries populated |
+| BC4 | `tools/bcpack_tables.py` (+ optional `--history`) | 0 confirmed / 55 provisional | 64 pair entries populated; UI pool chunks reference additional unfitted entries unless supplied via `--history` |
+| BC5 | `tools/bcpack_tables.py` (+ optional `--history`) | 3 confirmed / 211 provisional | 64 pair entries populated |
+| BC6H | external `--history <path>` | Empty by default (`history=None`) | Self-contained chunks decode strictly; external JSON supplies class 1/2/3 entries |
+| BC7 | external `--history <path>` | Empty by default (`history=None`) | Self-contained chunks decode strictly; 286 signature ranks (10 inferred-only refused in strict mode); partial-depth endpoints (`>= 4` bits) mid-range filled in provisional mode |
 
 `tools/bcpack.py` and `tools/ttpf_mips.py` run in **strict mode by default**: any chunk
-referencing an unconfirmed or unknown built-in history entry raises
-`BcpackProvisionalError`. Pass `--allow-provisional` to opt in.
+referencing an unconfirmed/unknown built-in history entry or inferred BC7 signature raises
+`BcpackProvisionalError`. Pass `--history <path>` for locally calibrated history tables
+(`tools/bcpack_history_calib.py`) and `--allow-provisional` to opt in to
+provisional/last-resort entries (inspectable via `bcpack.decode_with_info`).
 
 ### 5. Validation on the 57-pool corpus
 
-- **Full-corpus projection (`tools/ttpf_mips.py scan` across all 57 pools, including multi-slice layouts in `docs/textures_arrays.md`):**
-  - Baseline (2D compact + multi-slice layout rules, zlib/raw only): **305,954** complete, **16,423** partial, **34,738** skipped (33,507 2D BCPack + 1,223 compact BCPack + 3 array BCPack + 5 DXGI 11; 0 layout skips).
-  - With BCPack BC1/BC3/BC4/BC5: **353,840** complete (**+47,886**, **99.08%** of catalog entries), **2,518** partial, **757** skipped (5 DXGI 11 + 752 remaining BC6H/BC7; 0 layout skips and 0 multi-slice skips).
-- **Previously skipped examples above (`tools/ttpf_mips.py check`, strict mode):**
-  - `graphics/ttdb_graphics.ttpf` #309 (128×128 BC1, 8 mips): **pass** (`max_error = 0.67`, `tail_origin_control = 102.3`).
-  - `ui/ttdb_ui.ttpf` #0 (512×512 BC1, 1 mip): **pass**.
-  - `terrain/ttdb_terrain_0_7.ttpf` #1537 (512×1024 BC7, 8 mips): blocked cleanly as unsupported codec 7 (deferred to the BC6H/BC7 follow-up PR).
-- **Sampled cross-codec check:** 20/20 BC1 strict (`median_err = 0.68`), 7/7 BC3 provisional (`median_err = 1.44`, `max_err = 4.18`), 2/2 fitted BC4 provisional (`max_err = 0.43`; unfitted UI entries cleanly refused), 10/10 BC5 provisional (`median_err = 0.17`, `max_err = 0.85`), plus 5/5 BC6H and 10/10 BC7 chunks passing exact rANS entropy termination.
+- **Full-corpus projection (`tools/ttpf_mips.py scan` across all 57 pools, including multi-slice layouts in `docs/textures_arrays.md` and DXGI 11):**
+  - Baseline (2D compact + multi-slice + DXGI 11, zlib/raw only): **305,959** complete, **16,423** partial, **34,733** skipped (33,507 2D BCPack + 1,223 compact BCPack + 3 array BCPack; 0 format skips and 0 layout skips).
+  - With all six BCPack codecs (BC1/BC3/BC4/BC5/BC6H/BC7): **357,115** complete (**+51,156**, **100%** of catalog entries), **0** partial, **0** skipped (0 BCPack skips, 0 format skips, 0 layout skips and 0 multi-slice skips).
+- **Previously skipped examples above (`tools/ttpf_mips.py`):**
+  - `graphics/ttdb_graphics.ttpf` #309 (128×128 BC1, 8 mips): `check` **pass** in strict mode (`max_error = 0.67`, `tail_origin_control = 102.3`).
+  - `ui/ttdb_ui.ttpf` #0 (512×512 BC1, 1 mip): `check` **pass** in strict mode.
+  - `terrain/ttdb_terrain_0_7.ttpf` #1537 (512×1024 BC7, 8 mips): `export` without `--history` cleanly refuses unknown built-in history with a `--history <path>` hint; `export --history <local_dir> --allow-provisional` writes the full 8-mip DX10 DDS (699,188 bytes) and `check --history <local_dir> --allow-provisional` passes (`max_error = 0.95`, `tail_origin_control = 129.91`).
+- **Cross-codec verification:** 20/20 BC1 strict (`median_err = 0.68`), 7/7 BC3 provisional (`median_err = 1.44`, `max_err = 4.18`), 2/2 fitted BC4 provisional (`max_err = 0.43`; unfitted UI entries cleanly refused), 10/10 BC5 provisional (`median_err = 0.17`, `max_err = 0.85`).
+- **Full-corpus BC6H/BC7 chunk verification (all 57 pools, pure-Python `tools/bcpack.py`, using locally calibrated `bc6h.json` / `bc7.json` passed via `--history`):**
+  - **BC6H (`codec 6`):** **268 / 268** chunks (100%) decode in provisional mode (`0` strict because every chunk references built-in history, `0` refused).
+  - **BC7 (`codec 7`):** **583 / 5,167** chunks (11.3%) decode in strict mode; **5,150 / 5,167** (99.67%) decode in provisional mode; **17 / 5,167** (0.33%) cleanly refuse when unknown built-in history references exceed the consistency budget.
+
+## What `textures.rpf` holds
+
+The 192.6 MB archive has no composition table elsewhere in the docs (only census rows). `tools/rpf9_carve.py`
+reads 97.8% of its data span as 2,749 checksum-validated zlib streams (188.3 MB stored, 487.9 MB inflated;
+1.8% zero padding, 0.5% unread). By inflated size the streams fall into two groups:
+
+| Group | Streams | Inflated | Content |
+|---|---:|---:|---|
+| 400-byte + 32,768-byte pairs | 1,313 + 1,313 (+2 lone 400-byte) | 43.6 MB | a small texture-dictionary resource: system page, then graphics page |
+| everything else | 121 | 444.4 MB (91%) | 11 streams of 16 MB or more (largest 32 MB), 16 of exactly 64 KiB, 62 under 64 KiB |
+
+**The pairs are one template, filled 1,313 times.** Every 400-byte stream is immediately followed by a 32,768-byte
+one, and the 8 bytes stored just before 1,312 of the large streams are identical. The 400-byte system pages
+have only 4 distinct contents, and 1,312 of the 1,315 are byte-identical: a dictionary of two textures, each
+described as 128 x 128 with format code `0x5f` (95, `DXGI_FORMAT_BC6H_UF16` if the codes are DXGI numbers, as
+for the BC1/BC7 codes elsewhere in this document), one name per texture. Two 128 x 128 BC6H textures are
+2 x 16,384 = 32,768 bytes, exactly the graphics-page size. The graphics pages differ: 1,117 distinct contents
+among the 1,313 (the most repeated one 60 times). So the archive stores 1,313 instances of one HDR texture pair
+with per-instance data, the shape of a per-tile or per-cell map. One of the other three header variants describes
+172 x 172 textures with code `0x62` (98, BC7).
+
+**The 121 other streams** start with no known magic (`RDS5`, `0DRP`, `TTPF`, `RSC8`, `PSIN`, `RBF0`, DDS) in
+their first 4 KiB, and the large ones are high-entropy (7.3 to 7.7 bits per byte over the first 64 KiB, except
+one at 4.1). They are left as opaque raw data here; matching them to the `data/ttdb` texture pools is the
+obvious next check.
+
+Not measured here (hypothesis): what the 1,313 texture pairs are keyed by, and whether the format codes are
+DXGI values (the exact-size match supports it).
 
 ## Next step
 
-1. **Add BC6H and BC7 block rebuilders (ASSET-5 follow-up PR).** The rANS entropy layer
-   already decodes both 16-lane formats; adding the BC6H/BC7 block rebuilders and history
-   tables covers the remaining 5,435 BCPack chunks (752 skipped + remaining partial textures).
-2. **Port the compact layout rule and BCPack decoder to `TtpfReader` (`rpf9-explorer` /
-   `tools/rpf9dump`).** In C#, select `tile = 65536` when `((mode >> 1) & 0xF) == 0` and
-   4096 otherwise, replace `ValidatedCompactProfile` with the allocation-span check, set
-   `UsableMipLimit` to `FirstTail` (or `mips` when the tail tile is decodable), and wire
-   BCPack behind `TtpfReader.DecodeChunk`.
-3. **Decode BC6H/BC7 in `tools/ttpf_mips.py` `check`.** `tools/ttpf_mips.py` currently
-   decodes BC1/3/4/5 pixels for the downsample check; adding BC6H/BC7 pixel decoders extends
-   chain-error validation to those two formats.
-4. **Add DXGI 11 (`R16G16B16A16_UNORM`, 5 records) and validate 2D uncompressed tiling (formats
-   11, 28, 49, 56).** The 19 records formerly listed as DXGI 156/199/211/226 are resolved as
-   two-slice 2D arrays (`docs/textures_arrays.md`).
-5. **Port multi-slice layouts to C# `TtpfReader`.** All 697 multi-slice descriptors (127 2D
-   arrays, 567 cubemaps, and 3 3D volumes) are now validated and exported in
-   `tools/tex_headers.py` and `tools/ttpf_mips.py` (`docs/textures_arrays.md`); upstream C#
-   `TtpfReader` parity has landed upstream in `breadbbbb/rpf9-explorer` PRs #5 and #6 (pending a submodule pin update).
-6. **Do not fake a BCPack decoder.** The current fallback (export the largest lower mip that
-   is zlib/raw) is used by 5,845 textures and should stay. The public BC1 candidate is not
-   adopted: it is mip-consistent on 40/200 chunks, not byte-exact, and its window is
-   unpublished. If a complete window/codebook and a plaintext check appear, add the decoder
-   behind `TtpfReader.DecodeChunk`; the container already carries the mode (codec id) and
-   decoded size, so no index work is needed.
-7. **If someone resumes the BCPack reverse engineering,** use the hard check the SixNG notes
-   propose: every lane must consume exactly its byte budget and finish at the rANS lower
-   bound, with a fixed symbol count. The entropy half now passes 200/200 chunks; the pixel
-   half still needs reference blocks, and none are public.
+1. **Port BC6H/BC7 BCPack decoders to `TtpfReader` (`rpf9-explorer` / `tools/rpf9dump`).**
+   Compact 2D mip tails, multi-slice layouts, DXGI 11, and strict BCPack BC1/BC3/BC4/BC5
+   decoding are now live in `rpf9-explorer` (carried by the `e293917` submodule pin,
+   `breadbbbb/rpf9-explorer#7`; `ASSET-44`). Remaining C# follow-ups are BC6H/BC7 block
+   rebuilders (plus optional external history tables), preserving lower-mip zlib/raw
+   fallback when a higher mip is refused in strict mode, and fixing `Core/TtpfReader.cs:70`
+   (`Patterns[2]`), which currently uses Navi 1x's `(-3, 3)` at bits 6..7 instead of
+   RDNA2/RbPlus `(3, -3)` (`GFX10_SW_64K_D_RBPLUS_PATINFO`).
+2. **Wire optional external `--history` tables into C# `TtpfReader`.** `tools/bcpack_history_calib.py`
+   now derives local `bc1.json`..`bc7.json` history files into `<work>` for the pure-Python
+   decoder (`tools/bcpack.py` / `tools/ttpf_mips.py --history <path>`), either by exact
+   algebraic inversion from reference block/DDS pairs (`--ref-dds`, `--ref-pairs`, yielding
+   confirmed strict-mode entries) or by read-only pool self-calibration across mixed
+   BCPack + raw/zlib mip chains (yielding provisional entries). Once BC6H/BC7 land in
+   `TtpfReader`, it can consume the same local directory.
 
 ## Reproduce
 
+The normal `make_game.py` assets stage now fills missing and partial BCPack DDS entries in the same pool manifests used for model texture lookup. It uses strict decoding by default and discovers an optional local reconstruction profile at `<work>/bcpack-calibration.json`. The single-entry exporter accepts the same profile through `--calibration`. Build instructions, the JSON schema and the game-independent test are in the [calibrated export guide](../tools/bcpack_calibration/README.md).
+
 `tools/ttpf_mips.py` is the read-only measurement and decode tool (with `tools/bcpack.py`
-enabled in strict confirmed-history mode by default):
+enabled in strict confirmed-history mode by default), and `tools/bcpack_history_calib.py`
+derives local `--history <path>` JSON tables using only the Python standard library:
 
 ```
+python -I tools/bcpack_history_calib.py <game root>/data/ttdb --out <work>/bcpack_history [--limit N] [--check]
+python -I tools/bcpack_history_calib.py --verify <work>/bcpack_history [<game root>/data/ttdb]
 python -I tools/ttpf_mips.py scan <game root> --json scan.json [--tuples]
 python -I tools/ttpf_mips.py layout <pool.ttpf> <index>
-python -I tools/ttpf_mips.py check <pool.ttpf> <index> [--allow-provisional]
-python -I tools/ttpf_mips.py export <pool.ttpf> <index> <out.dds> [--allow-provisional]
+python -I tools/ttpf_mips.py check <pool.ttpf> <index> [--allow-provisional] [--history <path>]
+python -I tools/ttpf_mips.py export <pool.ttpf> <index> <out.dds> [--allow-provisional] [--history <path>]
 python -I tests/test_bcpack.py
+python -I tests/test_bcpack_history_calib.py
 python -I tests/test_tex_headers.py
 python -I tests/test_ttpf_mips.py
 ```
 
-`scan` reproduces the 357,115 / 98,603 / 210,292 / 48,220 baseline split, reports both the
-zlib/raw layout projection (`after_full` / `after_partial` / `after_skip`) and the BCPack
-BC1/BC3/BC4/BC5 projection (`after_bcpack_full` / `after_bcpack_partial` /
+`scan` reproduces the 357,115 / 98,608 / 210,292 / 48,215 baseline split (the pre-DXGI-11
+98,603 / 210,292 / 48,220 split with the 5 DXGI 11 records moved into `reader_full`), reports
+both the zlib/raw layout projection (`after_full` / `after_partial` / `after_skip`) and the
+full 6-codec BCPack projection (`after_bcpack_full` / `after_bcpack_partial` /
 `after_bcpack_skip`), and adds the layout and recovery counters; `--tuples` adds the 84
 known-size rejected tuples. `check` reports the per-mip downsample error. `export` writes a
-full BC chain when every source mip uses a supported codec. None of the tests need game
-files: `tests/test_bcpack.py` builds synthetic rANS BCPack streams from scratch,
-`tests/test_tex_headers.py` tests the layout rule on synthetic headers, and
-`tests/test_ttpf_mips.py` builds synthetic zlib and BCPack RDS5 pools.
+full BC or validated 2D uncompressed chain when every source mip uses a supported codec. None
+of the tests need game files: `tests/test_bcpack.py` builds synthetic rANS BCPack streams from
+scratch for all six codecs (including synthetic external history JSONs for BC6H/BC7),
+`tests/test_bcpack_history_calib.py` tests exact reference inversion (`--ref-pairs`,
+`--ref-dds`), prefix rANS lane decoding, and mixed-mip pool self-calibration on synthetic
+inputs across all six codecs, `tests/test_tex_headers.py` tests the layout rule on synthetic
+headers, and `tests/test_ttpf_mips.py` builds synthetic zlib, uncompressed 2D, and BCPack (BC1
+and BC7) RDS5 pools.
 
-The BCPack counts above come from a read-only aggregation over the same `Pool` parser: it
-mmaps each pool, reads the RDS5 header, chunk table and ETPF records, then reads the first 64
-bytes of each BCPack chunk. The 200-chunk entropy check used the public MDU tables from
-`silicon-rans` on the same mip-pair selection. The probes are not committed because they
-duplicate `Pool` and add no decoder; they write no texture data.
+The earlier BCPack header counts and 200-chunk entropy check came from a read-only
+aggregation over the same `Pool` parser using the public MDU tables from `silicon-rans`;
+those probes are not committed because `tools/bcpack.py` supersedes them.
 
 `rpf9dump ttpf` writes one `manifest.json` per pool with a `Limitation` field for every
 catalog record, and its summary line has the same `ok` / `skip` totals. The first split above
@@ -809,3 +1053,10 @@ only the 24-byte RDS5 header, the chunk table, the ETPF records and the chunk ra
 wrote no texture data. `tools/ttpf_mips.py scan` is that mirror, now committed with the
 compact-layout and BCPack work; it reproduces the baseline split and adds the recovery
 columns.
+
+A pool's `manifest.json` is published only when the DDS of every `CanExtract` record was
+written or already present. If any write fails, `rpf9dump ttpf` keeps the DDS it did write,
+removes an older `manifest.json` for that pool and exits 1. Records with `File: null` are
+deliberate skips and do not fail the pool. The assets stage exports a pool again when its
+manifest is missing, unreadable or lists a `File` that is not on disk, so a manifest from an
+older build that names an absent DDS is repaired on the next run.

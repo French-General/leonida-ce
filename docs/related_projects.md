@@ -51,6 +51,35 @@ tables or comments into Leonida. If a format fact learned from it is useful, ver
 write our own implementation. The model-recovery gap measured in [models.md](models.md) is in that submodule; the
 fix should go upstream, not into a copy.
 
+## meetox80/6stars
+
+<https://github.com/meetox80/6stars> — a macOS Swift/Metal engine that renders the world out of RPF9,
+with a Swift `RPFKit` format library and 44 Python research scripts. Independent work: it likewise
+does not decode the TOC.
+
+**Licence: none.** The repository has no `LICENSE` file (GitHub reports `license: null`); only the
+vendored cimgui/imgui carry MIT. With no grant, default copyright applies and the project is
+**all rights reserved** — stricter than PercyStar. **No 6stars code, comment, identifier or table may
+be copied into Leonida.**
+
+**What we use it for:** corroboration and a small number of hypotheses. As an independent reading of
+the same formats it matches our `CEntityDef` member hashes (9/9), the PRD0 header, the navmesh tile
+header, the meshlet group header and the PSIN/LSCH field layout. Its stream-role predicates and
+navmesh surface bits are recorded as hypotheses and tested from our own package, never copied.
+Where it disagrees with us (ETPF format and tile mode, the RDS5 codec field, `atArray` type `0x5C`,
+PSO member hashing) our measurements are the validated ones.
+<https://github.com/meetox80/6stars>
+
+A macOS Swift/Metal engine that reads the world from RPF9, with its own archive index and format readers.
+
+**Licence: none.** There is no `LICENSE` file and GitHub reports no licence, so all rights are reserved.
+**No 6stars code, comments, identifiers or tables may be copied into Leonida.**
+
+**What we use it for:** corroboration. Its RPF9 stream-boundary predicate and PRD0 member type codes were
+re-measured against this package before entering [rpf.md](rpf.md) and [world.md](world.md); its navmesh
+road/pavement bit labels did not reproduce and are not used. The navmesh polygon `+4` packing it reads is the one
+our decoder already validates ([navmesh.md](navmesh.md)).
+
 ## p-portela/SCARAB
 
 <https://github.com/p-portela/SCARAB>
@@ -83,6 +112,35 @@ Microsoft's HTTP/WebSocket library for GDK titles. Its `Source/Task` folder is t
 and file list in its README) with the licence file. `runtime/shims/xgameruntime.cpp` registers those functions as
 `xgameruntime.dll` imports. The HTTP and WebSocket stack is not included. Unlike the projects above, this is code
 use under a compatible licence, so the MIT notice must stay with the files.
+
+## AMD machine-readable GPU ISA specification
+
+<https://gpuopen.com/machine-readable-isa> (reader: <https://github.com/GPUOpen-Tools/isa_spec_manager>)
+
+AMD's XML description of the RDNA and CDNA instruction sets: instructions, encodings, operands, data formats.
+
+**Licence:** MIT (`<License>MIT</License>` in each XML file; `isa_spec_manager` is MIT too), compatible with
+GPL-3.0-or-later.
+
+**What we use it for:** `tools/isa_coverage.py` reads `amdgpu_isa_rdna2.xml` from a path the user supplies and counts
+which instructions the translator has a rule for ([isa_coverage.md](isa_coverage.md)). The XML is not vendored (11 MB);
+tests use a small fixture of our own in the same schema.
+
+## Mesa (AMD register database and format tables) and LLVM's AMDGPU backend
+
+<https://gitlab.freedesktop.org/mesa/mesa> (`src/amd/registers/*.json`, `src/amd/common/ac_descriptors.c`),
+<https://github.com/llvm/llvm-project> (`llvm/lib/Target/AMDGPU/SIDefines.h`)
+
+**Licence:** Mesa's AMD code is MIT, LLVM is Apache-2.0 with LLVM exceptions. Both are GPL-3.0-or-later compatible,
+but nothing is copied.
+
+**What we use:** field positions and enum values, written into this repository's own code. `tools/hw_oracle/tsharp.py`
+builds the T# for the hardware oracle of `tools/image_fuzz.py` from Mesa's SQ_IMG_RSRC_WORD1..4 bit ranges
+(`gfx10-rsrc.json`, `gfx11-rsrc.json`), the way `ac_build_gfx10_texture_descriptor` and `ac_set_mutable_tex_desc_fields`
+fill them (linear images carry their pitch in WORD4), and the GFX10 and GFX11 format numbers (Mesa's `GFX10_FORMAT`,
+and for GFX11 the order of LLVM's `UfmtGFX11::UnifiedFormat`). The GFX11 numbers were confirmed on a gfx1150 by the
+hardware oracle itself (a wrong FORMAT changes the fetched words); the GFX10 numbers and layout are Mesa's and not yet
+run on RDNA2 hardware.
 
 ## The line
 

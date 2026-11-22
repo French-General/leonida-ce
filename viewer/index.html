@@ -32,7 +32,7 @@
 </div>
 <div id="help">
   <kbd>W A S D</kbd> move · <kbd>Q</kbd>/<kbd>E</kbd> down/up · <kbd>Shift</kbd> fast · <kbd>Ctrl</kbd> slow · wheel: speed<br>
-  <kbd>F</kbd> wireframe · <kbd>T</kbd> textures/clay · <kbd>G</kbd> chunk bounds · <kbd>R</kbd> back to spawn · <kbd>Esc</kbd> release mouse
+  <kbd>F</kbd> wireframe · <kbd>T</kbd> textures/clay · <kbd>G</kbd> chunk bounds · <kbd>R</kbd> back to spawn · <kbd>P</kbd> copy link to this view · <kbd>Esc</kbd> release mouse
 </div>
 <div id="start">Click to fly</div>
 
@@ -48,6 +48,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 // ---------- world description ----------
 // world/world.json: { "spawn": [x,y,z], "chunks": [ { "id", "url", "bounds": [minx,miny,minz,maxx,maxy,maxz] } ] }
+// A world built with world_build --lod-sets also has "lod_bands": { tier: [start, end] } (metres), and each
+// chunk names its "lod" tier and its grid "cell": [minx, minz, maxx, maxz].
 // Each chunk is a .glb in world space (Y up, metres). Validate the manifest before
 // the camera and streaming code use its coordinates and chunk identifiers.
 function manifestError(world) {
@@ -63,9 +65,31 @@ function manifestError(world) {
     const b = chunk.bounds;
     if (!isPosition(b, 6) || b[0] > b[3] || b[1] > b[4] || b[2] > b[5])
       return `chunks[${i}].bounds must contain six finite, ordered coordinates`;
+    if (chunk.lod !== undefined) {
+      const band = isNonemptyString(chunk.lod) ? world.lod_bands?.[chunk.lod] : undefined;
+      if (!isPosition(band, 2) || band[0] < 0 || band[0] > band[1])
+        return `chunks[${i}].lod must name a lod_bands entry with two finite, ordered distances`;
+      const c = chunk.cell;
+      if (!isPosition(c, 4) || c[0] > c[2] || c[1] > c[3])
+        return `chunks[${i}].cell must contain four finite, ordered coordinates`;
+    }
     ids.add(chunk.id);
   }
   return null;
+}
+
+// Camera in the URL hash: #cam=x,y,z,yaw,pitch. Returns null for anything that is not five finite numbers,
+// so a hand-edited or stale link falls back to the spawn point instead of putting the camera at NaN.
+function parseCamHash(hash) {
+  const m = /^#?cam=([^&]*)/.exec(typeof hash === "string" ? hash : "");
+  if (!m) return null;
+  const parts = m[1].split(",");
+  if (parts.length !== 5 || parts.some(t => t.trim() === "")) return null;
+  const v = parts.map(Number);
+  return v.every(Number.isFinite) ? { pos: v.slice(0, 3), yaw: v[3], pitch: v[4] } : null;
+}
+function formatCamHash(pos, yaw, pitch) {
+  return "#cam=" + [...pos, yaw, pitch].map((n, i) => n.toFixed(i < 3 ? 1 : 3)).join(",");
 }
 
 async function loadWorld() {
@@ -123,6 +147,17 @@ function buildTestChunk([cx, cz, size]) {
   }
   geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
   geo.computeVertexNormals();
+  // Sample the shared height field on both sides of each border for matching edge normals.
+  const normal = geo.attributes.normal, stride = seg + 1, step = size / seg;
+  for (let i = 0; i < pos.count; i++) {
+    const row = Math.floor(i / stride), column = i % stride;
+    if (row > 0 && row < seg && column > 0 && column < seg) continue;
+    const x = pos.getX(i), z = pos.getZ(i);
+    const nx = height(x - step, z) - height(x + step, z);
+    const nz = height(x, z - step) - height(x, z + step);
+    const length = Math.hypot(nx, 2 * step, nz);
+    normal.setXYZ(i, nx / length, 2 * step / length, nz / length);
+  }
   g.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 })));
   const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
   const count = 18, inst = new THREE.InstancedMesh(box, new THREE.MeshStandardMaterial({ color: 0x9aa4b1, roughness: 0.7 }), count);
@@ -138,7 +173,16 @@ function buildTestChunk([cx, cz, size]) {
 }
 
 // ---------- scene ----------
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+} catch (error) {
+  const start = document.getElementById("start");
+  start.setAttribute("role", "alert");
+  start.style.cursor = "default";
+  start.textContent = "Could not start WebGL. Check that WebGL is enabled, then reload.";
+  throw error;
+}
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
@@ -155,27 +199,40 @@ const keys = new Set(); let yaw = 0, pitch = -0.25, speed = 40, locked = false;
 // Pointer lock when the browser allows it; embedded views (iframes, preview panes) fall back to drag-to-look.
 const start = document.getElementById("start");
 let dragLook = false, dragging = false;
+function enableDragLook() {
+  if (locked || dragLook) return;
+  dragLook = true;
+  start.classList.add("hidden");
+  document.getElementById("help").insertAdjacentHTML("beforeend", "<br>mouse lock unavailable here: drag to look");
+}
 start.onclick = async () => {
   try { await renderer.domElement.requestPointerLock(); }
-  catch { dragLook = true; start.classList.add("hidden"); document.getElementById("help").insertAdjacentHTML("beforeend", "<br>mouse lock unavailable here: drag to look"); }
+  catch { enableDragLook(); }
 };
+document.addEventListener("pointerlockerror", enableDragLook);
 document.addEventListener("pointerlockchange", () => { locked = document.pointerLockElement === renderer.domElement; start.classList.toggle("hidden", locked || dragLook); });
-renderer.domElement.addEventListener("mousedown", () => { dragging = true; });
-addEventListener("mouseup", () => { dragging = false; });
+renderer.domElement.addEventListener("mousedown", e => { if (e.button === 0) dragging = true; });
+addEventListener("mouseup", e => { if (e.button === 0) dragging = false; });
 addEventListener("mousemove", e => {
+  if ((e.buttons & 1) === 0) dragging = false; // a release outside the window can skip mouseup
   if (!locked && !(dragLook && dragging)) return;
   yaw -= e.movementX * 0.0022; pitch = THREE.MathUtils.clamp(pitch - e.movementY * 0.0022, -1.55, 1.55);
 });
 addEventListener("wheel", e => { speed = THREE.MathUtils.clamp(speed * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 1, 3000); }, { passive: true });
+addEventListener("blur", () => { keys.clear(); dragging = false; });
+const world = await loadWorld();
 addEventListener("keydown", e => {
   keys.add(e.code);
   if (e.code === "KeyF" && !e.repeat) wire = !wire, applyWire();
   if (e.code === "KeyT" && !e.repeat) clay = !clay, applyClay();
-  if (e.code === "KeyG" && !e.repeat) showBounds = !showBounds, boundsGroup.visible = showBounds;
+  if (e.code === "KeyG" && !e.repeat) toggleBounds();
   if (e.code === "KeyR") camera.position.fromArray(world.spawn);
+  if (e.code === "KeyP" && !e.repeat) {
+    history.replaceState(null, "", formatCamHash(camera.position.toArray(), yaw, pitch));
+    navigator.clipboard?.writeText(location.href).catch(() => {});
+  }
 });
 addEventListener("keyup", e => keys.delete(e.code));
-addEventListener("blur", () => keys.clear());
 
 // ---------- chunk streaming ----------
 const LOAD_R = 1400, UNLOAD_R = 2000, MAX_INFLIGHT = 4;
@@ -183,23 +240,32 @@ const LOAD_R = 1400, UNLOAD_R = 2000, MAX_INFLIGHT = 4;
 // when leaving and returning; successfully loaded chunks start fresh after unloading.
 const MAX_LOAD_ATTEMPTS = 3, RETRY_DELAY_MS = 1000;
 const loader = new GLTFLoader();
-const live = new Map(); let inflight = 0, wire = false, clay = false, showBounds = false, failed = 0;
+const live = new Map(); let inflight = 0, wire = false, clay = false, failed = 0;
+const originalMaterials = new WeakMap();
 const clayMat = new THREE.MeshStandardMaterial({ color: 0xb8c0ca, roughness: 0.85, wireframe: wire, side: THREE.DoubleSide });
 const boundsGroup = new THREE.Group(); boundsGroup.visible = false; scene.add(boundsGroup);
+function toggleBounds() {
+  boundsGroup.visible = !boundsGroup.visible;
+  if (!boundsGroup.visible || boundsGroup.children.length) return;
+  for (const { bounds: [minX, minY, minZ, maxX, maxY, maxZ] } of world.chunks) {
+    const box = new THREE.Box3(new THREE.Vector3(minX, minY, minZ), new THREE.Vector3(maxX, maxY, maxZ));
+    boundsGroup.add(new THREE.Box3Helper(box, 0x5fb3ff));
+  }
+}
 function applyClay(root) {
   clayMat.wireframe = wire;
   (root ? [root] : [...live.values()].map(c => c.obj).filter(Boolean)).forEach(o =>
     o.traverse(n => {
       if (!n.isMesh || !n.material) return;
-      if (n.userData.origMaterial === undefined) n.userData.origMaterial = n.material;
-      n.material = clay ? clayMat : n.userData.origMaterial;
+      if (!originalMaterials.has(n)) originalMaterials.set(n, n.material);
+      n.material = clay ? clayMat : originalMaterials.get(n);
     }));
 }
 function applyWire(root) {
   clayMat.wireframe = wire;
   (root ? [root] : [...live.values()].map(c => c.obj).filter(Boolean)).forEach(o =>
     o.traverse(n => {
-      const orig = n.userData?.origMaterial;
+      const orig = originalMaterials.get(n);
       if (orig) [].concat(orig).forEach(m => m.wireframe = wire);
       if (n.material && n.material !== orig) [].concat(n.material).forEach(m => m.wireframe = wire);
     }));
@@ -210,7 +276,7 @@ function disposeObject(obj) {
   obj.traverse(n => {
     if (n.geometry && !disposedGeo.has(n.geometry)) { disposedGeo.add(n.geometry); n.geometry.dispose(); }
     if (n.isInstancedMesh && typeof n.dispose === "function") n.dispose();
-    const allMats = [].concat(n.material || [], n.userData?.origMaterial || []);
+    const allMats = [].concat(n.material || [], originalMaterials.get(n) || []);
     for (const m of allMats) {
       if (!m || m === clayMat || disposedMat.has(m)) continue;
       disposedMat.add(m);
@@ -223,7 +289,7 @@ function disposeObject(obj) {
       }
       m.dispose();
     }
-    if (n.userData) delete n.userData.origMaterial;
+    originalMaterials.delete(n);
   });
   for (const bitmap of bitmaps) bitmap.close();
 }
@@ -231,6 +297,20 @@ function dist(c, p) {
   const b = c.bounds;
   const dx = Math.max(b[0] - p.x, 0, p.x - b[3]), dy = Math.max(b[1] - p.y, 0, p.y - b[4]), dz = Math.max(b[2] - p.z, 0, p.z - b[5]);
   return Math.hypot(dx, dy, dz);
+}
+// Choose one loaded tier per cell. Prefer the tier whose band contains the camera's horizontal
+// distance, and use a cached tier within LOD_SLACK while the preferred tier is unavailable.
+const LOD_SLACK = 32;
+function cellDist(c, p) {
+  const r = c.cell;
+  return Math.hypot(Math.max(r[0] - p.x, 0, p.x - r[2]), Math.max(r[1] - p.z, 0, p.z - r[3]));
+}
+// The distance used to rank a chunk, and whether it should load (slack 0) or stay loaded (LOD_SLACK).
+function range(def, p) {
+  const band = def.lod !== undefined ? world.lod_bands?.[def.lod] : undefined;
+  if (!band) { const d = dist(def, p); return { d, load: d < LOAD_R, keep: d <= UNLOAD_R }; }
+  const d = cellDist(def, p);
+  return { d, load: d >= band[0] && d < band[1], keep: d >= band[0] - LOD_SLACK && d < band[1] + LOD_SLACK };
 }
 function drop(id) {
   const c = live.get(id); if (!c) return;
@@ -249,7 +329,9 @@ async function loadChunk(entry) {
     if (!response.ok) throw new Error(`Chunk request failed: ${response.status}`);
     const bytes = await response.arrayBuffer();
     if (controller.signal.aborted) return;
-    const g = await loader.parseAsync(bytes, THREE.LoaderUtils.extractUrlBase(def.url));
+    const url = response.url || def.url;
+    const resourcePath = THREE.LoaderUtils.extractUrlBase(url.split(/[?#]/, 1)[0]);
+    const g = await loader.parseAsync(bytes, resourcePath);
     // GLTFLoader cannot cancel a parse already underway. Dispose its late result.
     if (live.get(def.id) !== entry) { disposeObject(g.scene); return; }
     entry.obj = g.scene; scene.add(g.scene); applyClay(g.scene); applyWire(g.scene);
@@ -266,8 +348,25 @@ async function loadChunk(entry) {
 }
 function stream(now = performance.now()) {
   const p = camera.position;
+  const visibleTiers = new Map();
   for (const [id, c] of live) {
-    if ((!c.obj && !c.loading) || dist(c.def, p) <= UNLOAD_R) continue;
+    if (!c.obj && !c.loading) continue;
+    const { load, keep } = range(c.def, p);
+    if (keep) {
+      // Orphan HD has its own band and no replacement in the LOD chain.
+      if (c.obj && c.def.lod === "orphan_hd") {
+        c.obj.visible = load;
+      } else if (c.obj && c.def.lod !== undefined) {
+        const cell = c.def.cell.join(",");
+        const current = visibleTiers.get(cell);
+        c.obj.visible = !current || (load && !current.inBand);
+        if (c.obj.visible) {
+          if (current) current.obj.visible = false;
+          visibleTiers.set(cell, { obj: c.obj, inBand: load });
+        }
+      }
+      continue;
+    }
     drop(id);
     // A canceled retry does not erase the previous failures or spend another attempt.
     if (c.previous) live.set(id, c.previous);
@@ -279,8 +378,8 @@ function stream(now = performance.now()) {
   for (const def of world.chunks) {
     const entry = live.get(def.id);
     if (entry && (entry.obj || entry.loading || entry.attempts >= MAX_LOAD_ATTEMPTS || now < entry.retryAt)) continue;
-    const distance = dist(def, p);
-    if (distance < LOAD_R) want.push({ def, distance });
+    const { d: distance, load } = range(def, p);
+    if (load) want.push({ def, distance });
   }
   want.sort((a, b) => a.distance - b.distance);
   for (const { def } of want) {
@@ -288,22 +387,19 @@ function stream(now = performance.now()) {
     const previous = live.get(def.id);
     const entry = { def, obj: null, loading: true, attempts: (previous?.attempts || 0) + 1, retryAt: 0, previous };
     live.set(def.id, entry);
-    if (def.test) { entry.loading = false; entry.obj = buildTestChunk(def.test); scene.add(entry.obj); applyClay(entry.obj); applyWire(entry.obj); continue; }
+    if (world.test) { entry.loading = false; entry.obj = buildTestChunk(def.test); scene.add(entry.obj); applyClay(entry.obj); applyWire(entry.obj); continue; }
     entry.controller = new AbortController();
     void loadChunk(entry);
   }
 }
 
 // ---------- main loop ----------
-const world = await loadWorld();
 camera.position.fromArray(world.spawn);
+const startCam = parseCamHash(location.hash);
+if (startCam) { camera.position.fromArray(startCam.pos); yaw = startCam.yaw; pitch = THREE.MathUtils.clamp(startCam.pitch, -1.55, 1.55); }
 if (world.test) {
   document.getElementById("world-status").textContent = world.reason;
   document.getElementById("banner").classList.remove("hidden");
-}
-for (const c of world.chunks) {
-  const b = c.bounds, box = new THREE.Box3(new THREE.Vector3(b[0], b[1], b[2]), new THREE.Vector3(b[3], b[4], b[5]));
-  boundsGroup.add(new THREE.Box3Helper(box, 0x5fb3ff));
 }
 const hud = document.getElementById("hud"), clock = new THREE.Clock();
 let fpsT = 0, fpsN = 0, fps = 0;
