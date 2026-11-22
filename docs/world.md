@@ -826,21 +826,23 @@ material strings are not reproduced.
   5 empty slots. `SupportPropFlatten` is set on the 2 sand entries (4 and 10).
 - **Cross-check with the material table.** In the retained part of `MaterialDataList` (one 64 KiB block, 101
   `name` elements), 13 materials carry `isDeformableTerrain="true"`, and they are exactly the 13 of the 24
-  surface materials that occur in that block: no material outside the surface list is deformable, and no surface
-  material in the block lacks the flag. One more `isDeformableTerrain` item in the block has its name in the
-  preceding, unread block.
+  surface materials whose names occur in that block. The comparison covers only the records whose flags are
+  visible: the block ends inside its last material record, after the name and before any flag, so that record's
+  flag state is unknown (its name is not one of the surface materials). Within that scope no material outside the
+  surface list is deformable, and no surface material lacks the flag. One more `isDeformableTerrain` item in the
+  block has its name in the preceding, unread block.
 - **Deformation map size.** `GlobalDeepSurfaceParams` gives `DeformationWorldSpaceWidth` = **96 m** and
-  `ParallaxWorldSpaceWidth` = **48 m**, so the deformation height map spans 96 m across (the parallax layer 48 m),
-  read as the side of a square window. No field in the document gives a texel count, and no other carved XML in
+  `ParallaxWorldSpaceWidth` = **48 m**: one world-space width each. The document gives no second dimension, so a
+  square window is an assumption, not a reading. No field in the document gives a texel count, and no other carved XML in
   `common.rpf` names `DeformationWorldSpaceWidth`; the map resolution is therefore not in the data files read
   here (it would be in the executable or the render-target setup, neither of which is in the package), so the
-  size in texels stays open.
+  size in texels, and where the renderer sets it, stay open.
 - **Track types.** The 9 `TrackTypeData` entries are 1 human, 6 animals and 2 vehicles (a car class and a
   cycle). `Type` is `kSnowTracksBiped` on 5 (the human and 4 animals, including the horse),
   `kSnowTracksQuadraped` on 2 animals and `kSnowTracksVehicle` on the 2 vehicles. Which entry a given ped model
   uses is not in this document.
 
-Not measured here (hypothesis): the texel resolution of the deformation map, where it is centred (camera or
+Not measured here (hypothesis): the texel resolution and the second dimension of the deformation map, where it is centred (camera or
 player), and how an entry is chosen at run time (the material's flag, the surface index, or both).
 
 ## Map lights and the vehicle lane graph
