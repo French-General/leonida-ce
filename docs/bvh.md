@@ -491,10 +491,11 @@ Measured on the 1.0.2.1 package with the tools above; counts and offsets only.
   entry of the level table at the end of the structure. The leaves are in the leaf frame (`(R*v - t)*s`): the header
   `sceneBounds` are the pre-frame AABB (±2.5), the leaf vertices are scaled (≈19,040), so test rays are built from a
   leaf's own vertices.
-* Descriptor base: the game builds `(ptr & ~0xFF) | 0x30`, a byte address with flags in the low bits, not a
-  256-byte-unit field. With the structure at VA 0 and root `0x4CABC`, the game's RT shadow CS (`deferred_tiled`
-  family, 32-bit form) on the RTX 2060 returns the CPU walker's children in the same order; its second traversal
-  site still needs the executable.
+* Descriptor base: the descriptor's dword0 is the base in **256-byte units**; the game passes `ptr >> 8` there, and
+  the `| 0x30` its shader ORs is only the temporary address it uses for the `rootNodePtr` load, not the descriptor
+  base. Measured at base 0 and at base 0x1000 (structure copied to VA 0x1000, dword0 `0x10`): the game's RT shadow
+  CS (`deferred_tiled` family, 32-bit form) on the RTX 2060 returns the CPU walker's children in the same order at
+  both. Its second traversal site still needs the executable.
 
 ## 8. No-sharing rule
 
