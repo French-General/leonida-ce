@@ -189,8 +189,13 @@ For Proton, start any program once with `proton run` (with `STEAM_COMPAT_DATA_PA
 `WINEPREFIX=$STEAM_COMPAT_DATA_PATH/pfx WINEDLLOVERRIDES="d3d12=n;d3d12core=n;dxgi=n"`. `proton run` itself doesn't
 pass the program's output on, so the tests can't run through it.
 
-The tests that compare with the host's D3D12 (`root_sig_test`, `root_sig`, `device_proxy`, `d3d12_vulkan_device`)
-check against Wine's vkd3d or vkd3d-proton here, not Microsoft's runtime, so some of them fail for that reason.
+The host's D3D12 here is Wine's vkd3d or vkd3d-proton, not Microsoft's runtime, and Proton's `EnumWarpAdapter`
+returns the hardware adapter, so "WARP" is vkd3d-proton on the GPU. Most tests that compare with the host or WARP
+skip that comparison under Wine and Proton (`runtime/test/host_wine.h`), and most of them still check the layer
+against Microsoft's answers recorded in the test (`d3d12_subresource_copy` and `d3d12_private_data` keep theirs in
+`d3d12_subresource_copy_answers.h` and `d3d12_private_data_answers.h`).
+A few still compare with the host (`root_sig`, `device_proxy`, and some of `d3d12_vulkan_device`'s cases), so some
+of those fail for that reason.
 
 ## GPUs with 32-wide subgroups (NVIDIA, Intel, Apple)
 
