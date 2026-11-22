@@ -1605,7 +1605,7 @@ def pipeline_names(spirv: str) -> "list[str]":
 
 
 def crashes_alone(exe: str, spirv: str, cache: str, name: str, inflight: str | None = None) -> bool:
-    """Whether one module takes vk_pipeline_check down on its own, using its global index position."""
+    """Confirm a crash only when this probe's fresh report names the selected module as in flight."""
     names = pipeline_names(spirv)
     if name not in names:
         return False
@@ -1619,7 +1619,16 @@ def crashes_alone(exe: str, spirv: str, cache: str, name: str, inflight: str | N
              "check Vulkan initialization and report-file access in the output above")
     if interrupted(code) or code == 2:
         fail(f"pipelines: checking {name} alone stopped with {exit_label(code)}")
-    return code not in (0, 1, 2) and not interrupted(code)
+    if code in (0, 1):
+        return False
+    # The process may have died during setup or after finishing, rather than inside this module. The native
+    # report is periodic for small modules, so a fast real crash can also leave no evidence: stop conservatively
+    # in that case instead of blaming an innocent module or retrying more ranges with an unreliable checker.
+    if not inflight or name not in read_names(inflight):
+        fail(f"pipelines: checking {name} alone exited with {exit_label(code)} without a fresh report naming it "
+             "as in flight; the diagnostic result is inconclusive, so no crash is attributed to this module. "
+             "Check the checker output, available memory and report-file access before retrying")
+    return True
 
 
 def main() -> int:
