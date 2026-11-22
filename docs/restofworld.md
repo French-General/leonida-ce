@@ -425,22 +425,6 @@ edges, so none of the conclusions below depend on it.
 | Position header (bias, scale) finite, scale >= 0 | 60,442 / 60,442 |
 | Every triangle edge no longer than the block extent | 48,150 / 60,442 |
 
-Slot usage (block counts): slot 0 tag `0x42` in all 60,442; slot 2 `0x21` in 57,925; slot 1 `0x26` in
-57,873; slot 3 `0x28` in 49,294 and slot 4 `0x28` in 29,379; then slot 12 `0x26` (25,239), slot 6 `0x26`
-(24,876), slot 8 `0x25` (21,519), slot 13 `0x26` (17,928), slot 11 `0x27` (11,120) and 21 rarer slot/tag
-pairs, including `0x84` and `0x4b` in slot 17 (5,452 and 3,714).
-
-**Tag `0x28` is two signed 16-bit values.** Over the triangle edges of the slot 3 stream, a difference of more
-than 0x8000 between neighbouring vertices occurs 1,597,530 times when the values are read as unsigned and
-18,791 times when they are read as signed (85 times fewer); slot 4 gives 1,680,055 against 5,570. Read as
-half floats, 1,391,311 slot 3 values are NaN or infinite. So the stream is a pair of `int16`s, continuous across
-the surface, which fits the `x / 32767 * f32@0x7C` texture-coordinate reading.
-
-**Tag `0x26` (slot 1) is four bytes with an alpha-like byte 3.** Byte 3 is 255 on 62.4% of the 137.9 million
-vertices and 0 on 17.2%; each of bytes 0-2 is constant within a block in 36,544 to 38,854 blocks. The bytes
-change smoothly over edges (block-weighted median edge/random difference ratio 0.18 to 0.27), as a colour or
-blend weight would. As a packed normal it scores no better than random directions (below).
-
 **Slots 6/7 (tag `0x26`) and 8/9 (tag `0x25`) are skin weights and joint indices.** Where slot 8 holds tag
 `0x25`, each `0x25` slot comes with a `0x26` slot two below it (slot 6 with 8, slot 7 with 9), and no block in
 the sample has one without the other. Read as four unorm8 weights per `0x26` slot and four joint indices per
@@ -465,6 +449,22 @@ down to 233) all come from one-pair blocks: a four-influence vertex whose weight
 `tools/skin_streams.py` also finds for one packed four-influence population of the drawable skin streams.
 levels (first 400 streams) has 9 skinned blocks (3,910 vertices), all one pair, and every vertex there
 passes: one weight of 255 on joint 0. The colour control never sums to 255 in either sample.
+
+Slot usage (block counts): slot 0 tag `0x42` in all 60,442; slot 2 `0x21` in 57,925; slot 1 `0x26` in
+57,873; slot 3 `0x28` in 49,294 and slot 4 `0x28` in 29,379; then slot 12 `0x26` (25,239), slot 6 `0x26`
+(24,876), slot 8 `0x25` (21,519), slot 13 `0x26` (17,928), slot 11 `0x27` (11,120) and 21 rarer slot/tag
+pairs, including `0x84` and `0x4b` in slot 17 (5,452 and 3,714).
+
+**Tag `0x28` is two signed 16-bit values.** Over the triangle edges of the slot 3 stream, a difference of more
+than 0x8000 between neighbouring vertices occurs 1,597,530 times when the values are read as unsigned and
+18,791 times when they are read as signed (85 times fewer); slot 4 gives 1,680,055 against 5,570. Read as
+half floats, 1,391,311 slot 3 values are NaN or infinite. So the stream is a pair of `int16`s, continuous across
+the surface, which fits the `x / 32767 * f32@0x7C` texture-coordinate reading.
+
+**Tag `0x26` (slot 1) is four bytes with an alpha-like byte 3.** Byte 3 is 255 on 62.4% of the 137.9 million
+vertices and 0 on 17.2%; each of bytes 0-2 is constant within a block in 36,544 to 38,854 blocks. The bytes
+change smoothly over edges (block-weighted median edge/random difference ratio 0.18 to 0.27), as a colour or
+blend weight would. As a packed normal it scores no better than random directions (below).
 
 **Tag `0x21` (slot 2) is still unsolved.** For each block the tool reads 256 sampled triangles and counts the
 vertices whose decoded vector is within `|cos| > 0.8` of the face normal; random directions score 0.2. Of the
