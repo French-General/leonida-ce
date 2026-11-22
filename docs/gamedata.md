@@ -616,15 +616,16 @@ The one unresolved item points outside this archive or at a document lost to the
 hours are integers from 0 to 22 in strictly increasing order, with gaps of 1 hour (7 times), 2 (twice), 3 (once)
 and 4 (twice); `interpolation_type` is `EASE_LINEAR_IN` on 9 samples and `EASE_QUARTIC_INOUT` on 4, and all 13
 `uw_tc_mod` values are the same name, which resolves to one of the 4,592 modifier names. The `region` name equals one of the two keyframe
-region names. So unlike GTA V, where the 13 sample times are compiled in, this build reads them (and the easing
-between them) from `time_data`; their count matches the 13 values of every keyframe variable.
+region names. So unlike GTA V, where the 13 sample times are compiled in, this build stores them in `time_data`;
+their count matches the 13 values of every keyframe variable. The `interpolation_type` labels are stored metadata:
+how the runtime selects the interval between two samples, and whether it applies the label, is not verified.
 
 The `hour` attributes of the 13 `sample` elements, in document order, are **0, 4, 5, 6, 7, 9, 12, 16, 18, 19, 20,
 21, 22**. They come from the one `time_data` payload of the `common.rpf` carve, at archive offset 1,773,568
-(`0x1b1000`): a single zlib stream, 268 B stored and 1,370 B inflated. `EASE_QUARTIC_INOUT` is on the samples at
-hours 4, 20, 21 and 22. That value *i* of a keyframe variable belongs to sample *i* is a hypothesis: it rests
-on the equal count and the document order, not on the executable. To print the hours from a carve (the JSON is
-game data and stays local):
+(`0x1b1000`): a single zlib stream, 268 B stored and 1,370 B inflated. The samples at hours 4, 20, 21 and 22
+carry the `EASE_QUARTIC_INOUT` label. That value *i* of a keyframe variable belongs to sample *i* is a
+hypothesis: it rests on the equal count and the document order, not on the executable. To export the sample
+records as JSON from a carve (the CLI prints summary counts; the JSON is game data and stays local):
 
 ```
 python -I tools/gamedata_reader.py <work>/carve/common --root time_data --out <scratch>
