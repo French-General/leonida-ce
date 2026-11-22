@@ -165,7 +165,7 @@ and in the GPU fixtures), on the evidence of both GPUs (gfx1036 by @AwkGrep256, 
    200-row sample of edge-heavy inputs 89 of 200 (16_FLOAT), 132 and 174 rows had differed.
 2. **UNORM and SNORM stores** multiplied in f32 and rounded that, which rounds twice (0.3·65535 is 19660.5008 exactly and
    19660.5 in f32, a tie that went to 19660; the hardware stores 19661). They now round the exact product once, by integer
-   arithmetic (`Gen.norm_encode_exact`), for every NORM and SCALED format.
+   arithmetic (`Gen.encode_norm_bits`), for every NORM and SCALED format.
 3. **A two-component format stored through a V#** took (x, y) always. With identity selectors (XYZW) hardware takes (x, w) (`_xy`: (x, 0)); with the runtime's XY01 it takes (x, y), which is what the game's descriptors have, so the translator now chooses by DST_SEL_Y and DST_SEL_Z. tbuffer stores keep (x, y). **The first reading of this finding, "(x, w) on RDNA2", came from a probe that only used XYZW; the narrow-integer fixtures, measured on gfx1036 with XY01, showed it does not hold for the runtime's selectors.**
 
 The 12 codes that were missing (30..35, 37..42) are in the table now.
