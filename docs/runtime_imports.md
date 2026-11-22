@@ -106,10 +106,16 @@ and the `api-ms-win-core-file-*` sets a GDK title links against.
   `ERROR_ACCESS_DENIED` (as deleting one does), a move between `GAME:` and a host path with `ERROR_NOT_SAME_DEVICE`, and
   `MOVEFILE_DELAY_UNTIL_REBOOT` with `ERROR_INVALID_PARAMETER`.
 - `CopyFile`, `CopyFileEx` and `CopyFile2` read the source the way a read does and write a `GAME:` destination in the
-  overlay; fail-if-exists counts a name only the package has. Either side can be a host path. Where the host has no
-  `CopyFile2` (Wine 9, whose loader binds the import to a stub that aborts the process), the shim copies with
-  `CopyFileExW` instead: the flags both calls define and the cancel flag are passed on, CopyFile2-only hints are
-  dropped, and a `COPYFILE2` progress routine is not called.
+  overlay; fail-if-exists counts a name only the package has. Either side can be a host path. `CopyFile2` checks its
+  parameter block before preparing the destination: one shorter than `COPYFILE2_EXTENDED_PARAMETERS` is
+  `E_INVALIDARG` and writes nothing, as Windows answers. Where the host has no `CopyFile2` (Wine 9, whose loader binds
+  the import to a stub that aborts the process), the shim copies with `CopyFileExW` instead: the flags both calls
+  define and the cancel flag are passed on (a flag already set cancels before anything is written), CopyFile2-only
+  requests that leave the contents as `CopyFileExW` writes them (no offload, compressed traffic, sparse copy, ...)
+  are dropped, and a `COPYFILE2` progress routine is not called. A call it can't run as asked (`SKIP_ALTERNATE_STREAMS`,
+  `DIRECTORY`, `OPEN_AND_COPY_REPARSE_POINT`, `IGNORE_SOURCE_ENCRYPTION`, an unknown flag, or a longer V2 block) is
+  `ERROR_NOT_SUPPORTED` and writes nothing. `rt::fs::force_copy_file2_fallback` makes the test take this path on
+  Windows too.
 - `SetFileAttributes*` sets the attributes on the overlay copy, copying a package file up (or mirroring a package
   folder) first, so the package keeps its own.
 
