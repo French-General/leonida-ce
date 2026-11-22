@@ -34,7 +34,8 @@ python -I tools/xcl_compare.py --xcl C:\src\xcl --gui      # the checks live in 
 
 The work folder defaults to `%TEMP%\leonida_xcl_compare`. It must not be on `D:`: XCL maps the console drive `D:`
 to the game folder, so a real `D:\` path is not reachable inside XCL and the title fails to load. The report is
-`report.json` in the work folder (`--out` to change it).
+`report.json` in the work folder (`--out` to change it). Everything each title printed is in `xcl_output.txt` and
+`leonida_output.txt` beside it.
 
 A check that prints nothing for `--timeout` seconds (15 by default) is a hang. The tool records the stacks of the
 title's threads with `cdb.exe` from the Windows SDK debugging tools (when installed), stops the title, and starts it
