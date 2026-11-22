@@ -155,10 +155,20 @@ clamped total), so a malformed directory, or one without kind 0 or kind 6, gives
 pipeline's code base, which a translated shader reads its embedded constants through, is the kind-6 bytes: the
 translator's code offsets are into `fspx/<name>.code`.
 
-The proxy maps slot 67's description onto `CreateComputePipelineState` with `CS` = the kind-6 pointer and size
-(#1714), which is the bare-program row above. Not done here: the console-only pipeline slot 11 the DLL calls after
-either path ([d3d12_command_objects.md](d3d12_command_objects.md) §3.5a), and using
-kind 0 at run time beyond what the translated module already carries (its thread-group size and `RSRC2`).
+**Slot 67.** The proxy maps slot 67's description onto `CreateComputePipelineState` (#1714). When kind 0 is in the
+description, which the DLL always passes (its reader refuses a payload without one), the proxy builds one FSPX
+payload from the four pointer and size pairs (`leonida::fspx_payload_from_parts`) and passes that as `CS`, the
+bare-payload row above. Two programs with the same code and different dispatch state therefore stay apart at slot 67
+too. Each pair is checked before it is read: a pointer without a size or a size without a pointer, a size over
+16 MiB, or a missing kind 6 refuses the call with `E_INVALIDARG`. Only a description without kind 0 still passes the
+kind-6 bytes alone (the bare-program row).
+
+**Slot 11.** After either path the DLL calls the pipeline's console slot 11. The Vulkan device's pipeline answers
+with a blob holding the dword 0, so the DLL creates no compute scratch buffer; why 0 is justified is in
+[d3d12_command_objects.md](d3d12_command_objects.md) §3.5a.
+
+Not done here: using kind 0 at run time beyond what the translated module already carries (its thread-group size
+and `RSRC2`).
 
 ## Translation status
 
