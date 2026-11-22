@@ -83,7 +83,11 @@ compute shader.
   literals.
   - They carry the container's shader hash. Measured: the low halves of words 0 and 3 and the literals in words 2 and
     5 equal the 16 bytes after kind 7's `0x43` word, which are the digest in the container's `HASH` part, in all 29.
-  - `llvm-mc` rejects them. Their effect on the GPU was not checked; that they are no-ops is inferred.
+  - `llvm-mc` rejects them. Measured on RDNA2 hardware (`gfx1031`, AMD Radeon RX 6700 XT, driver 26.11.2, through
+    `tools/fspx_prologue_probe.py` / `tools/hw_oracle`): in wave32 and wave64 across 5 synthetic 36-byte prologues
+    (50 positive checks and 8 negative controls), executing the raw words leaves VGPRs (`v0`, `v1`, `v8`..`v15`),
+    SGPRs (`s[0:1]`, `s4`..`s15`), `M0`, `VCC`, `EXEC` (including inactive lanes across 64 threads) and `SCC` (both 0
+    and 1) unchanged, and execution resumes cleanly at `+36` bytes. So they are hardware no-ops on RDNA2.
   - `tools/fspx_unpack.py` disassembles from the end of the prologue.
 - **Target.** The programs use `v_dot4_i32_i8` (1,458 times) and `v_dot4c_i32_i8` (25,813 times), which fits the
   provider's name (`FSR4_Int8`). `llvm-mc` (LLVM 23.1.5) decodes them for `gfx1011`, `gfx1012`, `gfx1030`, `gfx1031`,
