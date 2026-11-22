@@ -423,7 +423,7 @@ The RDS5 index is readable without game code:
 | chunk table | 0x18, 8 bytes per entry, `(count − 1) * 8` bytes |
 | ETPF index | `align(0x18 + (count − 1) * 8, 0x100)`; version 634 (`0x27A`) |
 | texture records | a 16-byte ETPF header, then `area` bytes of records (at least 16 × textures) |
-| asset keys | one u64 per record after the descriptor array; IDs are 32 bytes each |
+| asset keys | one u64 per record after the descriptor array; the array continues into the ID region when it is longer than the record area leaves room for (the area is at least 16 × textures), so a reader must load it across that boundary. IDs are 32 bytes each. In the 57 pools of this install, 15 have a straddling array and 28,666 of the 357,115 keys sit past the record area |
 
 Chunk entry `(u64 value)`:
 
