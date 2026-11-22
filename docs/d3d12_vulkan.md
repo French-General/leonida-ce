@@ -1278,6 +1278,10 @@ The runtime allocates image keys from `0x100000000` (4 GiB) in 256-byte steps, a
   upload buffer would share, so they stay in system memory. If VRAM is full, the allocation falls back to system
   memory. The device logs which one it uses (`[rt] d3d12: upload heaps in ...`), and `LEONIDA_UPLOAD_SYSMEM=1`
   keeps them in system memory to compare the two. Readback buffers keep preferring `HOST_CACHED`.
+- Textures and default-heap buffers outside the arena prefer `DEVICE_LOCAL` and need no host access. When VRAM is
+  full they still get memory, from the next type `memory_type_order` lists, which is system memory. The first one
+  that does is logged once (`[rt] d3d12: a N-byte allocation did not fit in device-local memory ...`, D3D-299,
+  `leonida::spilled_to_host`), so a run on a 4 GB GPU shows that it spilled (#2375).
 
 **Capacity.** The arena is sized by buffers, descriptor heaps and shader code, not by textures. The allocator
 tracks the high-water mark; start with a configurable capacity (for example 4 GiB for the loading/menu path) and
