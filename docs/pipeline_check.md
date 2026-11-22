@@ -62,6 +62,38 @@ and error classes, keeping the local shader files and reports that identify them
 
 [interfaces]: https://docs.vulkan.org/spec/latest/chapters/interfaces.html#interfaces-iointerfaces-matching
 
+## Audit wave fidelity for the target GPU
+
+The subgroup audit combines the translator's wave-width and partition-invariance metadata with
+the target device's Vulkan stage capabilities. A device can require 64 lanes for a fragment
+shader without being able to require 64 for a vertex or geometry shader. Audit the whole graphics
+index or use the same manifest as the interface check.
+
+```powershell
+python -I tools/wave64_pipeline_audit.py <spirv>/index.json
+python -I tools/wave64_pipeline_audit.py <spirv>/index.json --manifest pairs.json --strict --report wave64-summary.json
+```
+
+The audit checks the Vulkan device selected on this PC and respects `LEONIDA_VK_DEVICE`. To assess
+another device, save `python -I tools/vk_subgroup_info.py --stage-caps` as UTF-8 JSON on that system and pass the file
+with `--device-info`. The report counts each shader once and each pipeline by its worst stage. It
+contains aggregate counts, capability masks and reason categories. Shader and pipeline names are
+excluded from the report.
+
+| Result | Meaning |
+| --- | --- |
+| `exact` | Fixed or explicitly requestable translated width, or workgroup exchange in compute/mesh |
+| `partition-invariant` | A 32-wide graphics subgroup can run a tier A/B wave64 shader. Tier B atomic slot order can differ. |
+| `default-width` | The reported device default matches, with no per-stage width guarantee |
+| `approximate` | A tier C wave64 VS, PS or GS depends on cross-half behaviour on the 32-wide device |
+| `unknown` | The index or device lacks the information for a decision |
+| `unsupported` | The translated width, stage support or execution model does not fit the target |
+
+In strict mode, exit 1 means at least one result other than `exact` or `partition-invariant`.
+Invalid inputs or an unavailable Vulkan probe exit 2. This checks width fidelity from metadata.
+Vulkan pipeline creation and drawing still need their own tests. See [Wave64 graphics in the
+translator contract](design.md) for how the tiers are assigned.
+
 ## Corpus
 
 The translated corpus is 26,503 entries: 2,236 vertex, 12,101 pixel, 2,689 compute, 9,282 mesh and
