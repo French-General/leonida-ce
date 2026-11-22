@@ -422,7 +422,7 @@ rests on a transcription rather than on a side-by-side compile.
 
 On hardware so far, with `gameinput_probe` and SDL 3.4.20 on Windows 11: a DualSense (`054c:0ce6`) over USB. It
 connects as player 1 with trigger effects and gyro (`motors=0xf forcefeedback=0 haptic=2`). Pressed one at a time,
-each of the 14 gamepad buttons set its own bit of the table in [Mapping](#mapping): Cross, Circle, Square and Triangle
+each of the 14 gamepad buttons set the one bit of the name [Mapping](#mapping) gives it: Cross, Circle, Square and Triangle
 as `A`, `B`, `X` and `Y`, the d-pad, L1/R1, L3/R3, Create as `View` and Options as `Menu`. Both triggers reached
 1.00 and both sticks -1.00 and +1.00 on each axis. At rest the accelerometer read about 0.5 on one axis and the gyro
 0.0; shaking the pad by hand reached 1.00 on the accelerometer. With `--rumble` (the default `rumble` trigger mode)
