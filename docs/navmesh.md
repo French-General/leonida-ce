@@ -252,11 +252,16 @@ The `24,480` unique static sector IDs form a complete, gap-free `136 Ã— 180` 
     `poly1 < u32@0xC4` (`26,535,333 / 26,535,333`).
   - `+0x18..+0x1B` (`u16 flags0, u16 flags1`): link attribute and traversal type words (`flags1` top values: `0x0050`
     on `11,492,614`, `0x0040` on `9,705,698`, `0x0030` on `4,281,168`, `0x0060` on `425,369`).
-  - `+0x1C..+0x1D` (`u16 heading`): 8-bit quantized heading angle (`0..254`, `< 256` on `26,679,246 / 26,679,246`).
+  - `+0x1C..+0x1D` (`u16 heading`): 8-bit quantized heading angle (`< 256` on `26,679,246 / 26,679,246`; `u8@0x1C`
+    in `0..254`, `u8@0x1D == 0`).
   - `+0x1E..+0x1F` (`u16 pad`): zero padding (`0` on `26,679,246 / 26,679,246`).
   - Across all `26,903,247 / 26,903,247` entries of `+0xB0`, every entry `li = u16@(b0 + 2*k)` in polygon `pi`'s slice
     `[link_start .. link_start + link_count)` indexes a 32-byte link at `+0xA8` satisfying
-    `(poly0 == pi or poly1 == pi) and (sector0 == u32@0xC8 or sector1 == u32@0xC8)` (`0` failures).
+    `(poly0 == pi or poly1 == pi) and (sector0 == u32@0xC8 or sector1 == u32@0xC8)`, and every referenced link is
+    listed by all of its local-tile endpoints (`poly0` when `sector0 == u32@0xC8`, and `poly1` when
+    `sector1 == u32@0xC8`; on cross-tile links where the foreign endpoint polygon index is `< u32@0xC4`, the offline
+    builder also indexed the link under that polygon index because it matched `poly0/poly1 == pi` without filtering
+    by `sector0/sector1 == u32@0xC8`).
 
 ### Split arrays and quadtree layout
 
