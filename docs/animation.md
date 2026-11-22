@@ -278,7 +278,8 @@ blob to its last byte and confirms the counts above: 9 descriptors, 28,962 eleme
 string values, 6,677 integer values and maximum element depth 6. The 1,126 string values are the `key` attributes
 on the rig-set `Item` elements. Each of the 6,677 entry `Item` elements contains `Dictionary`, `Rig` and `Group`
 text children followed by a `Priority` integer. The record framing is consumed exactly; the numeric field
-semantics and the rig-to-skeleton link remain unresolved.
+semantics remain unresolved. The `Dictionary` text names one of the four rig dictionaries and `Rig` is a key
+there; see [Rig dictionaries](#rig-dictionaries).
 
 Mapping to the name tables:
 
@@ -328,7 +329,8 @@ are in the same stream. It is not a rig → skeleton link for RBF0:
 - The four motionmatcher paths are not in the 2,298 `.clip`/`.anim`/`.motion` name-table paths.
 
 So RBF0 gives rig-set → source → rig, and the motion matcher resources show how a clip can carry its own bone
-table. The link from an RBF0 rig to that table is still missing; it is the main unresolved binding.
+table. The RBF0 rig itself resolves into a rig dictionary ([Rig dictionaries](#rig-dictionaries)); what it does not
+give is a whole skeleton for the clips.
 
 ### Magics not found
 
@@ -376,8 +378,12 @@ In 36 roots the page map says two pages, but the next listed stream does not sta
 second page is right after the first stream, but `anim_index.py` does not list it: in 28 it is a zlib stream that
 inflates to 16–48 bytes (`anim_index.py` lists streams of 64 bytes or more), and in 8 it is a 16-byte raw page,
 like rpf9-explorer's raw system tail. `anim_clips.py` joins such a last page only when the joined pages then parse
-as a clip dictionary; all 36 do, so no root is left unresolved. Of the joined resources, 61,505 are clip
-dictionaries. 4 have `RIG` plus a version at +0x70 instead of a pack array (rig dictionaries, not decoded here), and
+as a clip dictionary; all 36 do, so no root is left unresolved. That recovery runs only after the page map itself
+has been read from listed streams: a root whose page map is in such an unlisted last page stays unresolved ("page
+map not in the next stream"). No anim.rpf root has that layout. In `story000.rpf` 5 roots do, with the page map in
+a 32- or 48-byte zlib tail, and none of the 5 is a clip dictionary once that tail is joined. Of the joined resources, 61,505 are clip
+dictionaries. 4 have `RIG` plus a version at +0x70 instead of a pack array (rig dictionaries, [decoded
+below](#rig-dictionaries) by `tools/anim_rigs.py`), and
 1 has some other value there. Together the dictionaries use 87,234 listed streams plus the 36 unlisted pages
 (3,802,124,713 stored / 7,077,351,104 inflated bytes in the listed streams). By `anim_index.py` class those
 streams are: zero-prefix 66,115, raw 20,845, name-table 273, skeleton-names 1.
@@ -415,9 +421,12 @@ u32; u32 count}` with `Entry {u64 key; T *value; Entry *next}`. Hashes are `joaa
 | `.motion` (`+0x20` is a pointer) | `+0x18` pointer | the dictionary root (page offset 0) |
 | | `+0x28` u32, `+0x2C` u32 | the clip hash (the low half of its `atMap` key) and `joaat32` of the dictionary name |
 | | `+0x30` atString | `pack:/<name>.motion` |
-| | `+0x58` u32 | 1 or 2; most likely the number of blend parameters (not verified) |
+| | `+0x58` u32 | 1 or 2; selects where the parameter node is (see `+0x120`, `+0x138`); most likely the number of blend parameters (not verified) |
 | | `+0x60` array, 16-byte items | children `{u64 0; u32 clip hash; u32 dictionary hash}`: the clips it blends |
-| | `+0x70` array, 0x28-byte items | one item per child (same count); a pointer at `+8`; not decoded |
+| | `+0x70` array, 0x28-byte items | one item per child: `{f32 child duration; f32 duration in the blend; {ptr; u16 count} curve of (child time, blend time) f32 pairs; 16 zero bytes}` |
+| | `+0x120` pointer (`+0x58` = 2) | a block whose `+0x18` points at the parameter node |
+| | `+0x138` pointer (`+0x58` = 1) | the parameter node: `{u64 0; u32 type; u32 0; ...}` |
+| parameter node, type 3 | `+0x10` array of u32, `+0x20` array of 8-byte items, `+0x30`/`+0x34` f32 | one sampled axis: its name hash(es), then `{u32 sample index; f32 value}` sorted by value, then min and max |
 | `.motionmatcher` (`+0x20` is a pointer) | `+0x28` 16 bytes, `+0x38` atString | an id, then `pack:/<name>.motionmatcher`; the rest is not decoded |
 | animation | `+0x24` u16 | frame count |
 | | `+0x28` f32 | duration = (frames − 1) / fps |
@@ -551,8 +560,25 @@ fields are in the object table above. Measured on all 17,247 `.motion` clips:
   search of every clip-dictionary-like root page in `levels`, `packs`, `story000`, `story000_script`,
   `story000_restofworld`, `core_restofworld`, `core_restofworld001`, `shared_minigame000`, `data`, `common` and
   `script` found none of those hashes, so this package does not resolve them.
-- `+0x70` has one 0x28-byte item per child on all 17,247. Those items, and the rest of the object from `+0x80` on, are not
-  decoded.
+- **Child times (`+0x70`).** One 0x28-byte item per child on all 17,247: the child's duration, its duration in the
+  blend, and a piecewise-linear curve from child time to blend time. Of the 159,584 items, 158,991 have equal
+  durations and the two points (0, 0) and (d, d), so the child plays at its own speed. 402 have a 5–82 point curve
+  from (0, 0) to (duration, blend duration), increasing in both coordinates, so the child is time-warped. The other
+  191 have two points, but 170 don't start at (0, 0) and 21 don't end at (d, d). For every child that names a
+  `.clip` in anim.rpf, the first float is bit-for-bit that `.clip`'s duration (`+0x78`): 111,948 of 111,948.
+- **Parameter node.** When `+0x58` is 1 the node is at `+0x138`; when it is 2, `+0x120` points at a block whose
+  `+0x18` is the node. Every `.motion` has one, and it starts `{u64 0, u32 type, u32 0}`. By type: 3 on 10,171, 1 on
+  3,557, 4 on 2,644, 5 on 482, 6 on 295, 8 on 98. Only type 3 is decoded here.
+- **Type 3: one sampled axis.** It has one u32 name hash, then 1–16 `{u32 sample index, f32 value}` items and the
+  axis min and max. On all 10,171 (29,123 samples), the items are sorted by value, min and max are the first and
+  last values, and the sample indices are 0..n−1 in some order. They are not child indices: the sample count
+  equals the child count on 4,589 of them. The name hashes are `joaat32` of a lower-case name. 88 distinct hashes
+  occur, and a word-list search resolved 10 of them, covering 5,604 axes: `yawangle` 2,524, `rotationz` 1,691,
+  `facingdirection` 638, `speed` 284, `surfaceincline` 271, `roll` 66, `verticalheight` 58, `pitch` 25,
+  `pitchangle` 25, `height` 22. The ranges fit the names: `speed` is within [0, 1], `surfaceincline` within
+  ±0.698 rad (40°), and `roll` within ±3.14. `anim_clips.py` reports every name as `motion_axis_name:<name or hash>`.
+- Not decoded: parameter node types other than 3, how a type-3 sample index maps to the children, and the rest of
+  the object from `+0x80`, including the `{ptr, count}` lists at `+0x90`.
 
 The 180 `.motionmatcher` clips sit in 142 dictionaries that hold only `.motionmatcher` clips and no local pack.
 The three motion matcher streams in [Bone tables and motion matchers](#bone-tables-and-motion-matchers)
@@ -571,6 +597,68 @@ one of the 1,902 hashes anim.rpf refers to without having them.
 ```
 python -I tools/anim_clips.py <package>\pack\story000\story000.rpf <work>\story000-clips.json --jobs 20
 ```
+
+## Rig dictionaries
+
+`tools/anim_rigs.py` reads the four `RIG` roots above (ASSET-20). Run on the 1.0.2.1 copy:
+
+```powershell
+python -I tools/anim_index.py <package>\anim.rpf <work>\anim-index.json --rigs <work>\rigs.json
+python -I tools/anim_rigs.py <package>\anim.rpf <work>\anim-rigs.json --rigs <work>\rigs.json
+```
+
+The output holds counts and one row per rig dictionary (offset, name, hash, entry count), no table items.
+
+**Layout.** The root is the clip dictionary's: `+0x38` atString name, `+0x48` atMap, `+0x68` `joaat32(name)` (4 of
+4), and at `+0x70` the bytes `RIG` and a version byte (2 in all four). Every map key has a zero high half (3,897 of
+3,897). Every map value has a pointer at `+0x20` to a **`RIG` block** (3,897 of 3,897): `RIG`, a version byte (2),
+a u32 length of what follows, then tables `{u32 kind hash; u32 size = 0xC + 8 × count; u32 count; u32 word}`, each
+followed by `count` 8-byte items `{u32 hash; u32 word}`, with other bytes between the tables. The other bytes and
+the item words are not mapped.
+
+**The four dictionaries are the four RBF0 sources.** Their names are the four source strings of the rig-set
+manager:
+
+| Name | Entries | Keys that are `joaat32` of an RBF0 rig |
+|---|---:|---:|
+| `canonical@legacy` | 22 | 16 |
+| `canonical@source` | 543 | 534 |
+| `generated@source` | 1,256 | 1,188 |
+| `pipelined@source` | 2,076 | 1,931 |
+
+These are the distinct-rig counts per source in [the RBF0 table above](#tail-rbf0-rig-set-manager). The other 228
+keys are not named by any RBF0 entry. **All 6,677 RBF0 entries resolve**: the entry's `Dictionary` text is the
+rig dictionary's name, and `joaat32(lowercase Rig path)` is a key in it (6,677 of 6,677; 0 in another dictionary,
+0 missing). So a rig set reaches its rigs' `RIG` blocks through rig-set → `{Dictionary, Rig}` → rig dictionary →
+key → `+0x20`.
+
+**Tables.** 6,606 tables are found in the 3,897 blocks. Four kind hashes hold all but 5 of them; the 5 are single
+hits whose "kind" is an f32 near 1.0 (`0x3f7f....`, `0x3f76....`) or a small integer, so they are float data that
+happens to fit the header rule. The kind names are not resolved:
+
+| Kind | Tables | Items | Items that are a clip track's bone hash |
+|---|---:|---:|---:|
+| `0x74d00508` | 2,642 | 13,210 | 0 |
+| `0x2316833f` | 2,437 | 118,853 | 91,559 |
+| `0xb688b77e` | 1,427 | 72,528 | 39,880 |
+| `0x5e25d3bf` | 95 | 4,416 | 0 |
+
+"A clip track's bone hash" means the hash is the bone of some track in the 191,042 decoded animations.
+
+**Rigs are not the clips' skeletons.** The clip side was measured with a local script over the same
+`anim_clips.py` parse: for each of the 52,752 clip dictionaries with bone tracks, the union of its
+`bonerotation`/`bonetranslation` bone hashes (mover track 0 left out).
+
+- Against the 596 hashed names of the shared humanoid skeleton ([character_skeleton.md](character_skeleton.md)),
+  44,359 dictionaries have at least 90% of their bones in it (16 have all of them).
+- Against the rigs (the items of the two bone-bearing kinds above), no rig set covers the clips of a humanoid
+  dictionary. Even the union over all the rigs of one rig set reaches 80% of a dictionary's bones for 11 of those
+  44,359. Only 4 dictionaries, all of objects, are covered completely by a rig set.
+
+So humanoid clips bind to the fragment skeleton, not to a `RIG` block. The rig tables look like per-rig bone or
+channel subsets (the RBF0 groups are `deformation`, `pose`, `identity`, `facial` and others); that reading is not
+measured. Still open in ASSET-20: the `0DRP` "2/3 packed clip streams" ([above](#packed-clip-streams)) and which
+model or skeleton each non-humanoid clip dictionary drives.
 
 ## Readable, compressed and still opaque
 
@@ -602,7 +690,8 @@ python -I tools/anim_clips.py <package>\pack\story000\story000.rpf <work>\story0
 - None of the 1,350 model names occurs in the 8,020 animation paths collected here, and none occurs in the
   `RBF0` rig metadata either. The sampled clip hash `0x25ed0554e58ba1fc` and the recurring `0x98e1750c` are
   absent from all manifest names and integer/string values. A real cross-check needs the full model export
-  (350,248 models per `docs/design.md`) and the rig table.
+  (350,251 models per `docs/design.md`) and the rig table.
+  (382,781 models at `e293917` per `docs/design.md`) and the rig table.
 - `common.rpf` is the readable metadata layer. It carved to 781 streams, 710 of them XML-ish. Strict keyword
   occurrences: `clip` 734, `anim` 1,131, `motion` 237, `gesture` 2, `bone` 428 (214 `<Bones>` open/close
   pairs), `ped_` 1,308, `blend` 40; `facial`, `ycd` and `skeleton` 0. The tags include `<AnimData>`,
@@ -669,7 +758,8 @@ above are measured. Treat those two labels as hypotheses until a decoder reads a
 6. **Keep the compression boundary explicit.** Outer RPF9 zlib is understood. Do not add a zlib pass inside a
    page without evidence; the sampled pages had no valid nested stream.
 7. **Re-run the model cross-check with the full export.** The current 1,350-model data.rpf manifest has bone
-   bindings but no bone names or hashes. The full 350,248-model export plus the `RBF0` rig table is needed to
+   bindings but no bone names or hashes. The full 350,251-model export plus the `RBF0` rig table is needed to
+   bindings but no bone names or hashes. The full 382,781-model export plus the `RBF0` rig table is needed to
    match skeletons to models.
 
 ## Reproduction

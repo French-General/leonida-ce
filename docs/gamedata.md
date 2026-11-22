@@ -428,6 +428,16 @@ Measured over the 630 clouds:
   `Density` within -100..100 (median 0.5) and `FogHeight` within -100..300: signed values, so these act as
   offsets or overrides with a sign, not plain amounts.
 
+The cloud renderer's settings sit in one `STS_Config` document with 44 top-level sections: four cloud layers
+(`Nimbus`, `Cumulus`, `Stratus`, `Alto`) that share one set of 13 fields (noise weights and blends, erosion,
+density, lighting and multi-scattering density scale, shape fade, transition and altitude ranges, dilation,
+noise displacement); six media (`GlobalFog`, `LocalFog`, `Rain`, `Clouds`, `CloudsCirrus`, `CloudsHaze`) that
+share another set of 9; and 34 single-value or vector settings. Of the five cloud flags above, `Cumulus` and
+`Stratus` match a layer name, `Nimbus0`/`Nimbus1` would both fall on the one `Nimbus` layer, and
+`CirroStratus` has no layer of its own (`CloudsCirrus` is a medium, not a layer). The weather data's
+`CloudType` is fractional (14 distinct values from 0.01 to 0.67 over the 25 weathers), so it is a blend
+position rather than an index into these layers.
+
 Not measured here (hypothesis): how a cloud's radius range blends with the weather's `CloudType` and cloud maps,
 what a negative `Rain`/`Fog`/`Density` means (subtracting from the weather, or "unset"), and what the two
 `Nimbus` flags distinguish.
@@ -687,6 +697,16 @@ entry combines up to four nested parameter groups with 12 direct scalar `value=`
 | `roadPenalties`, `offRoadPenalties` | 40 / 40 each | identical 6-scalar schema: `fMaterialTractionLoss`, `fMaterialRollingDragGain`, `fMaterialSinkDragGain`, `fMaterialSurfaceDragGain`, `fWetTractionLoss`, `fWetDragGain` |
 | Direct scalars (required) | 40 / 40 each | `fLoadShapeVarianceScale`, `fDamageShapeVarianceScale`, `fDamageCoefficientScale`, `fOptimumTyreTemp` (all `100.0`), `fOptimumTyreTempRange` (all `100.0`), `fGripDropOffWithTemp` (`0.01..0.05`) |
 | Direct scalars (optional) | 36..39 / 40 | `fPuncturedTyreGripReduction`, `fBurstTyreGripReduction`, `fTractionStiffnessSpeedMult`, `fTractionStiffnessSpeedCap` (39 each); `fLoadStability` (37); `fLoadSensitivity` (36) |
+**Sample hours come from data.** One `time_data` document (root attributes `version` and `mode`) has exactly 13
+`sample` elements, each with `name`, `hour`, `uw_tc_mod` and `interpolation_type`, plus one `region`. The 13
+hours are integers from 0 to 22 in strictly increasing order, with gaps of 1 hour (7 times), 2 (twice), 3 (once)
+and 4 (twice); `interpolation_type` is `EASE_LINEAR_IN` on 9 samples and `EASE_QUARTIC_INOUT` on 4, and all 13
+`uw_tc_mod` values are the same name, which resolves to one of the 4,592 modifier names. The `region` name equals one of the two keyframe
+region names. So unlike GTA V, where the 13 sample times are compiled in, this build reads them (and the easing
+between them) from `time_data`; their count matches the 13 values of every keyframe variable.
+
+Not measured here (hypothesis): how the two regions are chosen at runtime, what the two plain-modifier numbers
+are (GTA V reads them as a value pair blended by strength), and how `controlValue` maps onto game state.
 
 ## Relationship to `data.rpf` and `script.rpf`
 
@@ -809,6 +829,32 @@ distribution over the listed channels (independent chances or weights would fit)
 
 Not measured here (hypothesis): which texture channel numbering `Channel` uses, and how `VehSpawnIntensities`
 are chosen at spawn.
+
+## Entity component sets and component LOD
+
+Four documents describe which runtime components an entity gets and how far away each stays alive. Counts only;
+no set or type names.
+
+| Root | Content |
+|---|---|
+| `CEntityComponentLodManagerData` | `EntityComponentCounts/Components/Item` x 33: `Type` (33 distinct) and `DesiredCount` (0 to 250, 2,684 in total; one type is 0), plus optional distance-scale factors for not-visible (5 and 2 items), interior (1) and deep-interior (1) entities and per-frame create/remove limits (4 and 2) |
+| `CVehicleComponentSetManager` | 7 `CVehicleComponentSetInfo` sets with 11 to 14 components each (90 in all): `Type`, `MinDistance`, `MaxDistance` |
+| `CPedComponentSetManager` | 15 `CPedComponentSetInfo` sets with 8 to 17 components each (173 in all), plus feature flags: `HasFacial` (true in 12), `HasRagdollConstraints` (13), `HasLookAt` (10), `HasInventory` (8), `HasPhone` (2), `HasReins` (1), `HasDistraction` (2 of 3 sets that carry it), `IsRidable` (false in all 15) |
+| `CObjectComponentSetManager` | 1 `CObjectComponentSetInfo` set with an empty component list |
+
+Each manager has a `DefaultSet ref`, and all three refs name one of their own sets.
+
+**The component types form one closed list.** Vehicle sets use 14 distinct `Type`s and ped sets 18, with none
+in common, and every one of the 32 is among the 33 types of `CEntityComponentLodManagerData`; only one LOD-manager
+type is used by no set. So a runtime can treat the LOD manager's list as the component registry, with
+`DesiredCount` as the pool size per type.
+
+**Distances.** `MinDistance <= MaxDistance` in all 263 components. Vehicle components reach up to 3,000 units
+and ped components up to 200 (both medians 100); the natural reading is the range within which the component is kept
+alive.
+
+Not measured here (hypothesis): whether the distances are metres from the camera or the player, and what the
+not-visible and interior scale factors multiply.
 
 ## No-sharing rule
 
