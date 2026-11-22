@@ -616,20 +616,22 @@ that bound the old set is unsubmitted when it is read. `LEONIDA_BINDLESS_IDLE_WA
 path is a full upload of the table and a rewrite of the set's descriptors per replacing flush, where the old one
 uploaded the changed slots after the stall; `d3d12_bindless_churn_test` prints both.
 
-The pattern is the one vkd3d-proton recommends for retiring GPU-visible objects without a device idle (facts only,
-no code taken; research note `queue_sync_and_retirement.md`, 2026-11-22): stamp the object with the timeline
-values of every queue that may have used it and drain the garbage list at a later submit once each timeline has
-passed its stamp. vkd3d-proton also gives descriptor heaps an internal refcount that the command allocator holds,
-after buggy titles (FSR3 integrations) freed heaps while work was in flight (vkd3d-proton commits 3d6651c and
-5da4f23, May 2026); the layer's deferral of views and bindless slots by ticket serves the same purpose here.
-Two hazards that project documents for bindless use, and that this change does not remove: descriptors written
-for resources the game allocates after the submit that reads them, and an image and a buffer descriptor aliasing one
-heap slot (vkd3d-proton PR #3033). Future path, not implemented: `VK_EXT_descriptor_heap` (released with
-Vulkan 1.4.340 on 2026-01-23; NVIDIA 610+, RADV in Mesa 26.1, ANV experimental) replaces descriptor sets with heaps
-that the application sizes and allocates, so no table or set would be replaced at all; the Khronos guidance is to
-keep one resource heap and one sampler heap per device (Khronos blog "Vulkan introduces Roadmap 2026 and new
-Descriptor Heap extension"; NVIDIA developer blog, 2026-06-25). Our hash table, a layer-private structure, would
-still need the generation scheme above.
+The pattern is the one vkd3d-proton uses to retire GPU-visible objects without a device idle (approach only, no
+code taken): stamp the object with what every queue has submitted and free it at a later submit once those
+submissions have completed. Two further rules come with it here. The submission that carries a new generation's
+table upload makes every other queue's next submission wait for its timeline value (`bindless_upload_semaphore_`,
+like the storage-image initialisation), because that submission is the first to bind the new set and a queue with no
+D3D12 fence on it could otherwise run before the copy; the table's buffers need no ownership transfer because every
+D3D12 queue of the device is made in `info.queue_family`. And at most 8 retired generations are kept: past that, the
+next flush waits (logged once, with the descriptor lock released) for the submissions up to the oldest one's ticket,
+which is a wait for those queues' timelines and not for the device. The commit of a submit's result runs under
+`tracker_mutex_`, so a later flush never sees an earlier submit's outcome unrecorded. If the new generation cannot be
+made (out of memory) the flush leaves the in-use set and the pending writes alone and fails.
+Two bindless hazards that vkd3d-proton documents for games and that this change does not remove: descriptors
+written for resources allocated after the submit that reads them, and an image and a buffer descriptor aliasing one
+heap slot (vkd3d-proton PR #3033, https://github.com/HansKristian-Work/vkd3d-proton/pull/3033). Future path, not
+implemented: `VK_EXT_descriptor_heap` (https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+would replace descriptor sets with application-sized heaps.
 
 A typed 3D color target supports default and explicit RTVs. The default covers mip 0; `FirstWSlice` and
 `WSize` select the depth slices in an explicit view's mip. `d3d12_clear_test --volume` checks full and
@@ -1049,12 +1051,16 @@ and any validation error fails them.
   releases those of seven frames earlier (about 190 live keys, so the table grows), the direct queue uploads, the
   compute queue waits for it on the GPU, and each queue runs the `cs_set0_sample.comp` shader eight times on SRVs
   of the frame and the three before it. All 98,304 sampled texels per run are compared with what the CPU wrote.
-  It runs once as the layer is (0 `vkDeviceWaitIdle` for the bindless set required, at least one generation made)
-  and once with `LEONIDA_BINDLESS_IDLE_WAIT=1` (the old wait; counted above 0); the times of both are printed, not
+  It runs once as the layer is (0 `vkDeviceWaitIdle` for the bindless set required, at least one generation made,
+  a retired generation seen pending right after the submit that made it), once with the compute queue never waiting on
+  the direct queue's fence (it samples textures the CPU has seen finished, so only the grown table is new to it: the
+  layer's own wait on the uploading submission is what keeps it correct), and once with `LEONIDA_BINDLESS_IDLE_WAIT=1` (the old wait; counted above 0); the times of both are printed, not
   asserted. The table's growth is the only replacing flush this scenario produces (3 generations); the other two
   kinds (a live key's index replaced, a relocation) and the failed-submit retry are covered at the Vulkan level by
   `vk_bindless_test` cases 3 to 6, which check that the set changes and that `release_retired` frees only what
-  its ticket allows.
+  its ticket allows. The test's devices have one `VkQueue`, so the second queue's order after the upload holds by
+  submission order too; the cross-queue wait is checked for validity (sync validation, `d3d12_bindless_churn_validated`)
+  but not against a GPU that reorders two real queues.
 - `d3d12_set0_compute_test`: set 0 from the compute bind point, through the proxy and D3D12 alone. The index entry
   of its shader lists set-0 bindings, so the PSO's layout holds the device's bindless set and replay binds it at
   each dispatch; nothing in the test binds it. Four dispatches of `test/glsl/cs_set0_sample.comp` (GLSL written to
