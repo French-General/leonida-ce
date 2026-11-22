@@ -563,6 +563,14 @@ Measured on the 1.0.2.1 package with the tools above; counts and offsets only.
   base. Measured at base 0 and at base 0x1000 (structure copied to VA 0x1000, dword0 `0x10`): the game's RT shadow
   CS (`deferred_tiled` family, 32-bit form) on the RTX 2060 returns the CPU walker's children in the same order at
   both. Its second traversal site still needs the executable.
+* The base and the address formula were also measured on the **native instruction**, with no emulation in the path:
+  `tools/hw_oracle` ran `image_bvh_intersect_ray` and `image_bvh64_intersect_ray` on gfx1036 (Ryzen 9 9950X3D iGPU,
+  driver 32.0.21030.2001) over hand-built box32 nodes, a decoy node at the buffer start and the real one at +0x1000.
+  dword0 `(P >> 8) + 0x10` with node `0|5`, and dword0 `(P >> 8) + 0x08` with node `0x800>>3|5`, both traverse the
+  node at `P + 0x1000`: address = base × 256 + (node & ~7) × 8, and the base and the node offset add. The control
+  (base `P >> 8`, node `0|5`) reads the decoy. Both instruction widths agree. Not exercised: descriptor bits 39:32
+  (the buffer fits in 32 bits), nodes other than box32, and a `0x1030`-style dword0, which the hardware would read as
+  base 0x103000.
 
 ## 8. No-sharing rule
 
