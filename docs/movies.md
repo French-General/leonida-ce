@@ -112,8 +112,8 @@ and then only to a temporary file that is deleted.
 
 On this archive both tools find the same 515 streams, the same 8,831,336,892 bytes, 1,094,744 bytes of zero
 padding and 22,812 bytes after the last stream. Those 22,812 are 3,884 zero bytes and the 18,928-byte RPF trailer
-(counted by reading the tail directly); `bink_index.py` now reports them as zero padding and `rpf_trailer`, so its
-`unread_bytes` for this archive is 0 and its zero padding 1,098,628. Running `bink_index.py` on the 515 carved
+(counted by reading the tail directly); `bink_index.py` now counts them as zero padding and `rpf_trailer`, which for
+this archive gives `unread_bytes` 0 and zero padding 1,098,628 (derived from the measured tail, not a rerun). Running `bink_index.py` on the 515 carved
 `.bk2` files finds 515 streams with zero unread bytes, which confirms the stored sizes cover each file exactly.
 
 ## 4. Decoding
@@ -216,8 +216,8 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
   Xbox semantics, not necessarily `malloc`.
 - **What the RPF trailer holds.** The 22,812 bytes after the last stream are no longer unexplained (ASSET-318):
   3,884 zeros pad to a 4 KiB boundary, and the remaining 18,928 bytes, to EOF, are exactly the header's `u32 +12`,
-  the RPF9 trailer ([rpf.md](rpf.md#the-trailer-at-eof); confirmed in 14 of the package's 22 archives, none
-  against). Its contents are high-entropy (7.99 bits per byte) with no zlib or `KB2` header, like the TOC; this
+  the RPF9 trailer ([rpf.md](rpf.md#the-trailer-at-eof); confirmed in 14 of the package's 22 archives, 8
+  undecided, none against). Its contents are high-entropy (7.99 bits per byte) with no zlib or `KB2` header, like the TOC; this
   project does not decode them.
 - **Whether all 515 streams are playable by the game.** Nine were decoded as a sample; the other 506 were only
   header-validated. A full decode pass would need the same DLL experiment for every stream and is not part of the

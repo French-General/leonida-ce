@@ -131,16 +131,16 @@ and `core_bvh4.rpf`, and its role is not established.
 
 No archive contradicts the rule, but 8 don't test it. In the 14, the trailer starts with no zlib or Bink 2 header and is
 high-entropy like the TOC after the header: 7.95 to 8.00 bits per byte in the nine of 3 KiB or more, and 6.6 to 7.9
-in the five smaller ones (a 144-byte block can't reach much more than 6.7 even when random); what they hold is not
+in the five smaller ones (random 144-byte blocks average about 6.7); what they hold is not
 decoded here. `tools/bink_index.py` counts it as `rpf_trailer` instead of unread bytes; in `movies.rpf` it is the
 18,928 bytes after 3,884 zeros that [movies.md](movies.md) listed as unread.
 
 ### Viewing a header in ImHex
 
 [tools/imhex/rpf9.hexpat](../tools/imhex/rpf9.hexpat) is a pattern for the [ImHex](https://imhex.werwolv.net/) hex
-editor. It names the magic and the data offset at `+4`, shows the u32s at `+8` and `+12` unnamed, and shows the range
-from `+0x10` to the data offset (the rest of the header and the TOC) as one opaque byte array. It decodes nothing in
-that range. `python -I tests/test_imhex_patterns.py` runs it on a synthetic header when ImHex is installed.
+editor. It names the magic, the data offset at `+4` and the trailer size at `+12`, shows the u32 at `+8` unnamed,
+and shows the range from `+0x10` to the data offset (the rest of the header and the TOC) as one opaque byte array.
+It decodes nothing in that range. `python -I tests/test_imhex_patterns.py` runs it on a synthetic header when ImHex is installed.
 
 ## Limits
 
