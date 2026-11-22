@@ -479,6 +479,23 @@ python -I tools/xdxr_bvh.py validate <dumped BVH buffer>    # structural check o
 python -I tests/test_xdxr_bvh.py
 ```
 
+## 7b. The first real pack BLAS on a GPU
+
+Measured on the 1.0.2.1 package with the tools above; counts and offsets only.
+
+* `core_bvh4.rpf` indexes to **271,637 BVH4 streams / 1,896,784,254 nodes (121.4 GB inflated)** in 1,034 s.
+* The first BLAS (stream at `0x12060`, 39,257 nodes, 2,512,512 bytes rehydrated) matches **one** drawable among the
+  258,037 models an export of `levels.rpf` produced: 12 geometries, 21,814 leaves, 0 leaves outside, 335/0
+  overrides, area ratio 1.000 (`bvh_match.py`, `bvh_geometry_check.py`, `bvh_rehydrate.py` on the user's copy).
+* The rehydrated header's `rootNodePtr` is the **dehydrated** root; the runtime root is the first node of the last
+  entry of the level table at the end of the structure. The leaves are in the leaf frame (`(R*v - t)*s`): the header
+  `sceneBounds` are the pre-frame AABB (±2.5), the leaf vertices are scaled (≈19,040), so test rays are built from a
+  leaf's own vertices.
+* Descriptor base: the game builds `(ptr & ~0xFF) | 0x30`, a byte address with flags in the low bits, not a
+  256-byte-unit field. With the structure at VA 0 and root `0x4CABC`, the game's RT shadow CS (`deferred_tiled`
+  family, 32-bit form) on the RTX 2060 returns the CPU walker's children in the same order; its second traversal
+  site still needs the executable.
+
 ## 8. No-sharing rule
 
 Nothing from the packs may be committed: no `.rpf`, carved stream, decompressed buffer, XML text, tile list,
