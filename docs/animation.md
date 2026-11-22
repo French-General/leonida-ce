@@ -716,7 +716,7 @@ or skeleton each non-humanoid clip dictionary drives remains open.
 
 ### Can the fragment bone names identify a clip's model? (ASSET-158)
 
-Bone coverage alone identified **zero unique fragments** for the 8,393 dictionaries below the 90% humanoid
+In the ASSET-158 scan, bone coverage identified **zero unique fragments** for the 8,393 dictionaries below the 90% humanoid
 threshold above. This comparison used the named fragment tables recovered from `packs.rpf` in Xbox 1.0.2.1.
 The threshold selects dictionaries for investigation; some may still animate humanoids.
 
@@ -749,7 +749,7 @@ To reproduce the comparison:
 
 ### Explicit model-to-dictionary references in `levels.rpf`
 
-The archetype metadata gives a direct association for **1,324 model asset names and 159 clip dictionaries**
+The ASSET-158 scan of archetype metadata linked **1,324 model asset names and 159 clip dictionaries**
 in Xbox 1.0.2.1. Of those dictionaries, **63** carry local rotation or translation tracks below the humanoid
 coverage threshold. Their archetypes name **488 distinct model assets**. This identifies which dictionaries
 the archetypes reference; the per-bone mapping onto each model's skeleton still needs independent evidence.
@@ -763,10 +763,10 @@ the archetypes reference; the per-bone mapping onto each model's skeleton still 
 2. Search **the same archive** for clip dictionary roots. At each 16-byte-aligned zlib stream start,
    check `anim_clips.is_root` and the dictionary hash at `+0x68` against those references. Join consecutive
    system pages as needed to parse the dictionary. Require a nonempty clip map and a name at `+0x38`
-   whose lowercase joaat equals the stored hash. This confirms 159 of the 161 referenced hashes.
+   whose lowercase joaat equals the stored hash. The scan confirmed 159 of the 161 referenced hashes.
    A direct hash comparison against the 52,752 bone-bearing dictionaries in `anim.rpf` found zero matches.
    Applying the same root and clip-map checks to the other 21 RPF archives (85,152,072,416 bytes)
-   yielded no additional matches. The two unresolved references appear in 43 and 64 archetype records,
+   yielded no additional matches. The two references unresolved by that scan appeared in 43 and 64 archetype records,
    covering two and 16 distinct asset names respectively. This search covers readable dictionary roots
    at aligned zlib stream starts. Other storage layouts remain possible.
 3. Deduplicate the resulting `(assetName, clipDictionary)` pairs. Of the 159 confirmed dictionaries,
