@@ -574,6 +574,10 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+}
+
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
@@ -831,7 +835,7 @@ function renderAccordionList() {
     const header = document.createElement('div');
     header.className = 'cat-header';
     header.innerHTML = `
-      <span>${cat} <span class="badge">${list.length}</span></span>
+      <span>${escapeHtml(cat)} <span class="badge">${list.length}</span></span>
       <span class="arrow">▼</span>
     `;
 
@@ -847,9 +851,9 @@ function renderAccordionList() {
         const item = document.createElement('div');
         item.className = 'model-item';
         item.innerHTML = `
-          <div class="m-name">${m.name}</div>
+          <div class="m-name">${escapeHtml(m.name)}</div>
           <div class="m-meta">
-            <span>${m.folder !== 'Корневая папка' ? m.folder : ''}</span>
+            <span>${m.folder !== 'Корневая папка' ? escapeHtml(m.folder) : ''}</span>
             <span>${formatBytes(m.size)}</span>
           </div>
         `;
@@ -924,10 +928,10 @@ function renderTexturesGrid() {
     card.className = 'tex-card';
     card.innerHTML = `
       <div class="tex-preview">
-        <img src="${t.preview}" alt="${t.name}" loading="lazy" onerror="this.src=''; this.alt='DDS / Pre-converted'">
+        <img src="${t.preview}" alt="${escapeHtml(t.name)}" loading="lazy" onerror="this.src=''; this.alt='DDS / Pre-converted'">
       </div>
       <div class="tex-info">
-        <div class="tex-name" title="${t.name}">${t.name}</div>
+        <div class="tex-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
         <div class="tex-meta">
           <span>${t.format}</span>
           <span>${formatBytes(t.size)}</span>
@@ -951,10 +955,10 @@ function renderTexturesGrid() {
         card.className = 'tex-card';
         card.innerHTML = `
           <div class="tex-preview">
-            <img src="${t.preview}" alt="${t.name}" loading="lazy" onerror="this.src=''; this.alt='DDS / Pre-converted'">
+            <img src="${t.preview}" alt="${escapeHtml(t.name)}" loading="lazy" onerror="this.src=''; this.alt='DDS / Pre-converted'">
           </div>
           <div class="tex-info">
-            <div class="tex-name" title="${t.name}">${t.name}</div>
+            <div class="tex-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
             <div class="tex-meta">
               <span>${t.format}</span>
               <span>${formatBytes(t.size)}</span>
