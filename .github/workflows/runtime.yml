@@ -90,6 +90,8 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
+    outputs:
+      wine-artifact: ${{ steps.upload-wine-artifact.outcome }}
     env:
       SCCACHE_GHA_ENABLED: "true"
     steps:
@@ -168,6 +170,7 @@ jobs:
           ctest --test-dir runtime/build --show-only=json-v1 > runtime/build/ctest.json
           cygpath -m "$GITHUB_WORKSPACE" > runtime/build/windows-root.txt
       - name: Upload the Windows build for Wine
+        id: upload-wine-artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runtime-windows
@@ -192,6 +195,8 @@ jobs:
   # Two Wines: Ubuntu's own (9.0) and WineHQ's current stable, which is closer to what Proton users run.
   wine:
     needs: windows
+    # The uploaded build can still be tested under Wine if the later native tests fail.
+    if: ${{ !cancelled() && needs.windows.outputs.wine-artifact == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
