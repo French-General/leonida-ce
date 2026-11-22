@@ -507,7 +507,7 @@ KosmicKrisp and on llvmpipe. A pointer from `OpConvertUToPtr`, which the transla
 store in the same test.
 
 **BOX16 nodes.** A bottom-level build with `MINIMIZE_MEMORY` writes BOX16 inner nodes: 64 bytes, not 128, so a BLAS
-is about a fifth smaller (38,976 bytes against 48,768 for the 428-triangle BLAS of `d3d12_xdxr_rt_test`). The tree
+is about a fifth smaller (39,040 bytes against 48,768 for the 428-triangle BLAS of `d3d12_xdxr_rt_test`). The tree
 is the same; only the node records and their offsets change, so the layout still follows from the count, and
 `GetRaytracingAccelerationStructurePrebuildInfo` gives the smaller size when it gets the same flag. Each child box
 is rounded outward to halves (min toward -inf, max toward +inf) from the exact box, which the builder keeps in
@@ -524,7 +524,9 @@ switch for BOX16. The offline BLASes in the `*_bvh4.rpf` packs have BOX16 roots 
 choice between the two at run time is not traced. The one traced datum points at a finer rule: `docs/xdxr.md` §3
 finds a different bottom-level path that needs `MINIMIZE_MEMORY` and a stream setting (type 0, `+0x08`) above 10.0,
 so the flag alone may not be the switch. A bottom-level structure authored in world coordinates gets looser boxes
-from BOX16 the same way a top-level one would: slower to trace, never wrong.
+from BOX16 the same way a top-level one would: slower to trace, never wrong. A BOX16 layout ends with one spare,
+zeroed 64-byte unit: the root is the last node, and the translator's `image_bvh_intersect_ray` loads a box node's
+112 bytes of BOX32 bounds before it checks the type, so a 64-byte root would otherwise be read past the structure.
 
 **TRI1 pairing.** A bottom-level build without `ALLOW_UPDATE` pairs triangles into TRI0/TRI1 leaves, as the console
 builder does in its offline BLASes (§4a, check 4 of "How a match is verified"). The pass that writes the nodes just
