@@ -360,7 +360,30 @@ positions in `ProfileList`, so its order must be kept.
 
 Not measured here (hypothesis): with half the volumes at the origin, two profiles in use and no interpolation,
 this list looks like a sample or default set; the placed fog of the map is probably elsewhere (map resources
-or another archive). What `IntExtMode` (interior/exterior) and `BlendMode` select is also untested.
+or another archive).
+
+**`IntExtMode` and `BlendMode` against placement and interiors (ASSET-312).** Measured on the same 14 volumes
+(`common.rpf`, `CScatteringTransmittance__FogVolumeListData` at `0x64c000`) and on the interior positions of
+`GameShape__Data__LocationNameLoopkup` (`InteriorNames`, 2,280 `Pos`; see [world.md](world.md)), both read with
+`tools/gamedata_reader.py <carve> --root <root> --out <dir>`. That document gives interior points, not bounds; no
+document in `common.rpf` stores interior extents (the `CMloArchetypeDef` bounds in `levels.rpf` are in interior
+space and need the placing instance). "Inside" is therefore approximated as the volume centre (`Position` +
+`PositionOffset`) within 100 m of an interior point.
+
+| Field value | Volumes | `Position` | Nearest interior point | Inside (≤ 100 m) |
+|---|---|---|---|---|
+| `BlendMode` 0 | 7 | world coordinates, none at the origin | 117 to 230 m | 0 |
+| `BlendMode` 1 | 7 | exactly (0, 0, 0) in all 7, offset only | 174 to 182 m (centre = offset) | 0 |
+| `IntExtMode` 0 | 14 | both groups above | 117 to 230 m | 0 |
+
+- `BlendMode` splits the list exactly by placement: 0 on the 7 world-placed volumes, 1 on the 7 at the origin.
+  Together with the 385 local-space volumes of `packs.rpf` (`BlendMode` 1 in all 385, measured in #3873), 392 of 392
+  local-space volumes have `BlendMode` 1. Hypothesis: 1 marks a volume attached to (and blended with) a parent
+  transform; what it does in the renderer is not measured.
+- `IntExtMode` cannot be correlated here: it is 0 in all 14, and no volume lies within 100 m of an interior
+  point. The 2 volumes that use a profile with `IntExtMode` 1 (`ProfileIndex` 10) are origin volumes with
+  `IntExtMode` 0, so the volume field does not copy the profile's. Whether 1 means interior stays a hypothesis;
+  deciding it needs world-placed volumes with `IntExtMode` 1 and placed interior bounds.
 
 ## Schema style
 
