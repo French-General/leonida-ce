@@ -2770,7 +2770,8 @@ Vulkan AS would be invisible to them. Two paths:
    #743's `VkAccelerationStructureKHR` builds (for `RayQueryKHR`), which the game's shaders can't read. Updates refit
    the source structure instead of rebuilding it, `CopyRaytracingAccelerationStructure` clones and compacts, and the
    postbuild compacted and current sizes are written ([bvh.md](bvh.md) §7a). A bottom-level build with
-   `MINIMIZE_MEMORY` gets BOX16 nodes (half boxes, about a fifth smaller; top-level builds stay BOX32). Serialization and the Xbox
+   `MINIMIZE_MEMORY` gets BOX16 nodes (half boxes, about a fifth smaller; top-level builds stay BOX32), and one
+   without `ALLOW_UPDATE` pairs sibling triangles that share an edge into TRI0/TRI1 leaves. Serialization and the Xbox
    batched/streaming builds are not implemented. The
    reported `RaytracingTier` is unchanged (`NOT_SUPPORTED`). Checked by `runtime/test/d3d12_xdxr_rt_test.cpp` through
    the D3D12 API.

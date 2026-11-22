@@ -523,6 +523,25 @@ node type. **ASSUMPTION:** that `MINIMIZE_MEMORY` is the console's switch for BO
 `*_bvh4.rpf` packs have BOX16 roots (§3.1), but `XboxBvhBuilder.dll`'s choice between the two at run time is not
 traced (`docs/xdxr.md` §3 lists the build settings it reads).
 
+**TRI1 pairing.** A bottom-level build without `ALLOW_UPDATE` pairs triangles into TRI0/TRI1 leaves, as the console
+builder does in its offline BLASes (§4a, check 4 of "How a match is verified"). The pass that writes the nodes just
+above the leaves pairs each triangle with a later sibling (among that node's at most four children) when four things
+hold. The two must share an
+edge in opposite directions, with the same two vertices bit for bit. They must come from the same geometry, since a
+leaf holds one `GeometryIndexAndFlags`. And both must be active. The first triangle is rotated so the shared edge is
+slots 1 -> 2, the sibling's third vertex goes in slot 3, its primitive index in `PrimitiveIndex2`, and each node type's
+remap byte returns D3D12's barycentrics for its own vertex order. The node still has one child per triangle, each
+with its own box: the TRI1 child points at the first triangle's leaf, and the sibling's own leaf is left unused.
+The tree, the layout and the sizes are therefore the same as without pairing. Nothing is saved yet: reclaiming the
+unused leaves would need a compaction that moves records and rewrites pointers, and compaction here copies bytes.
+What pairing gives is the console's leaf format, with a pair's two triangles in one 64-byte record. Because pairs never cross nodes, one thread owns each leaf it
+rewrites, and both pointers of a pair have the same parent, so the parent table has one writer per entry. On a sorted
+grid of 7,200 triangles, 2,625 of the 3,600 possible pairs form. A refit rewrites every leaf as one triangle, so a
+structure that may be updated is not paired. **ASSUMPTION:** that pairing only siblings is close enough. The console
+builder's pairing rule is not traced; `tools/xdxr_bvh.py` `build_blas(pair=True)` pairs greedily over the whole mesh
+instead, and both traverse the same way. `check-build` compares barycentrics as well as hits, and checks that a
+paired case has TRI1 nodes and that cases that must not pair (other geometry, same direction) have none.
+
 The tree's shape depends only on the element count. `XdxrLayout` therefore computes the result and scratch sizes
 exactly when the build is recorded, and the same numbers can answer `GetRaytracingAccelerationStructurePrebuildInfo`.
 A triangle with a NaN vertex gets an empty box (D3D12 treats it as inactive). So do an instance with mask 0, one with
@@ -554,7 +573,7 @@ already exactly its layout's size, so `COMPACTED_SIZE` and `CURRENT_SIZE` (from
 mode are refused at replay as unsupported, not faked. In `LEONIDA_RT_AS=khr` mode the postbuild descs stay ignored,
 as before.
 
-Not done yet: pairing triangles into TRI1 leaves, serialization. A higher-quality build (SAH) would also
+Not done yet: serialization; a compaction that drops the leaves pairing leaves unused. A higher-quality build (SAH) would also
 come later.
 
 ```powershell
