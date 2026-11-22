@@ -227,8 +227,9 @@ default open state and after `BinkSetSoundTrack(0, NULL)`, which behaved identic
   `BinkGetTrackData` now succeed on all 229 tracks across the 196 audio-bearing streams
   ([section 4](#audio-track-decoding-binkopentrack--binkgettrackdata-asset-323)): positional track index `i` maps
   1:1 to header `track_ids[i]` (`0..3`), `BinkGetTrackType` returns `(flags << 16) | sample_rate`, and
-  `BinkGetTrackData` yields 145,920 bytes on frame 0 and 7,680 bytes per subsequent frame. Which language or mix
-  role the game assigns to track IDs `0, 1, 2, 3` at run time remains unknown.
+  `BinkGetTrackData` returned 145,920 bytes on frame 0 and 7,680 bytes on frame 1 across all 229 tracks (with
+  frame 2 also checked on 1-, 2-, and 4-track samples; later frames were not swept and may return 7,680 or 0 bytes).
+  Which language or mix role the game assigns to track IDs `0, 1, 2, 3` at run time remains unknown.
 - **Playback integration.** The executable is not in the package. Where the game calls `BinkOpen`, which flags it
   passes, whether it uses `BinkDoFrameAsync`, `BinkGoto`, subtitles or the GPU path, and how it schedules movies
   against streaming are all unknown.
