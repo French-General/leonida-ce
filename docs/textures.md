@@ -1,4 +1,4 @@
-# Textures: the BCPack gap
+# Textures: TTPF pools and BCPack decoding
 
 Measured on 2026-11-21 from one retail Xbox Series install (1.0.2.1). The corpus is all 57
 RDS5 texture pools: 46 under `data/ttdb/**` and 11 under `pack/<name>/data/ttdb/**`, 57.94 GiB
@@ -7,13 +7,20 @@ field.
 
 ## Outcome
 
-| | Textures |
-|---|---:|
-| catalog entries | 357,115 |
-| exported with the complete source mip chain | 98,603 |
-| exported with fewer mips | 210,292 |
-| exported at least one mip | 308,895 |
-| skipped | 48,220 |
+| | Initial baseline | After layout/format fixes (zlib/raw) | Projected with BCPack (BC1–BC7)* |
+|---|---:|---:|---:|
+| catalog entries | 357,115 | 357,115 | 357,115 |
+| exported with the complete source mip chain | 98,603 | 305,959 | 357,115 |
+| exported with fewer mips | 210,292 | 16,423 | 0 |
+| exported at least one mip | 308,895 | 322,382 | 357,115 |
+| skipped | 48,220 | 34,733 | 0 |
+
+\* *Codec-availability projection from `tools/ttpf_mips.py scan` across all 57 pools, not a full
+DDS export run. In full-corpus chunk checks with locally calibrated history tables
+(`--allow-provisional --history <path>`), BC6H decodes 268 / 268 chunks (0 strict, 100%
+provisional) and BC7 decodes 5,150 / 5,167 chunks (583 strict, 99.67% provisional), while
+**17 / 5,167 BC7 chunks (0.33%)** still cleanly refuse in provisional mode when unknown built-in
+history references exceed the consistency budget (see §5 below).*
 
 A skipped row has `File: null` and a `Limitation`. Either the catalog marks the texture as
 unextractable, or its content does not decode (`NotSupportedException`, `InvalidDataException`).
@@ -45,9 +52,11 @@ format skips).
 
 Adding all six BCPack codecs (BC1, BC3, BC4, BC5, BC6H and BC7) in `tools/ttpf_mips.py`
 unlocks **51,156** more complete chains across the 57 pools (51,149 2D + 7 multi-slice 2D
-arrays), bringing the projected split to **357,115 complete** (100% of catalog entries),
-**0 partial** and **0 skipped** (**0** remaining BCPack skips, **0** layout/format skips and
-**0** skipped multi-slice descriptors).
+arrays), bringing the codec-availability projection to **357,115 complete** (100% of catalog
+entries), **0 partial** and **0 skipped** (**0** remaining BCPack codec skips, **0**
+layout/format skips and **0** skipped multi-slice descriptors). On actual chunk decode over all
+57 pools, BC6H requires `--allow-provisional --history <path>` (268 / 268 chunks) and
+**17 / 5,167 BC7 chunks (0.33%)** still cleanly refuse in provisional mode (see §5 below).
 
 This is the same 308,895 / 48,220 baseline already recorded in `docs/design.md`. The recount
 splits the 48,220 by cause: the old "(BCPack or unmapped)" label hides 14,713 skips whose
@@ -525,18 +534,31 @@ rather than by array order:
 
 | Parameter | Common formats | Measured role |
 |---|---|---|
-| `0xC8E8C282` | BC1/BC3/BC7 sRGB, some BC1/BC7 UNORM | sRGB albedo |
-| `0xC6F46E79` | BC7 UNORM, BC1 UNORM | tangent-space normal map |
-| `0x1E77BF4C` | BC5 UNORM, some BC1/BC7 | normal/detail normal |
-| `0x739E3D0D` | BC7 UNORM, some BC1 | ORM/mask |
-| `0x8ADB8480` | BC4 UNORM | mask |
+| `0xC8E8C282` | BC1/BC3/BC7 sRGB, some BC1/BC7 UNORM | **sRGB albedo** when present |
+| `0xC6F46E79` | BC7 UNORM, BC1 UNORM | `speculartex`: specular/gloss (packed), not a normal map |
+| `0x1E77BF4C` | BC5 UNORM, some BC1/BC7 | `bumptex`: tangent-space normal/detail normal |
+| `0x739E3D0D` | BC7 UNORM, some BC1 | `speculartex2`: ORM/mask (packed) |
+| `0x8ADB8480` | BC4 UNORM | `materialid`: ID/palette map |
 
 The counts in the 246-record character corpus are 215 references each for `0xC6F46E79`,
-`0x1E77BF4C` and `0x739E3D0D`, 164 for `0x8ADB8480`, and 64 for `0xC8E8C282`. Not every
-material carries an albedo: the jacket, crop tee and some sports pieces have no `0xC8E8C282`
-entry. Exporters must **not** fall back to the first texture in that case; a normal map painted
-as a base colour is the usual symptom. The hashes are treated as measured corpus semantics, not
-as a claim that they are globally unique across every shader.
+`0x1E77BF4C` and `0x739E3D0D`, 164 for `0x8ADB8480`, and 64 for `0xC8E8C282`. The garment
+shaders (`d5ed50f4`, `ea8d09d0`, `39ddb9ca`) do not declare a `0xC8E8C282` slot at all, so the
+jacket, the crop tee and every other garment on them have no albedo by shader design, not because
+a texture is missing. Not every garment is on them: the bikini top and the undies are on other
+shaders and account for nine of the `0xC8E8C282` references, six and three material rows
+([character_models.md](character_models.md)). Exporters must **not** fall back to the first
+texture when a material has no such slot; a `speculartex`
+sheet painted as a base colour is the usual symptom. The hashes are treated as measured corpus
+semantics, not as a claim that they are globally unique across every shader.
+
+`tools/character_textures.py` classifies a decoded `model.json`: it prints each material's slot
+hash, role and texture name, resolves only the five measured character slots, and reports any
+other hash as `unknown 0x...`. A garment-shader material (`d5ed50f4`, `ea8d09d0`, `39ddb9ca`)
+with no `0xC8E8C282` binding is flagged `garment-no-albedo`, so a renderer keeps that part clay
+instead of painting `speculartex` as colour. `--json` and `--csv` write the same rows to a
+report, which may not overwrite an input:
+
+    python -I tools/character_textures.py <model.json|dir> [--json FILE] [--csv FILE]
 
 ### Map material texture parameters
 
@@ -564,9 +586,10 @@ endpoints, BC7 mode-6 endpoints) has blue > 190 and red and green within 45 of 1
 | `0xC8E8C282` `diffusetex` | 28 | 1,887 | 0 | 72: 1,322, 99: 709, 78: 145 |
 | `0x3FB7964F` `tinttexture` | 0 | 61 | 0 | 72: 61, 99: 2, 78: 1 |
 
-So on map materials `bumptex` is the tangent-space normal map and `speculartex` is not a normal map. The
-character table above lists `0xC6F46E79` as the normal map; these character textures are mostly outside the
-measured catalog here, so that row is left unchanged, but it should be re-checked against the name.
+So on map materials `bumptex` is the tangent-space normal map and `speculartex` is not a normal map.
+The character corpus re-check resolves the same way: `0xC6F46E79` is `speculartex` on characters too,
+and `0x1E77BF4C` (`bumptex`) is the normal map. The earlier character row that said otherwise has been
+corrected.
 
 Three more parameters hold sRGB colour-like textures on map materials and are not in `ModelTextureBindings`
 (names not found): `0x17D3B5C2` (72: 47), `0x6994EF3F` (99: 25) and `0x7485DAFB` (99: 162, 78: 15, 72: 12;
@@ -717,7 +740,8 @@ decodes at 36.6 dB median on held-out textures and says 621 of 3,276 pair textur
 known; the gap is the unpublished window and the unresolved codebook entries, not a
 byte-exact validation. The code is not adopted here.
 
-A decoder still needs:
+At the time of that initial probe (before the clean-room decoder below was implemented), a
+decoder still needed:
 
 1. the 256-slot pre-start predictor window (the largest blocker: 160/200 pair chunks);
 2. a stable 256-entry index codebook (two fits agree on 248/256; 8 rare mirror pairs are open);
@@ -725,6 +749,12 @@ A decoder still needs:
 4. record layouts and semantics for BC3, BC5, BC6H and BC7 (BC4 lane 1 is exact; the rest are
    not);
 5. a reference plaintext pair or a published bitstream specification for a byte-exact check.
+
+Items 1–4 are now resolved by the clean-room decoder documented in
+[Clean-room BCPack bitstream specification and decoder](#clean-room-bcpack-bitstream-specification-and-decoder)
+below (`tools/bcpack.py`, `tools/bcpack_tables.py`, `tools/bcpack_tables_bptc.py` and
+`tools/bcpack_history_calib.py`); item 5 remains external because no plaintext reference
+encoder ships with the package.
 
 ### The shipped binaries
 
@@ -883,7 +913,15 @@ generated JSON file or directory (`bc6h.json` / `bc7.json`, e.g. from
 - **BC6H JSON schema (`bc6h.json` or `"bc6h"` key):** `endpointHistory` (256-list or
   index-keyed dict of `3×4` ints), `indexHistory` (16 ints), `endpointClass` and
   `indexClass` (`0` = unknown, `1` = fitted/provisional, `2` = last-resort, `3` =
-  confirmed).
+  reference-confirmed at the recorded precision). Optional `endpointConfirmedBits`
+  (`3×4` leading-bit counts, bounded by `16,10,6,6` per channel) and
+  `indexConfirmedBits` (16 leading-bit counts, each `0..4`) use the same 256-list
+  or index-keyed dict forms. Strict decoding requires class 3 and enough confirmed
+  bits for every field the mode reads; provisional decoding labels insufficient
+  precision. Omitted rows in an explicit depth table confirm no bits. Without a
+  depth table, legacy class-3 entries retain full precision. Regenerate older
+  calibration outputs to record their actual precision: exact references confirm
+  only the bits their modes observe, including three-bit versus four-bit indices.
 - **BC7 JSON schema (`bc7.json` or `"bc7"` key):** `historyEndpoints`,
   `historyEndpointBits`, `historyEndpointConfirmedBits` (24 ints or `[3][2][4]`),
   `historyIndices`, `historyIndexBits`, `historyIndexConfirmedBits` (32 ints or `[2][16]`),
