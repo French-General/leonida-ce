@@ -1156,11 +1156,9 @@ and updating `heap_base` for all subsequent commands; do it at a frame boundary,
 `VK_KHR_maintenance4`) and `maxMemoryAllocationSize` bound the arena; a large open-world buffer working set may not
 fit on smaller PC GPUs. This is a product requirement, not something the layer can hide.
 
-**Reserved resources.** `CreateReservedResource` plus tile mappings is a sparse resource. Vulkan sparse binding
-works on images and buffers, but the layer's arena model assumes all buffer memory is in one BDA range; a sparse
-buffer would need its bound memory at the console VA. For the first boot, reserve the full size as ordinary arena
-memory and log the tile calls; implement sparse binding only if the game uses it for streaming. Sparse images can
-use their own VkDeviceMemory and are easier. **Open.**
+**Reserved resources.** `CreateReservedResource` and the queue tile APIs use Vulkan sparse binding for buffers and
+compatible single-mip RGBA8 2D textures (section 4.2). Other descriptions have fully allocated backing. Wider
+texture coverage and the game's use of tile streaming remain open.
 
 ### 3.4 Descriptor heaps and the bindless model
 
@@ -1701,7 +1699,17 @@ The trace will enumerate them.
     `d3d12_buffer_tiles_test` compares three full readbacks with native D3D12, including a fence-gated queue.
   - Drivers that exclude the host-visible arena memory type from sparse buffers (including NVIDIA 621.01 on the
     RTX 3090) use a dedicated device-local allocation per heap for its tiles. A heap with this dedicated backing
-    cannot mix placed buffers and sparse mappings. Sparse mapping and `CopyTiles` for reserved textures are open.
+    cannot mix placed buffers and sparse mappings.
+  - D3D-285 extends these mappings to single-sample `R8G8B8A8_UNORM` reserved 2D textures with one mip, one
+    layer and no resource flags. The Vulkan image must support sparse aliases and zero reads from unmapped tiles,
+    with 128 × 128 color blocks aligned to 64 KiB. Images requiring an opaque mip tail or separately bound metadata
+    keep the fully allocated fallback. The image is transitioned while still unbound and kept in `GENERAL` so
+    mapping an alias preserves contents. Image tiles use dedicated device-local heap memory and can alias tiles
+    of compatible sparse images. Buffer and placed-resource aliases with texture tiles are outside this path.
+  - `CopyTiles` transfers RGBA8 tiles in either direction. Partial edge blocks use the full 512-byte linear row
+    pitch and transfer only in-bounds texels. Byte-unaligned offsets use transfer scratch.
+    `d3d12_texture_tiles_test` compares initially unmapped tiles, column mappings, aliases, and a fence-delayed
+    remap with native D3D12, including clipped edges and byte-unaligned offsets.
 - `D3D12_RESOURCE_DESC::Layout`: the public `ROW_MAJOR` and `64KB_STANDARD_SWIZZLE` values plus the Xbox `0x101`
   tiled value from slot 76. Row-major textures need `VK_IMAGE_TILING_LINEAR` (not usable for RT/DS) or a staging
   copy; `64KB_STANDARD_SWIZZLE` and `0x101` have no direct Vulkan equivalent. If the game uploads console-tiled data,
