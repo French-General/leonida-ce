@@ -611,9 +611,28 @@ Modifiers come in two shapes:
 49 documents, so a submodifier is a by-name reference to another modifier, with its own blend attributes.
 The one unresolved item points outside this archive or at a document lost to the unread region.
 
+**The two plain-modifier numbers.** Measured over the 29,727 two-number variables of the plain modifiers
+(1,051 variable names, 3,257 modifiers with at least one such variable):
+
+- The second number is `0` in 26,186 pairs (88 %) and `1` in 3,104; only 437 take another value. In 2,300 of
+  the 3,257 modifiers it is `0` on every variable, in 21 it repeats the first number on every variable, and
+  936 mix. Per variable name, 624 names never have a non-zero second number (8,410 pairs), 83 always do
+  (1,289 pairs) and the other 344 vary from one modifier to the next.
+- The pair is not an ordered range: the first number is larger in 20,833 pairs, smaller in 4,604 and equal in
+  4,290.
+- Where the second number is non-zero (3,541 pairs) it does not follow the first: Pearson correlation 0.009,
+  and the first is `0` in 570 of them.
+- Against the keyframe documents (29,220 pairs whose name is also a keyframe variable): a second number of `0`
+  occurs in 17,041 pairs where 0 is outside every value that variable takes in all 27 keyframe documents.
+
+So the GTA V reading, two endpoints blended by strength, would make 17,041 entries blend towards a value their
+variable never takes in a keyframe. The distribution fits better a value (the first number) followed by a
+second field that is unset (`0`) in most entries. What that field does when it is set is not settled by the
+distribution alone.
+
 Not measured here (hypothesis): the hour of each of the 13 samples (GTA V's are fixed in code), how the two
-regions are chosen at runtime, what the two plain-modifier numbers are (GTA V reads them as a value pair
-blended by strength), and how `controlValue` maps onto game state.
+regions are chosen at runtime, what the second plain-modifier number does when it is not `0` (see above), and
+how `controlValue` maps onto game state.
 ## Vehicle and tyre XML documents
 
 Four roots account for 37 of the 45 documents (4,547,932 inflated bytes) in the vehicles/tyres category:
@@ -705,8 +724,9 @@ and 4 (twice); `interpolation_type` is `EASE_LINEAR_IN` on 9 samples and `EASE_Q
 region names. So unlike GTA V, where the 13 sample times are compiled in, this build reads them (and the easing
 between them) from `time_data`; their count matches the 13 values of every keyframe variable.
 
-Not measured here (hypothesis): how the two regions are chosen at runtime, what the two plain-modifier numbers
-are (GTA V reads them as a value pair blended by strength), and how `controlValue` maps onto game state.
+Not measured here (hypothesis): how the two regions are chosen at runtime, what the second plain-modifier
+number does when it is not `0` (see "The two plain-modifier numbers" above), and how `controlValue` maps onto
+game state.
 
 ## Relationship to `data.rpf` and `script.rpf`
 
