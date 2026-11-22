@@ -221,10 +221,13 @@ the first four fields of C's `struct tm` in their order. No month or year is sto
   positions (the `u32@0xC8` sector, above). The 3,002 extra tiles are all on 940 positions that hold 2 to 40 tiles,
   and every one of those positions has day-22 tiles. 2,984 of the 3,003 day-22 tiles share their position with a
   day-9 tile, and on all 938 positions with both, the day-22 tiles come later in the archive. The other 19 are on two
-  positions without a day-9 tile: 17 at sector (255, 248), and 2 with the day-24 tile at (248, 246). On 450 of the 938, the first day-22 tile has the same vertex and polygon
-  counts as the day-9 tile. What the stacked tiles are for is not measured.
-- **Neighbouring tiles share a stamp.** Of the 48,644 pairs of grid neighbours (one tile per position), 98.12% have
-  the same stamp, against 92.58% for stamps placed at random with the same frequencies.
+  positions without a day-9 tile: 17 at sector (255, 248), and 2 with the day-24 tile at (248, 246). On 450 of the
+  938, the first day-22 tile has the same vertex and polygon counts as the day-9 tile. What the stacked tiles are for
+  is not measured.
+- **Neighbouring tiles share a stamp.** Taking the last tile in the archive at each position (the day-22 one where a
+  position has both), 98.12% of the 48,644 pairs of grid neighbours have the same stamp, against 92.58% for stamps
+  placed at random with the same frequencies. Taking the first tile instead gives 99.95% against 99.95%, which says
+  nothing, because almost every first tile is day 9.
 
 Method: `tools/navmesh_decode.py`'s own scan of `navmeshes.rpf`, with each tile's `u32@0xE8`, `u32@0xC8`, flags,
 counts and archive offset recorded per tile. No geometry was kept.
