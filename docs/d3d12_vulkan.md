@@ -1686,7 +1686,20 @@ Pipeline creation:
   shader, root signature content or state, a changed byte, a truncated blob or a pointer with size 0 give
   `E_INVALIDARG`; a null pointer with a size is ignored; another adapter gives `D3D12_ERROR_ADAPTER_NOT_FOUND` and
   another driver `D3D12_ERROR_DRIVER_VERSION_MISMATCH`. `ID3D12PipelineLibrary` is an in-memory map plus the Vulkan
-  cache.
+  cache. Its arguments answer as the host's (`d3d12_pipeline_library_host_test`, 74 values from 46 calls that need no
+  PSO, each run on the host in a process of its own, since a call it faults on leaves its runtime broken and the next
+  one failing fast; RTX 3060, driver 610.88):
+  - `CreatePipelineLibrary`: a foreign, truncated or corrupt blob, the other device's blob, or a null pointer with a
+    size is `E_INVALIDARG`, and `*ppPipelineLibrary` is left as it was. One of the layer's own blobs from another
+    format version is `D3D12_ERROR_DRIVER_VERSION_MISMATCH`, the documented code for a cache from another driver.
+    A pointer with size 0 is an empty library; a longer blob than the header is accepted; a null output is
+    `S_FALSE`.
+  - The library is a device child, not a pageable object: `QueryInterface(ID3D12Pageable)` is `E_NOINTERFACE`.
+  - `LoadComputePipeline`/`LoadGraphicsPipeline`/`LoadPipeline` with a null output are `E_INVALIDARG`, as is an
+    unknown or empty name. `Serialize` with a buffer smaller than `GetSerializedSize()` is `E_INVALIDARG`. The
+    serialized size and bytes are each device's own (the host's empty library is 900 bytes, the layer's 16).
+  - Not compared: the calls the host runtime faults on (`Serialize(nullptr, n)`, `StorePipeline` with a null PSO,
+    `Load*` with a null name or description); the layer answers `E_INVALIDARG` for each.
 
 **Open:** whether the game uses `D3D12_PIPELINE_STATE_STREAM_DESC` for mesh/RT and which subobject types appear.
 The trace will enumerate them.
