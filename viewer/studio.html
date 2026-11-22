@@ -701,6 +701,19 @@ function applyMeshShading() {
   });
 }
 
+function disposeModel(root) {
+  root.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    // In clay/normals mode child.material is a shared material; the model's own is origMaterial.
+    const material = child.userData.origMaterial || child.material;
+    if (!material) return;
+    Object.values(material).forEach(value => {
+      if (value && value.isTexture) value.dispose();
+    });
+    material.dispose();
+  });
+}
+
 function loadModel(url, name, category, size) {
   const loadId = ++modelLoadId;
   const bar = document.getElementById('loading-bar');
@@ -712,7 +725,10 @@ function loadModel(url, name, category, size) {
     bar.style.transform = 'scaleX(1)';
     setTimeout(() => { bar.style.transform = 'scaleX(0)'; }, 250);
 
-    if (currentMesh) scene.remove(currentMesh);
+    if (currentMesh) {
+      scene.remove(currentMesh);
+      disposeModel(currentMesh);
+    }
     currentMesh = gltf.scene;
     scene.add(currentMesh);
 
