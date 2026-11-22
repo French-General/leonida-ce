@@ -355,6 +355,11 @@ fused, whereas **Mesa RADV (26.2.6-arch3.1, AMD Radeon RX 6800, Linux)** splits 
 `--fma glsl`, `check.py` and `run_gpu_tests.py` therefore accept either the fused or the exact split word for each of
 the 7 f32 outputs while still requiring exact f16 round-to-odd (`0x00007351`); under `LEONIDA_FMA=khr`, all 8 words
 must be strictly fused.
+Intel UHD Graphics (Xe-LP, Windows 101.7088) splits it too, words 0, 2, 3 and 5 (`v_fma_f32`, `v_fmaak_f32`,
+`v_fmac_f32`), and has no `VK_KHR_shader_fma`, so `khr` can't be used there. For such a device,
+`LEONIDA_FMA=exact` (`--fma exact`) builds the single rounding from plain f32 operations and needs no extension;
+under it, as under `khr`, all 8 words must be strictly fused, and they are on that Intel UHD and on an RTX 3050
+Laptop (617.42).
 
 ## Hardware oracle (optional, AMD)
 
