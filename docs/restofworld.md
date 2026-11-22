@@ -529,6 +529,31 @@ edges, so none of the conclusions below depend on it.
 | Position header (bias, scale) finite, scale >= 0 | 60,442 / 60,442 |
 | Every triangle edge no longer than the block extent | 48,150 / 60,442 |
 
+**Slots 6/7 (tag `0x26`) and 8/9 (tag `0x25`) are skin weights and joint indices.** Where slot 8 holds tag
+`0x25`, each `0x25` slot comes with a `0x26` slot two below it (slot 6 with 8, slot 7 with 9), and no block in
+the sample has one without the other. Read as four unorm8 weights per `0x26` slot and four joint indices per
+`0x25` slot, `skin_checks` in `tools/vertex_types.py` counts, per vertex over all weight slots
+(core_restofworld, first 500 streams: 612 blocks, 212,564 vertices; 454 blocks with two pairs, 158 with one):
+
+| Check | Vertices |
+| --- | --- |
+| Weights sum to 255 | 203,243 (95.6%) |
+| Weights sum to 247-255 | 204,758 (96.3%) |
+| Weights in descending order | 211,902 (99.7%) |
+| No joint repeated among the non-zero weights | 212,564 (100%) |
+| Every zero weight has joint index 0 | 156,808 (73.8%) |
+| Control: slot 1 colour bytes sum to 255 | 0 |
+
+The `0x25` bytes are small: the highest joint used by a non-zero weight is below 16 in 488 blocks, 16-31 in
+117 and 48-63 in 7. So the indices point into a short per-block (or per-mesh) joint list, not a whole
+skeleton; which list was not traced here.
+
+Of the 9,321 core_restofworld vertices whose weights do not sum to 255, the twelve most common sums (254
+down to 233) all come from one-pair blocks: a four-influence vertex whose weights fall short, as
+`tools/skin_streams.py` also finds for one packed four-influence population of the drawable skin streams.
+levels (first 400 streams) has 9 skinned blocks (3,910 vertices), all one pair, and every vertex there
+passes: one weight of 255 on joint 0. The colour control never sums to 255 in either sample.
+
 Slot usage (block counts): slot 0 tag `0x42` in all 60,442; slot 2 `0x21` in 57,925; slot 1 `0x26` in
 57,873; slot 3 `0x28` in 49,294 and slot 4 `0x28` in 29,379; then slot 12 `0x26` (25,239), slot 6 `0x26`
 (24,876), slot 8 `0x25` (21,519), slot 13 `0x26` (17,928), slot 11 `0x27` (11,120) and 21 rarer slot/tag
