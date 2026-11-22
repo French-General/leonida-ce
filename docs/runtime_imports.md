@@ -120,7 +120,7 @@ and the `api-ms-win-core-file-*` sets a GDK title links against.
 - A folder has to exist in the title's view before it is used. An open that writes fails with `ERROR_PATH_NOT_FOUND`
   when its folder is missing, was removed, or is a file, and creates nothing; `FindFirstFile` fails the same way for a
   listing inside such a folder (a pattern that matches nothing in a folder that exists is still
-  `ERROR_FILE_NOT_FOUND`).
+  `ERROR_FILE_NOT_FOUND`, and a listing directly below a file is `ERROR_DIRECTORY`, as on the host).
 - `MoveFile*` onto the same name succeeds and changes nothing. A rename that changes only the case renames the overlay
   entry; a package file gets an overlay copy under the new spelling, and a package folder is refused like any other
   move of one.
