@@ -144,7 +144,7 @@ all but one or two elements of five formats). `--self-test` checks the model wit
 | 76 | `32_32_32_32_SINT` | before | 1,502 | 1,502 | 844 | 844 |
 | 77 | `32_32_32_32_FLOAT` | before | 1,502 | 1,502 | 932 | 932 |
 
-"before" means the format was in `Gen.FORMATS` before this change. Codes 30..35, 37..42 (no GFX11 form), 46 and 47 (GFX11
+"before" means the format was in `Gen.FORMATS` before this change. (Codes 5, 6, 11, 12, 18, 19, 28, 61 and 70, the narrow UINT and SINT ones, were added to main's table by a parallel change, measured on gfx1036, while this branch was open; they are marked "added" here because the 880M run covers them too and the table entries are identical.) Codes 30..35, 37..42 (no GFX11 form), 46 and 47 (GFX11
 has no SCALED 10_10_10_2) are not in the table.
 
 ## Where the translator stood, and what changed
