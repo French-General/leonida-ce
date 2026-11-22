@@ -145,6 +145,7 @@ rpf9dump models <archive.rpf> <work>\assets
 rpf9dump textures <archive.rpf> <work>\assets
 rpf9dump ttpf <pool.ttpf> <work>\assets\ttpf
 rpf9dump audio <audio.rpf> <work>\assets
+rpf9dump xma <audio.rpf> <work>\assets
 python -I make_game.py --stages assets   # everything, in order; skips what is done
 ```
 
