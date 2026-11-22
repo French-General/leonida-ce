@@ -236,8 +236,9 @@ end to end with a synthetic bundled DLL importing `xmem.dll!XMemAlloc` and `XMem
 - Sessions, connections and requests are local handles: no name is resolved and no socket is opened.
 - `WinHttpSendRequest` fails with `ERROR_WINHTTP_CANNOT_CONNECT`. On a `WINHTTP_FLAG_ASYNC` session it returns `TRUE`
   and the failure arrives as WinHTTP delivers one: `WINHTTP_CALLBACK_STATUS_REQUEST_ERROR` with `{API_SEND_REQUEST,
-  ERROR_WINHTTP_CANNOT_CONNECT}`, on a thread-pool thread, with the request's context. A request closed first gets
-  no error callback.
+  ERROR_WINHTTP_CANNOT_CONNECT}`, on a thread-pool thread, with the request's context. A `dwContext` of 0 keeps the
+  context set with `WINHTTP_OPTION_CONTEXT_VALUE`, as the host's `winhttp.dll` does. A request closed first gets no
+  error callback.
 - Reading a response and `WinHttpWriteData` fail with `ERROR_WINHTTP_INCORRECT_HANDLE_STATE`. Options, timeouts and
   headers are accepted; `WINHTTP_OPTION_CONTEXT_VALUE` and `WINHTTP_OPTION_HANDLE_TYPE` can be queried.
 - A status callback is inherited by child handles, which report `HANDLE_CREATED`; every handle reports
