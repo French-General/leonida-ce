@@ -45,13 +45,17 @@ jobs:
           }
           "docs-only=$($docsOnly.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           exit 0 # GitHub's pwsh wrapper would otherwise forward git diff's status.
-      # A docs-only diff still needs the tests that read those documents: the link checker walks every tracked
-      # Markdown file, and the i18n index checks docs/i18n/README.md. Both are standard library only.
+      # A docs-only diff still needs the tests that read those documents, because `check` is skipped for it: every
+      # tests/test_docs_*.py (links, the design.md contract rows, list items, the repository paths a document
+      # names) and the i18n index, which checks docs/i18n/README.md. All are standard library only and read only
+      # tracked files. tests/test_ci_registration.py fails when a tests/test_docs_*.py is not run here.
       - name: Check documentation when only documentation changed
         if: steps.paths.outputs.docs-only == 'true'
         run: |
-          python3 -I tests/test_docs_links.py
-          python3 -I tests/test_i18n_index.py
+          for t in tests/test_docs_*.py tests/test_i18n_index.py; do
+            echo "== $t"
+            python3 -I "$t" || exit 1
+          done
 
   check:
     needs: change-scope
