@@ -713,6 +713,13 @@ The compute path, end to end:
     entries), `shaderFloat64`, `shaderInt16`, `shaderClipDistance` and `shaderCullDistance` where the GPU has them.
     Without one, `vkCreateShaderModule` reports the capability (`VUID-VkShaderModuleCreateInfo-pCode-08740`). The
     index's `features` list is not read yet, so a shader that needs a feature the GPU lacks is not refused up front.
+  - **Stores and atomics outside compute:** a pixel shader that stores to an image or does an image atomic declares
+    that storage image without `NonWritable` (1,018 of the corpus's 1,038 image-atomic shaders are pixel shaders),
+    which Vulkan allows only with `fragmentStoresAndAtomics` (`VUID-RuntimeSpirv-NonWritable-06340`); a vertex or
+    geometry shader needs `vertexPipelineStoresAndAtomics` (`-06341`). The standalone device enables both where the
+    GPU has them. A graphics PSO whose stage declares writable storage (read off the module's declarations,
+    `src/spirv_stores.h`) on a device without the feature is refused with `E_NOTIMPL` and a log naming the shader.
+    `d3d12_stores_atomics_test` checks both under the validation layer.
   - **Geometry shaders:** `desc.GS` is the translator's Vulkan geometry stage (docs/design.md, "Geometry
     shaders": triangles in, a triangle strip out) between the VS and PS. It needs `geometryShader`, which the
     standalone device enables where the GPU has it and reports in `VulkanDeviceInfo::features`; without it such a
