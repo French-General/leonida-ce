@@ -416,9 +416,11 @@ rests on a transcription rather than on a side-by-side compile.
     tables, the kind and status bits, a reading's raw report (newest declared id, without the id byte, an undeclared id
     ignored), creating, sending and reading back output and feature reports with their id byte, `SetRawData`'s exact
     size, the item calls, `E_INVALIDARG` / `E_FAIL` / `E_NOTIMPL`, and the HID device closing on unplug.
-- `gameinput_probe [--seconds N] [--rumble]` (by hand, with a pad connected): lists the pads with each one's raw HID
-  report tables (or why it has none), plays each motor and trigger for a second with `--rumble`, then prints the live
-  reading and the newest raw input report.
+- `gameinput_probe [--seconds N] [--rumble] [--force-feedback]` (by hand, with a pad connected): lists the pads with
+  each one's raw HID report tables (or why it has none), plays each motor and trigger for a second with `--rumble`,
+  holds a constant force at magnitude 1.0 on motor 0 for a second with `--force-feedback` (skipped, with the reason
+  printed, on a pad the shim reports no force-feedback motor for), then prints the live reading and the newest raw
+  input report.
 
 ## VERIFY
 
