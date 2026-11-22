@@ -102,25 +102,10 @@ When this page was first written, 42 translated and 10 stopped at four rules. Th
 | `PT_LoadInstances` | `global_atomic_fmin` | translates |
 | `Box32Rehydration`, `ReloadTriangles` | `buffer_load_ushort` | translate |
 | `LeafRehydration` | `tbuffer_load_format_x GFX10_FORMAT_8_UINT` | translates |
-| `Box16Rehydration` | `buffer_load_ushort` | stops at `buffer_store_short` (#1864, open) |
+| `Box16Rehydration` | `buffer_load_ushort` | stops at `buffer_store_short` (#1864) |
 
 The disassembly count is unchanged: the same 42 programs have no invalid word, and 10 have invalid words in the
 code. All 10 of those translate; `Box16Rehydration` is one of the 42 clean ones.
-| `tools/rdna2spirv.py` | **51** translate and pass `spirv-val` |
-
-On current `main`, 51 of the 52 programs translate and pass `spirv-val`. The four earlier blockers were
-implemented in #1871 and #1968 (`427c1376`):
-
-* `tbuffer_load_format_x GFX10_FORMAT_8_UINT` (#1871) unblocked `LeafRehydration`.
-* `global_atomic_fmax` (#1968) unblocked `BuildKDOP`, `LoadInstances`, `ReloadProcedurals`, `LoadProceduralGeometry`, and `LoadTriangles`.
-* `global_atomic_fmin` (#1968) unblocked `PT_LoadInstances`.
-* `buffer_load_ushort` (#1968) unblocked `Box32Rehydration`, `ReloadTriangles`, and the load half of `Box16Rehydration`.
-
-The single remaining untranslated program stops at one rule:
-
-| module(s) | blocker |
-|---|---|
-| `Box16Rehydration` | `buffer_store_short` (#1864) |
 
 Reproduction, after `--extract` above:
 
