@@ -1967,37 +1967,64 @@ mapped stages/accesses, and if no single layout serves all uses, use `GENERAL` a
   (`CommandList` is a value; the application may `Reset` its list at once) and holds the operation. Everything the
   queue is asked to do after it (batches, Signals, queue markers) goes behind it, so per-queue order is kept.
   The held operations are recorded and submitted, in order, on their own `VkQueue` as soon as the Signals they wait for
-  have been submitted: by the thread that submits that Signal, after it has released its own queue's lock (or by the
-  thread of a CPU `Signal`). There is no worker thread and no caller ever waits for the GPU or for a Signal: the cost
-  moves to that thread and is what the held `ExecuteCommandLists` would have cost anyway. One thread releases at a time
-  (the others leave a note and the running one makes another pass), a release that submits a Signal lets the next
-  queue's front run in the same pass, so chains (C waits B, B waits A, in any submission order) and operations with
-  several waits resolve in dependency order, and the layout tracker follows that order. A wait whose value has been
-  reached by a submitted Signal never blocks again. The normal case (the Signal submitted first) is unchanged: no copy,
-  no hold, the same `vkQueueSubmit`. Holding on the CPU also avoids a Wait and its Signal landing in the wrong order on
-  one `VkQueue`, which would not make forward progress on the GPU (Vulkan-Docs issue 1262). Edge cases: a queue
-  destroyed with held operations reports them once (stderr: `queue destroyed with N held operation(s) never
-  submitted: waits for a fence value (V) that no Signal reached`) and goes on without waiting; a fence nobody signals
-  holds back only the queues that wait for it (and those that wait for what they would have signaled), never the
-  others; a fence released while operations wait for it drops them and says so; a Signal value that is not above
-  the fence's (Vulkan timelines only increase) is still dropped with a note, as before. Failures of a held
-  `ExecuteCommandLists` (what the call would have returned) are printed when it is released, not returned from the
-  call. Not covered: sparse `UpdateTileMappings` while a queue holds work still submits at once, and the resources a
-  held batch names must stay alive until its fence signals (the layer does not pin them; the deferred-destruction
-  tickets only know submitted work, D3D-203). Facts from vkd3d-proton (LGPL, approach only, nothing copied): it keeps
-  a CPU-side virtual value and pending signals per fence and blocks the queue's submission thread until a signal that
-  satisfies a wait has been submitted, so Vulkan never sees a wait without a submitted signal; a satisfied wait stays
-  satisfied. It also maps virtual fence values to physical timeline values so a D3D12 `Signal` of a lower value works;
-  the layer does not yet (the value is dropped with a note). Resources are `VK_SHARING_MODE_EXCLUSIVE` and every
-  D3D12 queue is in the graphics family, so no ownership transfer is needed; with dedicated compute/transfer families
-  they would need `CONCURRENT` (vkd3d-proton does that, because D3D12 gives no information for transfers).
-  Measured: `d3d12_queue_handover_test` runs 358 cases on the layer (371 on the RTX 5070 Laptop, which gives three
-  queues per type) and 369 on the host runtime: three-stage chains (produce, relay, consume) over all 27 queue type
-  assignments and all 6 submission orders (consumer first among them), two producers (texture from one queue, buffer
-  from another) with one consumer, a chain released by a CPU `Signal`, a CPU `Signal` before and after the `Wait`,
-  a never-signaled fence and a fence released while a batch waits; results compared byte for byte, sync validation
-  clean. With holding disabled the same test fails 236 cases on the layer and validation reports
-  `VUID-vkCmdDraw-None-09600`.
+  have been submitted: by the thread that submits that Signal (or makes the CPU `Signal`), after it has dropped its own
+  queue's state lock. There is no worker thread and no GPU wait is added, but the call that releases is not free: that
+  thread records the held batches (what the `ExecuteCommandLists` would have cost, including whatever `execute` does
+  for the lists, such as the bindless upload's wait for the device until D3D-314 removes it) while it still holds the
+  mutex of the D3D12 queue whose `Signal` or `Wait` it is in, so other calls on that queue wait meanwhile; and
+  `remove_fence`, queue destruction and presenter destruction wait for a release in progress. One thread releases at a
+  time (the others leave a note and the running one makes another pass); a release that submits a Signal lets the
+  next queue's front run in the same pass, so chains (C waits B, B waits A, in any submission order) and operations
+  with several waits resolve in dependency order, and the layout tracker follows that order. A wait whose value has
+  been reached by a submitted Signal never blocks again (vkd3d-proton's rule too). The normal case (the Signal
+  submitted first) is unchanged: no copy, no hold, the same `vkQueueSubmit`. Holding on the CPU also avoids a Wait and
+  its Signal landing in the wrong order on one `VkQueue`, which would not make forward progress on the GPU
+  (Vulkan-Docs issue 1262): the test also runs with every D3D12 queue on one `VkQueue` and with two.
+  What a held operation keeps alive, as D3D12's queue does: the fences it waits on and signals, until its submission
+  has completed on the GPU (a released fence stays until then, which also removes the destroy-while-pending
+  validation error the unheld path could hit); the pipeline states and root signatures of its lists (copied from the
+  recording before the application may `Reset` it, so releasing a PSO right after `ExecuteCommandLists` is fine).
+  Resources are not kept: a resource released while a batch that names it is held fails that batch at release.
+  Order against other work: a held `Signal(F, v)` released after an unheld `Signal(F, w)` with `w >= v` leaves the
+  Vulkan signal out (timelines only increase; waits for `v` already pass), decided under the submit lock so the
+  order of the checks is the order of the submissions; `Present` is queued behind held work too (below). Edge cases:
+  a queue destroyed with held operations reports them once (stderr: `queue destroyed with N held operation(s) never
+  submitted: waits for a fence value (V) that no Signal reached`) and goes on without waiting, and the CPU waits on
+  the fences of its held Signals are completed, as a released fence completes them; queues that wait for those fences
+  stay held and are reported when they go; a fence nobody signals holds back only the queues that wait for it (and
+  for what they would have signaled), never the others; a Signal value that is not above the fence's is still
+  dropped with a note at call time, as before (vkd3d-proton instead maps virtual fence values to physical timeline
+  values; the layer does not yet). A held `ExecuteCommandLists` that fails when it is released does not return its
+  result to a call that has returned: it is printed, `last_execute_result` and `VulkanQueue::take_held_failure`
+  report it, the `Signal` behind it still signals (the work did not run; nothing waits forever, as for a failure that is
+  not held), and its waits stay for the queue's next submission, as after a failed `vkQueueSubmit`. A queue does not
+  hold `UpdateTileMappings` / `CopyTileMappings`: they still submit at once, before earlier held work, and take the
+  queue's pending waits (documented limit). `VulkanQueue::idle` waits for submitted work only.
+  `Present` (`VulkanPresenter`): when any queue holds work, a presented back buffer would be blitted as it was before
+  that work, so the Present is queued instead (`QueueHolds::after_held`), returns success as a held
+  `ExecuteCommandLists` does, and is submitted, in order with the presents queued before it, by the thread that
+  releases the last operation held when it was called. It is not blocked on the calling thread because the Signal that
+  releases the work may be one that thread makes after `Present` returns. Held work that is never released holds back
+  the presents after it (device-wide, since the layer cannot tell which batch draws into which back buffer). A
+  blank present reads nothing and is only ordered behind earlier queued presents.
+  Facts from vkd3d-proton (LGPL, approach only, nothing copied): it keeps a CPU-side virtual value and pending signals
+  per fence and blocks the queue's submission thread until a signal that satisfies a wait has been submitted, so Vulkan
+  never sees a wait without a submitted signal. Resources are `VK_SHARING_MODE_EXCLUSIVE` and every D3D12 queue is in
+  the graphics family, so no ownership transfer is needed; with dedicated compute/transfer families they would need
+  `CONCURRENT` (vkd3d-proton does that, because D3D12 gives no information for transfers).
+  Measured: `d3d12_queue_handover_test` (three modes: the standalone device with a `VkQueue` per D3D12 queue, then the
+  host runtime; `--two-queues`, a caller-owned device with two `VkQueue`s handed over; `--shared-queue`, one) runs
+  579 cases on the layer on the Radeon 880M (592 on the RTX 5070 and with one shared `VkQueue`, 8 with two) and 587 on the host runtime: pairs and three-stage chains (produce, relay, consume)
+  over the queue type assignments that fit and all 6 submission orders (consumer first among them), two producers
+  (texture from one queue, buffer from another) with one consumer, a chain released by a CPU `Signal`, a CPU
+  `Signal` before and after the `Wait`, a never-signaled fence, a fence released while a batch waits, a held Signal
+  of a fence the application released, a held Signal below an unheld one on a shared fence, teardown with a held
+  Signal under a CPU wait, and 200 rounds with two threads signalling and releasing at once; results compared byte
+  for byte, sync validation clean. With holding disabled the test fails 236 cases and validation reports
+  `VUID-vkCmdDraw-None-09600`; with the monotonic check disabled it reports
+  `VUID-VkSubmitInfo-pSignalSemaphores-03242`; `vk_presenter_sync_test` and `d3d12_m4_compute_test` (which
+  submits the compute list first and releases its PSOs and root signature before the copy that feeds it) fail
+  without the Present ordering and the pins.
 - `SetEventOnCompletion(value, hEvent)`: a small wait thread calls `vkWaitSemaphores` and `SetEvent`. Reuse one
   thread with a condition variable; do not create a thread per fence.
 - `GetCompletedValue` is `vkGetSemaphoreCounterValue`; CPU `Signal` is `vkSignalSemaphore`.
