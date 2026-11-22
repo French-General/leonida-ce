@@ -457,6 +457,7 @@ def icloud_default_notes() -> list:
 
 
 # ---------------------------------------------------------------- preflight
+# GiB (free bytes / 2**30), the unit Windows Explorer shows as "GB"; 370 GiB is about 397 GB in decimal units.
 MIN_FREE_GB = {"shaders": 30, "assets": 370}
 
 
