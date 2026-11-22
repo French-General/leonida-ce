@@ -327,6 +327,29 @@ The GPU tools of `runtime/test/shaders` (`vk_compute_test`, `vk_harness`, ...) r
 | `vulkaninfo` lists `Microsoft Direct3D12 (<gpu>)` next to the real GPU and the tests run on it | The Windows "OpenCL™, OpenGL® and Vulkan® Compatibility Pack" installs Mesa's Dozen, a Vulkan-on-D3D12 layer that reports `DISCRETE_GPU` like the native card | Current `main` prefers a native ICD over Microsoft's vendor (`0x1414`) in the runtime and every harness; set `LEONIDA_VK_DEVICE=<part of the real GPU name>` to select explicitly. See #915. |
 | A GPU test that uses `image_load` (or lighting built from real shaders) reads zeros from its image; @Silliana saw every texel except pixel (0,0) come back zero in their own layer (#603, not reproduced here) | In this runtime the shader turns the T# words into an index through the descriptor hash table (`runtime/src/descriptor_table.h`: a miss gives index 0), and index 0 is a 1×1 image of zeros (`runtime/src/vulkan_bindless.h`), so a hand-built or zeroed T# that was never registered reads zeros even at (0,0). The translator does not compare coordinates with the T# size, and `cs_imgload.asm` only uses its T# words as a hash key | Register the descriptor through the runtime (for D3D12, create it with `CreateShaderResourceView`) so its T# hits the table, with the image's real width and height (stored as size − 1, see `runtime/src/gfx10_descriptors.h`) |
 
+### Signed zero in a float storage image (SHADER-605)
+
+Build `vk_store_test` as above and put `spirv-as` and `spirv-val` on PATH. Run this standalone
+probe from the repository root, passing the path to the executable you built:
+
+```powershell
+python -I runtime/test/shaders/probe_signed_zero.py runtime/build/vulkan/vk_store_test.exe
+```
+
+The probe assembles and validates two hand-written Vulkan 1.2 compute modules. Each requests
+`SignedZeroInfNanPreserve 32` and executes three constant `OpImageWrite` instructions into
+a `VK_FORMAT_R32G32B32A32_SFLOAT` image. Only the SPIR-V image format changes (`Unknown` or
+`Rgba32f`). The harness copies the images back, issues a transfer-write to host-read barrier,
+waits for completion, and compares all 768 words, including 756 prefilled guard words.
+A bit mismatch prints the word index and returns exit code 1. Both variants run even if the
+first comparison fails.
+
+On a GeForce RTX 5070 with Windows driver 616.56, both formats matched 765/768 words.
+In the first texel, `(-0, +0, +0, +0)`, word 0 read back as positive zero. The second texel,
+`(-0, 1, +0, +0)`, retained every bit. In the third, `(-0, -0, +0, +0)`, words 8 and 9 both
+read back as positive zero. All guards matched. This reproduces the discrepancy independently
+of RDNA translation. Other GPUs and drivers have yet to be tested with this probe.
+
 ## Posting your result
 
 Use the template at the top of [#166](https://github.com/ItsNotRexed/Leonida/issues/166): GPU, driver, subgroup
