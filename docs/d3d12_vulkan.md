@@ -1568,13 +1568,14 @@ Things that can invalidate this simple model, all **Open**:
   `truncates_high` / `ptr32_lo` rule of `tools/shader_meta.py`): 25,865 shaders truncate at least one pointer
   (VS 2,038 of 2,236, PS 11,666 of 12,101, CS 2,684 of 2,689, GS 195 of 195, MS 9,282 of 9,282), 86,036 truncated
   pointers in all, at most 5 per shader. Every one is the base of a 4/8/16-dword descriptor load (`s_load_dwordx4/x8/x16`,
-  a table pointer) from a user SGPR; no `global_*` base and no 1–2 dword `s_load` base has its high dword forced to
-  zero. 25,669 shaders truncate every user-SGPR pointer they dereference, 196 only some (the 195 GS, whose 64-bit
-  s8 pointer has a high dword the classifier cannot resolve, and one CS), and the other 638 dereference none.
-  Bases not rooted in a user SGPR (for example `s_getpc_b64` data or a pointer loaded from memory; 462
-  shader/access combinations) never have a constant-zero high dword. So the measured constraint is on descriptor
-  heaps; buffer base addresses reach the shaders inside V#s (48-bit bases this count cannot see), so it does not
-  show that buffers may sit above 4 GB.
+  a table pointer) from a user SGPR, and no 1–2 dword `s_load` base is truncated. No `global_*` in the corpus
+  takes its base from SGPRs: its 10,548 `global_*` instructions (530 shaders) address through VGPR pairs, which the
+  classifier does not follow. 25,669 shaders truncate every user-SGPR pointer they dereference, 196 only some (the
+  195 GS, whose 64-bit s8 pointer has a high dword the classifier cannot resolve, and one CS), and the other 638
+  dereference none. Bases not rooted in a user SGPR (462 shader/access combinations) never have a constant-zero
+  high dword. So what is measured to need the low 4 GB is the descriptor heaps; buffer addresses reach the shaders
+  inside V#s (48-bit bases) or in VGPRs for `global_*`, and this count sees neither, so it does not show that
+  buffers may sit above 4 GB.
 
 **What the console's own D3D12 libraries show** (names only, read statically from a user's console system-file
 dump; nothing from those files is in this repository):
