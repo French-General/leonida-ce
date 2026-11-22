@@ -555,8 +555,11 @@ semantics, not as a claim that they are globally unique across every shader.
 hash, role and texture name, resolves only the five measured character slots, and reports any
 other hash as `unknown 0x...`. A garment-shader material (`d5ed50f4`, `ea8d09d0`, `39ddb9ca`)
 with no `0xC8E8C282` binding is flagged `garment-no-albedo`, so a renderer keeps that part clay
-instead of painting `speculartex` as colour. `--json` and `--csv` write the same rows to a
-report, which may not overwrite an input:
+instead of painting `speculartex` as colour. The `texture` column retains the display value,
+including the eight-digit `Name` hash from `rpf9dump models`. The appended `asset_key` column
+holds the 16-digit `Id64` for matching against a texture pool's `AssetKey`. An absent or malformed
+ID appears as `-` in the terminal, an empty CSV cell and JSON `null`. Report paths must be
+distinct from the inputs:
 
     python -I tools/character_textures.py <model.json|dir> [--json FILE] [--csv FILE]
 
