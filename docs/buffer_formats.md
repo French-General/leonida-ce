@@ -152,23 +152,18 @@ has no SCALED 10_10_10_2) are not in the table.
 ## Where the translator stood, and what changed
 
 Decode of every format that was already in `Gen.FORMATS` matches the 880M word for word (the 32 old codes are in the
-table above). **Differences found in the older stores, left as they are** (an existing format stays byte-identical in this
-change; the three are pinned by an `expectedFailure` in `tests/semantic/test_buffer_formats_all.py`, which starts to
-fail when someone fixes them):
+table above). **Three differences were found in the older stores**; main's SHADER-358 and SHADER-364 fixed them while this branch was open,
+and `tests/semantic/test_buffer_formats_all.py` (`OlderStoresFollowTheGpu`) pins each to the oracle's words:
 
-1. **16_FLOAT, 16_16_FLOAT and 16_16_16_16_FLOAT stores round to nearest even and overflow to infinity** (`Gen.f16_bits`
-   without `rtz`); the 880M rounds toward zero and saturates to ±65504. In a 200-row sample of edge-heavy inputs, 89 of
-   200 (16_FLOAT), 132 of 200 and 174 of 200 differed (mostly by 1 ulp). This is the f16 *format* store, not the d16 data
+1. **16_FLOAT, 16_16_FLOAT and 16_16_16_16_FLOAT stores** rounded to nearest even and overflowed to infinity; the 880M (and
+   gfx1036) round toward zero and saturate to ±65504 (`Gen.mem_f16`). This is the f16 *format* store, not the d16 data
    rounding of BUILD-161 (#1759).
-2. **UNORM and SNORM stores multiply in f32 and round that**, which rounds twice. 0.3·65535 is 19660.5008 exactly and
-   19660.5 in f32, a tie that goes to 19660; the hardware stores 19661. In the same sample 0 of 200 differed for the 8-bit
-   one-component formats and between 1 and 13 of 200 for the others (8_8_8_8_UNORM 9, 16_16_UNORM 7, 16_16_16_16_UNORM 12,
-   10_10_10_2_UNORM 13, 2_10_10_10_UNORM 11). The new formats store with an exact integer product
-   (`Gen.norm_encode_exact`).
-3. **A two-component format stored with `buffer_store_format_xyzw` or `_xy`** takes (x, y) in the translator and (x, w) on the 880M
-   (26,523 elements in the run above, the last column of the table; `tbuffer_store_format_*` agrees with the translator).
-   The RDNA2 xy/xyz measurements in `cs_fmt_xy_xyz.asm` do not cover it. **Unresolved: the translator is unchanged until an RDNA2
-   card shows which is right.** It is pinned as an `expectedFailure` too, and excluded from the validated count.
+2. **UNORM and SNORM stores** multiplied in f32 and rounded that, which rounds twice (0.3·65535 is 19660.5008 exactly and
+   19660.5 in f32, a tie that went to 19660; the hardware stores 19661). They now round the exact product once
+   (`Gen.encode_norm_bits`), for the new SCALED and 10:10:10:2 formats too.
+3. **A two-component format stored with `buffer_store_format_xyzw` or `_xy`** took (x, y). Through a V# with the identity
+   selectors the hardware takes (x, w); with the runtime's X,Y,0,1 it takes (x, y); tbuffer takes (x, y). The translator now
+   chooses by `DST_SEL` as measured on gfx1036 (SHADER-364). This oracle runs the identity selectors only.
 
 ## Not measured
 
