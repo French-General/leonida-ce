@@ -1020,6 +1020,19 @@ First results on an RTX 4090 (subgroup 32, driver 621.14):
   should be left unwritten (invalid source without `bound_ctrl`, or a lane off in `row_mask`/`bank_mask`), and
   DPP16 ignored `fi:1`. Each was confirmed with a hand-written program.
 - **Everything else matches.** On `main`, 1,000 programs (`--seed 8 --ops 28 --no-maskdata --no-w32-hi-lanes`, 500 wave32 native and 500 wave64 emulated) give 0 mismatches. 297 of them are `hyp_only` (permlane with FI = 0 and an inactive source), and with `--permlane-fetch-inactive` all 1,000 match. Native wave64 on the 32-wide card mismatches as documented: `s_bcnt1` of EXEC counts one half, and a `v_readlane` from the other half wraps.
+- **Native wave64 on a 64-wide device: one driver fault (SHADER-705).** With `--wave 64 --w64-native --dpp --no-maskdata
+  --seed 82001 --programs 600`, AMD's Windows driver on a gfx1036 integrated GPU (`32.0.21042.62` and
+  `32.0.21045.16010`, two machines; found by @Vonsek, reduced by @zzEmmazz) gives one native mismatch:
+  `cs_xl64_8200346406` (index 403) differs in 96 words of `v5`, and the emulated build matches there.
+  - **The same run under RADV** (Mesa 26.3.1, Linux) on the same chip and on an RX 7900 XTX: 454 match, 0 mismatch,
+    146 `hyp_only`, natively and emulated. The program alone, and the 12 instructions it was reduced to, give 0 of
+    2,688 words off natively on both devices.
+  - **Hardware:** `--oracle hw` on that gfx1036 matches the model in all 600 programs.
+  - **So the native wave64 SPIR-V is right and that driver's compiler is not.** The wrong instruction is a
+    `v_permlanex16_b32` that reads a register a DPP op with a partial `row_mask` has just written; equivalent
+    rewrites of the shuffle index only move the wrong lanes.
+  - **Not checked:** the driver's generated code, and AMD's Windows driver on RDNA3 or newer.
+  - **On that driver** translate with `--wave64-emulate on`; `auto` picks native wave64 on a 64-wide device.
 - **Closed question (#374):** what hardware does for permlane with FI = 0 was measured on RDNA2 and RDNA3.5 (see above).
 
 ### 32-bit float VALU on the GPU (`tools/f32_fuzz.py`, FUZZ-3)
