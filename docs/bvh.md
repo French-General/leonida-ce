@@ -490,7 +490,7 @@ the destination buffer:
    (one dispatch), more with a radix sort of 8 passes of 4-bit digits over 256-element tiles (24 dispatches
    whatever the count, no padding to a power of two);
 3. BOX32 nodes, built level by level from four consecutive sorted children, with the parent table and each
-   instance's `ParentNode`;
+   instance's `ParentNode`; or BOX16 nodes (below);
 4. the header.
 
 The radix sort's scan writes the prefix sums of the digit counts to their own scratch array, not over the counts.
@@ -505,6 +505,23 @@ MoltenVK: `xdxr_build_check` found about 130 of 200 rays wrong in `blas_three_so
 10 runs out of 10 on Homebrew MoltenVK 1.4.2, on MoltenVK `5189f8de` built with SPIRV-Cross `57e4efcc`, on
 KosmicKrisp and on llvmpipe. A pointer from `OpConvertUToPtr`, which the translator uses, kept its load before the
 store in the same test.
+
+**BOX16 nodes.** A bottom-level build with `MINIMIZE_MEMORY` writes BOX16 inner nodes: 64 bytes, not 128, so a BLAS
+is about a fifth smaller (38,976 bytes against 48,768 for the 428-triangle BLAS of `d3d12_xdxr_rt_test`). The tree is
+the same; only the node records and their offsets change, so the layout still follows from the count, and
+`GetRaytracingAccelerationStructurePrebuildInfo` gives the smaller size when it gets the same flag. Each child box is
+rounded outward to halves (min toward -inf, max toward +inf) from the exact box, which the builder keeps in scratch,
+so the rounding does not add up from level to level. The rounding is integer code, because `packHalf2x16` rounds in an
+implementation-defined way (AMD's driver rounds toward zero). Beyond the half range a bound becomes +-inf on its
+outward side and +-65504 on its inward side, so an empty slot (min +inf, max -inf) is still empty. A bound smaller than
+the smallest normal half (2^-14) in magnitude becomes 0 or +-2^-14, whichever is on its outward side, never a half
+denormal: a decoder that flushes those to zero would make the box smaller. `tools/xdxr_bvh.py` `half_round` does the same, and `check-build`
+compares every BOX16 word bit for bit with `encode_box16` of the exact box of the triangles under that child.
+Top-level builds keep BOX32 whatever the flags, because they are in world space, where a half's step reaches 2 m at
+2,048 m and 4 m at 4,096 m. An update must pass the same flags as its build (D3D12 requires it), so a refit keeps the
+node type. **ASSUMPTION:** that `MINIMIZE_MEMORY` is the console's switch for BOX16. The offline BLASes in the
+`*_bvh4.rpf` packs have BOX16 roots (§3.1), but `XboxBvhBuilder.dll`'s choice between the two at run time is not
+traced (`docs/xdxr.md` §3 lists the build settings it reads).
 
 The tree's shape depends only on the element count. `XdxrLayout` therefore computes the result and scratch sizes
 exactly when the build is recorded, and the same numbers can answer `GetRaytracingAccelerationStructurePrebuildInfo`.
@@ -537,7 +554,7 @@ already exactly its layout's size, so `COMPACTED_SIZE` and `CURRENT_SIZE` (from
 mode are refused at replay as unsupported, not faked. In `LEONIDA_RT_AS=khr` mode the postbuild descs stay ignored,
 as before.
 
-Not done yet: pairing triangles into TRI1 leaves, BOX16 nodes, serialization. A higher-quality build (SAH) would also
+Not done yet: pairing triangles into TRI1 leaves, serialization. A higher-quality build (SAH) would also
 come later.
 
 ```powershell
