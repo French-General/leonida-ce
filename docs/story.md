@@ -285,10 +285,10 @@ groups matched to a `63 30` block keep the default words in 2,417 of 2,452 meshl
 **Which `42 40` block a group is checked against (ASSET-294).** `--faces` and `--centres` decode a group with
 a `42 40` block of its vertex count in the same page. When several blocks have that count, the order in the
 page doesn't decide it. In `Q0 Q1 G0 G1` pages, G0 is built on Q0 in some pages and on Q1 in others, and taking
-the k-th block for the k-th group fits only 9,295 of 15,997 such groups in `story000`. The link is in the drawable's
-pointers, outside the page. So the walker takes the block whose vertex boxes are closest to the group's stored
-centres (`centre_distance`, summed over its meshlets), keeping the nearest block before the group on a tie. Over
-all of `story000.rpf` (7,577 mesh pages, 7,571 parsed), before and after:
+the k-th block for the k-th group fits only 9,295 of the 15,997 `story000` groups that have several blocks and a
+fitting one. The link is in the drawable's pointers, outside the page. So the walker takes the block whose vertex
+boxes are closest to the group's stored centres (`centre_distance`, summed over its meshlets), keeping the nearest
+block before the group on a tie. Over all of `story000.rpf` (7,577 mesh pages, 7,571 parsed), before and after:
 
 | Pairing | Groups with several blocks | Block changed | Shared edges | Faces within ~25° | Opposed |
 |---|---:|---:|---:|---:|---:|
@@ -297,7 +297,9 @@ all of `story000.rpf` (7,577 mesh pages, 7,571 parsed), before and after:
 
 The face check doesn't use the centres, so it is the independent evidence. The centre counts rise too (same step
 212,278 → 222,371 of 827,430 axes), but for those 8,668 groups they no longer measure the centres on their own.
-The `shared_minigame000` tables above were counted with the old pairing.
+The `shared_minigame000` tables above were counted with the old pairing. `meshlet_centre` ignores w2 bits 28-31,
+the centre's step exponent in #3069 (also measured by @zzEmmazz on #2991). No story000 group with several blocks has
+a meshlet where they are non-zero; they are non-zero in 69 groups in all.
 
 The other bits are not decoded:
 - **w3 bits 12-31** are non-zero in 24% of the `42 40` meshlets of the first 400 streams (14,594 of 61,156), and
