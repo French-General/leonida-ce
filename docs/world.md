@@ -516,6 +516,11 @@ MINX,MINY,MAXX,MAXY` bounds the RAGE world X/Y. `world.json` then has `"layout":
 `placed_unverified` (no key in the row), `key_mismatch`, `unresolved_archetype` (no exported model has that name),
 `model_not_loadable`, `degenerate_scale`, `mirrored` and `distinct_models`.
 
+`--max-tex-size` limits the longest edge of embedded DDS previews to 512 pixels by default.
+When shrinking a DDS tagged sRGB, the converter averages RGB in linear light, weights each texel by its
+alpha, and encodes the result as sRGB again. An opaque black and white pair averages to 188 in sRGB
+and 128 in an untagged RGBA8 texture.
+
 ### Shared geometry (`--instancing`)
 
 A city has 1.55 M HD placements of about 120 k models, and most models are placed many times. By default
