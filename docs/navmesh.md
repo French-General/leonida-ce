@@ -311,7 +311,7 @@ remain **open**.
    `0xdd53676a`, `0xf2dd6348`, `0xde5f1345`, and 3 of the 4 singletons) are not yet matched to engine names.
 4. **Per-record bitfields inside `0x00010015` tiles.** `u32@0x10` bit 3's secondary trigger on `289` tiles and bit 6's
    name, `u32@0xE8` build-stamp encoding, the polygon flag bits (`+0x18` bits 8 and 13 lie under nine in ten lane
-   nodes, which is road surface is open; see above), the adjacent-edge and special-link flag bitfields, and the C++ type of the
+   nodes; which of them is road surface is open; see above), the adjacent-edge and special-link flag bitfields, and the C++ type of the
    96-byte `+0xB8` records remain open.
 5. **Band-3 `grid` subsystem and EOF `PSIN` v79.** The Band-3 subsystem identity, `u64` key encoding and `u32[N]`
    payload bits are open, as is why the final `PSIN` (version `79`) terminates before `LSNS` ends.
