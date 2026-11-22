@@ -353,6 +353,11 @@ That needs `VK_KHR_shader_fma` with `shaderFmaFloat32`; the test programs enable
 fused, whereas **Mesa RADV (26.2.6-arch3.1, AMD Radeon RX 6800, Linux)** splits 5 of the 7 f32 ops under `--fma glsl`
 (reusing the live `a * a` product in `v3`) and returns 8/8 fused exact under `LEONIDA_FMA=khr`. Under default
 `--fma glsl`, `check.py` and `run_gpu_tests.py` therefore accept either the fused or the exact split word for each of
+fused, whereas **Mesa RADV (Linux)** splits several of the 7 f32 ops under `--fma glsl` — the exact split count varies
+by GPU, Mesa/ACO version, and execution modes (4 of 7 on RX 6800 / Mesa 26.2.6-arch3.1 and RX 7600 / Mesa 27.0.0-devel
+with `SignedZeroInfNanPreserve 32`, 5 of 7 on RX 6800 before float controls, 7 of 7 on Radeon Pro V540 RDNA1 / Mesa
+25.2.8) — while returning 8/8 fused exact under `LEONIDA_FMA=khr` where supported. Under default `--fma glsl`,
+`check.py` and `run_gpu_tests.py` therefore accept either the fused or the exact split word independently for each of
 the 7 f32 outputs while still requiring exact f16 round-to-odd (`0x00007351`); under `LEONIDA_FMA=khr`, all 8 words
 must be strictly fused.
 
