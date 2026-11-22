@@ -460,7 +460,9 @@ that starts from a known pattern. It runs 4 to 12 random `ds_*` instructions, ea
   `--no-exec KIND` drops one op kind's masks without changing the rest of the program, to separate
   a known finding from new ones.
 - **Subgroup size.** Wave32 programs, and wave64 ones built with `--emulate`, ask `vk_compute_test` for
-  32-lane subgroups (`VKC_SUBGROUP_SIZE=32`). Where the device can't pin that size, `vk_compute_test`
+  32-lane subgroups (`VKC_SUBGROUP_SIZE=32`). Where the device can't require it but 32 is its default
+  (MoltenVK), a probe shader checks the lanes first and the programs are compared (see `docs/testing.md`,
+  "GPUs with 32-wide subgroups"). Where the device can't pin that size at all, `vk_compute_test`
   prints `compute subgroup size: 32 not available` and runs at the driver's choice, and the wave32
   program is a skip, not a mismatch: its words come from another wave size. Mesa llvmpipe (8 lanes)
   is such a device. Emulated wave64 uses no subgroup operations, so it is still compared there.
