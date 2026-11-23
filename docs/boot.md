@@ -114,6 +114,10 @@ The trace tool prints the first call per method and the `unsupported`/`failed`/`
 same summary for a script. Share that summary's **counts and error classes**, not the trace file or its debug
 strings.
 
+If startup stops before the first D3D12 call, the combined command still prints the startup report. A missing
+or invalid requested trace is reported on stderr and sets exit code 2. In a partial JSON report that section
+is `null`; if neither input yields a report, stdout is empty.
+
 ## 4. The open questions, and the trace signal for each
 
 The questions are in [`d3d12_vulkan.md`](d3d12_vulkan.md) §8.2; that table repeats 16, 19 and 20, and this one is
