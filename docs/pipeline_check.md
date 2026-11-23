@@ -19,6 +19,27 @@ For an index entry with `lds_bytes`, the checker compares the reported workgroup
 limit counts as a module failure before Vulkan receives the shader. Older indexes without this field still use the
 normal driver check. Mesh pipelines on devices without mesh shader support still use the existing feature skip.
 
+## Options
+
+`vk_pipeline_check <spirv dir> [cache.bin] [options]`
+
+| Option | Meaning |
+|---|---|
+| `cache.bin` | Optional positional pipeline cache. Loaded first if it exists, saved every 10 minutes and at the end, so a stopped run resumes. |
+| `--jobs N` | Compile on N threads (default: half the hardware threads). |
+| `--start I`, `--count N` | Check only the sorted index entries `[I, I+N)`. |
+| `--stage all\|cs\|graphics` | Which stages to check. `--compute-only` and `--graphics-only` are aliases. |
+| `--slow SEC` | Print pipelines slower than SEC (default 30); compiles past 60 s are named while running. |
+| `--max-bytes N` | Skip `.spv` files larger than N bytes (0 = no limit); every skip is named. |
+| `--large-module-bytes N` | Compile modules larger than N bytes alone (default 4 MiB; 0 disables isolation). |
+| `--stats FILE` | Write the driver's per-shader statistics as CSV rows `name,stage,statistic,value`. Needs `VK_KHR_pipeline_executable_properties`; use it without `cache.bin`, because a cached pipeline may come without statistics. |
+| `--cache-feedback` | Group successful pipeline creations by `VkPipelineCreationFeedback`: cache hits, no hit reported, and unavailable. |
+| `--isolate` | POSIX only: check in child processes, `--isolate-batch N` modules at a time (default 256), so a crashing module is recorded as `MODULE CRASH` and the pass continues. Not compatible with `--stats`. |
+| `--inflight-file F` | Keep the modules currently in the driver in F as `name<TAB>phase` lines. It is rewritten by the watchdog and when a large module enters or leaves, and emptied at the end; `make_game.py`'s pipelines stage reads it. |
+| `--skip-file F` | Do not compile modules named one per line in F; each is reported as `MODULE CRASH` and counted as a failed pipeline. `make_game.py` writes F after a crash so the next run checks the rest. |
+
+`--isolate-child` is internal to the parent/child protocol and is not meant to be passed directly. A module with a missing partner stub is skipped; without `--isolate`, a driver crash ends the run.
+
 ## Check user-defined interfaces between stages
 
 `tools/shader_link_check.py` compares the binary SPIR-V declarations of the shaders you plan to put in the
@@ -61,6 +82,38 @@ bindings, device limits and pipeline state. Shader pairs must come from the call
 and error classes, keeping the local shader files and reports that identify them on your PC.
 
 [interfaces]: https://docs.vulkan.org/spec/latest/chapters/interfaces.html#interfaces-iointerfaces-matching
+
+## Audit wave fidelity for the target GPU
+
+The subgroup audit combines the translator's wave-width and partition-invariance metadata with
+the target device's Vulkan stage capabilities. A device can require 64 lanes for a fragment
+shader without being able to require 64 for a vertex or geometry shader. Audit the whole graphics
+index or use the same manifest as the interface check.
+
+```powershell
+python -I tools/wave64_pipeline_audit.py <spirv>/index.json
+python -I tools/wave64_pipeline_audit.py <spirv>/index.json --manifest pairs.json --strict --report wave64-summary.json
+```
+
+The audit checks the Vulkan device selected on this PC and respects `LEONIDA_VK_DEVICE`. To assess
+another device, save `python -I tools/vk_subgroup_info.py --stage-caps` as UTF-8 JSON on that system and pass the file
+with `--device-info`. The report counts each shader once and each pipeline by its worst stage. It
+contains aggregate counts, capability masks and reason categories. Shader and pipeline names are
+excluded from the report.
+
+| Result | Meaning |
+| --- | --- |
+| `exact` | Fixed or explicitly requestable translated width, or workgroup exchange in compute/mesh |
+| `partition-invariant` | A 32-wide graphics subgroup can run a tier A/B wave64 shader. Tier B atomic slot order can differ. |
+| `default-width` | The reported device default matches, with no per-stage width guarantee |
+| `approximate` | A tier C wave64 VS, PS or GS depends on cross-half behaviour on the 32-wide device |
+| `unknown` | The index or device lacks the information for a decision |
+| `unsupported` | The translated width, stage support or execution model does not fit the target |
+
+In strict mode, exit 1 means at least one result other than `exact` or `partition-invariant`.
+Invalid inputs or an unavailable Vulkan probe exit 2. This checks width fidelity from metadata.
+Vulkan pipeline creation and drawing still need their own tests. See [Wave64 graphics in the
+translator contract](design.md) for how the tiers are assigned.
 
 ## Corpus
 
@@ -122,13 +175,36 @@ acceptance only.
 
 ## Limiting concurrent compilation of large modules
 
-By default, a SPIR-V module larger than 4 MiB compiles alone. Smaller modules continue to use
-`--jobs`. The gate covers module creation and both compute and graphics pipelines. The size
-cutoff is a heuristic for [#884](https://github.com/ItsNotRexed/Leonida/issues/884), where several
-compiles that each needed gigabytes of host RAM ran at the same time. The pipeline cache still
-checkpoints during the run, and isolated modules count towards the regular results.
+A SPIR-V module larger than 4 MiB is "large". [#884](https://github.com/ItsNotRexed/Leonida/issues/884)
+showed why that matters: several compiles that each needed gigabytes of host RAM ran at the same time. Large
+modules now share a memory budget (`runtime/test/large_module_gate.h`): each one reserves 512 bytes of RAM per
+SPIR-V byte, and they enter the driver while their reservations fit three quarters of the memory available when
+the run starts, up to `--jobs` of them. One large module always gets in when none is compiling, so a module
+bigger than the whole budget still compiles, alone among the large ones. Small modules are never held back. On
+Linux the budget is the smaller of `MemAvailable` and the room under the cgroup v2 `memory.max` of the process and
+every cgroup above it (a container, or `systemd-run -p MemoryMax=...`); on Windows it is `ullAvailPhys`. Where
+neither can be read, every large module compiles alone, as before. After each large module, glibc builds call
+`malloc_trim(0)`: the driver's compiler frees its memory into the arena of the thread it ran on, and glibc kept it
+there.
 
-`--large-module-bytes N` changes the cutoff in bytes. Set it to `0` to disable isolation.
+Measured on an RX 9070 XT (RADV GFX1201, Mesa 25.3.6, Mesa shader cache off), on 40 consecutive translated
+compute modules of which 27 are over 4 MiB:
+
+| Large modules | Threads | Wall time | Peak RAM |
+|---|---|---|---|
+| one at a time (`--large-parallel 1`, the old default) | 6 | 297 s | 7.1 GB |
+| memory budget (default) | 6 | 83 s | 8.3 GB |
+| memory budget (default) | 12 | 56 s | 15.1 GB |
+
+One 5.7 MB ray-tracing compute module alone: 12.4 s and 1.96 GB peak (about 330 bytes per SPIR-V byte, hence the
+512 estimate); a 0.36 MB one: 0.13 s and 94 MB. The process grew past one module's peak even one at a time because
+of the arenas (16 modules, 6 threads: 6.2 GB; with `MALLOC_ARENA_MAX=1`: 2.1 GB).
+
+- `--large-module-bytes N` changes the cutoff in bytes. `0` disables the gate.
+- `--large-parallel N` caps how many large modules compile at once: `0` (default) by the budget, `1` alone with
+  the other threads waiting (the behaviour before), `N` at most N without a budget.
+- `--inflight-file` names every module in flight when a large one enters or leaves the driver, so with several
+  large modules in flight it names all of them; the `pipelines` stage of `make_game.py` checks each alone.
 
 ## Skipping huge modules
 
@@ -146,6 +222,34 @@ modules passed.
 The report above therefore states the limit and the skip count; a later run on an RTX 4060 Ti / 595
 completed the full 26,503-entry set without them (`docs/design.md`). `--max-bytes` remains a visibility
 tool, not a pass: a skipped module has not been validated.
+
+## Build-stage batches (BUILD-1030)
+
+`make_game.py` runs the pipelines stage in fresh checker processes over at most **500 index entries** each, on
+Windows and POSIX. The ranges partition the same name-sorted index as `--start` / `--count`, including the final
+short range. Each finished process saves to the same `pipeline_cache.bin`, and the next loads that checkpoint.
+This bounds each invocation to a range that can be split further if concurrent heavy compiles exceed available
+memory. A work folder with at most 500 entries keeps the single invocation. An older checker without the range
+options keeps the older invocation; rebuild the runtime to get batching.
+
+If a batch crashes, its in-flight modules are checked alone in fresh processes. A module that reproducibly crashes
+is recorded as failed, and the rest is checked. If none crashes alone, the entire failed range is retried in
+smaller processes, down to one entry; healthy modules are not added to the crash list. An unrecoverable crash,
+an interrupted check or a setup error stops the stage. A validation failure in one batch remains a failure even
+when subsequent batches succeed; it does not prevent those later batches from being checked.
+
+The native checker returns 1 for initialization failures as well as validation failures. A completed shader pass
+writes/clears its in-flight report even when validation fails. Exit 1 without a new report stops the stage instead
+of repeating failed setup for the remaining batches; diagnostic probes use the same distinction. Each process
+starts with a cleared report path, so an earlier process's report cannot hide an initialization failure.
+
+The batch size limits the index range, **not total memory usage**. Concurrent heavy modules, loading a large
+saved cache or compiling one large shader can still exceed a process's available memory; a range that
+cannot complete even alone fails with a diagnostic rather than being counted as checked.
+
+`tests/test_make_game_pipeline_batches.py` runs the real build-stage orchestration against scripted child processes:
+bounded coverage and cache checkpoints, collective memory-crash recovery, a genuinely crashing module, validation
+failures, interruptions, setup failures and compatibility with older checkers. It needs no game files or GPU.
 
 ## Crash isolation (`--isolate`)
 
@@ -223,9 +327,16 @@ in between.
 **One process per chunk.** A single `vk_pipeline_check --jobs 4` run over the emulated corpus reached
 21,000 of 26,503 pipelines with no failures. Then the driver's compiler ran out of memory
 (`LLVM ERROR: out of memory`). With 2 jobs, one process later grew past 100 GB of committed memory.
-Driver compiler memory isn't returned between pipelines, so the build now runs as one checker
-process per 300–500 entries. Each process seeds from and saves to the same cache file, so the chunks
-resume. Since #903 the checker also compiles modules over 4 MiB alone.
+In those earlier runs, compiler allocations were reported to persist between pipelines; the original workaround
+used one checker process per 300–500 entries. The build stage now uses at most 500 per process, with smaller
+retries when needed (above).
+Each process seeds from and saves to the same cache file, so the chunks resume. Since #903 the checker also
+compiles modules over 4 MiB alone.
+
+For BUILD-1030, [the reporter's later measurements](https://github.com/ItsNotRexed/Leonida/pull/3623#issuecomment-7085912874)
+found no accumulation over a 1,500-entry range and cheap loading of the full cache; the large peaks came from
+individual heavy modules. The recovery therefore splits the failed range until fewer such modules compile at
+once, without treating the initial cache-growth hypothesis as established.
 
 **The ScreenProbes shaders.** `indirect_diffuse_lighting`'s ScreenProbes_ActivateProbes,
 ActivateProbesTarget and ActivateRays compute shaders were 60, 60 and 32 MB of SPIR-V. Their 3,281
