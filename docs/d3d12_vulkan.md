@@ -262,7 +262,8 @@ What is implemented (all of it testable without the game):
   with a raw Vulkan program (a 4x D32 attachment, render area (2,1) 5x4 of 8x6, `MIN`, `MAX` and `SAMPLE_ZERO`,
   store `NONE` or `STORE`): MoltenVK writes all 48 destination texels, KosmicKrisp only the 20 inside. No device
   property reports it, so nothing is gated. The format is the depth
-  format or the plane's own (`R32_FLOAT`, `R24_UNORM_X8_TYPELESS`, `X24_TYPELESS_G8_UINT`, and the D32S8 pair, untested).
+  format or the plane's own (`R32_FLOAT`, `R24_UNORM_X8_TYPELESS`, `X24_TYPELESS_G8_UINT`, and for D32S8
+  `R32_FLOAT_X8X24_TYPELESS` and `X32_TYPELESS_G8X24_UINT`; all compared with the PC runtime, TEST-847).
   What the PC runtime accepts was measured on an RTX 5070 (driver 621.24) and on WARP: `MIN` and `MAX` of either
   plane by either format, and `AVERAGE` of the depth plane by its own format only (its `Close` fails for `AVERAGE`
   by the depth format or of stencil); the layer accepts the same. WARP is no reference for two of them: a resolve
@@ -271,8 +272,10 @@ What is implemented (all of it testable without the game):
   destination offset other than the source rectangle's corner is refused, as is a mode missing from the device's
   `supportedDepthResolveModes`/`supportedStencilResolveModes` (queried at device creation; one plane per scope, so
   `independentResolve` never applies). Refused calls fail `Close` and record nothing. `d3d12_depth_resolve_test`
-  compares D32 and D24S8 resolves (typed and typeless resources, whole and rectangle) with the PC runtime; clears give
-  every sample of a pixel one value, so the modes over differing samples are not checked yet. `DECOMPRESS`,
+  compares D32, D24S8 and D32S8 resolves (typed and typeless resources, whole and rectangle) with the PC runtime and
+  WARP. Its edge cases (TEST-848) draw a triangle over the cleared 4x source first (depth 0.5, stencil 0x44): the
+  pixels on its diagonal edge hold differing samples, and MIN, MAX and AVERAGE over them match the PC runtime on an
+  RTX 5070 (driver 621.01) and WARP byte for byte. `DECOMPRESS`,
   `ResolveSubresource` of depth (which D3D12 does not offer) and resolves between two formats of one typeless family
   remain open. A multisampled texture copies only to one with the same sample count
   and has no footprint.
