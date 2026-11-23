@@ -179,10 +179,11 @@ build dependency. With that copy:
   Everything stayed in temp; none is in the repository or PR.
 - `BinkGoto(handle, 200, 0)` followed by `BinkDoFrame` produced the 4K frame above, so absolute frame seeking
   works at least in this path. The `BinkGoto` flag meaning was not otherwise tested.
-- `BinkDoFrame` and `BinkCopyToBuffer` returned 0 even when they produced a correct frame. The return semantics of
-  this GDK build are therefore not established; a caller must not treat 0 as failure without checking the pixels.
-- `BinkGetSummary` with a guessed `BINKSUMMARY` layout crashed with an access violation. The `HBINK`,
-  `BINKSUMMARY`, `BINKTRACK` and related struct layouts are not established.
+- `BinkDoFrame` and `BinkCopyToBuffer` returned 0 even when they produced a correct frame. Over the whole archive
+  they return 0 on every call ([ABI over the archive](#abi-over-the-archive)); a caller must not treat 0 as failure
+  without checking the pixels.
+- `BinkGetSummary` with a guessed `BINKSUMMARY` layout crashed with an access violation. With a 1,024-byte buffer it
+  writes bytes +0x00..+0x8F on every stream; the fields found in it are in [ABI over the archive](#abi-over-the-archive).
 
 ### Decode coverage over the whole archive
 
@@ -252,6 +253,40 @@ ffmpeg -f rawvideo -pix_fmt bgra -s 1280x720 -i frame.raw -frames:v 1 frame.png
 
 The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it never sees the `.bk2`.
 
+### ABI over the archive
+
+[`runtime/test/bink_abi_test.cpp`](../runtime/test/bink_abi_test.cpp) ([notes](../runtime/test/bink_abi_test.md)) maps `Bink2Scarlett.dll` with `rt::Loader` and
+opens each of the 515 streams inside `movies.rpf` (`BinkSetFileOffset`, then `BinkOpen` with flag `0x20`), so nothing
+is extracted. For each stream, it reads the first 256 bytes of the `HBINK` and the `BINKSUMMARY` that `BinkGetSummary`
+writes, and keeps the 32-bit word offsets that hold the stream header's value. An offset is listed only if it
+matched on all 515 streams.
+
+Every stream of 1.0.2.1 runs at 30/1 fps, so the header alone can't separate the rate fields. The test therefore
+reopens one stream after `BinkSetFrameRate(24000, 1001)`. Of the 32 single-bit `BinkOpen` flags, only `0x1000` makes
+that rate take effect. RAD's Bink 1 value, `0x00080000`, changes nothing.
+
+| Field | `HBINK` | `BINKSUMMARY` | How it was told apart |
+|---|---|---|---|
+| width | `+0x00` | `+0x28` | 11 distinct widths |
+| height | `+0x04` | `+0x2c` | 14 distinct heights |
+| frame count | `+0x08` | `+0x48` | 278 distinct counts |
+| current frame (1-based) | `+0x0c` | | 1 after `BinkOpen`, 2 after `BinkNextFrame`, N after `BinkGoto(N)` |
+| playback frame rate | `+0x14` / `+0x18` | `+0x3c` / `+0x40` | the forced 24000/1001 lands here |
+| file frame rate | | `+0x34` / `+0x38` | keeps 30/1 under the forced rate |
+| audio track count | `+0x38` | | values 0, 1, 2 and 4 |
+
+- `BinkGetSummary` writes every byte from +0x00 to +0x8F and none after, on all 515 streams. The test fills a
+  1,024-byte buffer with `0xCD`, then again with `0x5A`. A written byte differs from at least one of the two, so a
+  byte that kept the sentinel both times was not written. This bounds what the call writes, not the declared size of
+  the structure, which may have padding past +0x8F.
+- `BinkDoFrame` and `BinkCopyToBuffer` return 0 on every call. That covers 515 x 3 decodes: frame 1, frame 2, and
+  the frame after `BinkGoto` to the middle of the stream. `BinkCopyToBuffer` replaced the sentinel buffer on every
+  stream.
+- `BinkWait` returns 0 before the first frame. It returns 1 when it is called straight after a decode, that is,
+  before the next frame is due at the stream's rate.
+- The `HBINK` is readable for at least 256 bytes. Fields that matched no header value are not named here; the
+  `BINKTRACK` prefix is in [`bink_audio_test.md`](../runtime/test/bink_audio_test.md).
+
 ## 5. What is still unknown
 
 - **Roles.** The RPF9 table of contents is encrypted, but `tools/bink_names.py` recovers each stream's path from
@@ -264,8 +299,10 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
 - **Playback integration.** The executable is not in the package. Where the game calls `BinkOpen`, which flags it
   passes, whether it uses `BinkDoFrameAsync`, `BinkGoto`, subtitles or the GPU path, and how it schedules movies
   against streaming are all unknown.
-- **Bink2Scarlett ABI.** The struct layouts, the real return values of `BinkDoFrame`/`BinkCopyToBuffer`, the
-  `BinkGetSummary` layout, the async API, the GPU API and the XAudio2 setup are not established. The DLL loads on
+- **Bink2Scarlett ABI.** [ABI over the archive](#abi-over-the-archive) gives the `HBINK` and `BINKSUMMARY` fields
+  that match the stream header, the bytes `BinkGetSummary` writes (+0x00..+0x8F), and the return values of `BinkWait`, `BinkDoFrame` and
+  `BinkCopyToBuffer`. The rest of both structures, the async API, the GPU API and the XAudio2 setup are not
+  established. The DLL loads on
   Windows only after the missing `xmem.dll` imports are supplied; a proper port needs an allocator shim with the
   Xbox semantics, not necessarily `malloc`.
 - **What the RPF trailer holds.** The 22,812 bytes after the last stream are no longer unexplained (ASSET-318):
