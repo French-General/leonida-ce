@@ -120,8 +120,9 @@ have it negative), and only the entries from the header end to `offsetToElements
 | `offsetToParents` is negative as `int32` | 237,347 |
 
 So the "`u16` table at header `0x130`" of section 4 is not a table: it is these three header words read as `u16`s
-(a root pointer and two growing offsets, hence "often monotonic"). With `offsetToPrimRemap` 0 everywhere there is no
-primitive remap table either, and the elements are 64-byte records, `numElements` of them, padded to 128 bytes.
+(a root pointer, the element offset and the parent offset, the last usually negative; hence "often monotonic"). With `offsetToPrimRemap` 0 everywhere there is no
+primitive remap table either, and the element region allocates 64 bytes per element, `numElements` of them, padded
+to 128 bytes (a stride, not a record layout: section 4a describes the packed arrays inside it).
 **Open:** where the parent array starts and how big it is. Neither `offsetToParents + 4 * unit` against the header end
 or `offsetToElements`, nor a size of `4 *` the node or element count, holds on every stream.
 
