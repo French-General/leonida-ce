@@ -49,7 +49,7 @@ method, scope and caveats. No game data is included.
 | [audio.md](audio.md) | AWC banks: Opus, PCM and XMA2; lossless Ogg Opus repack and WAV paths; stream names from dictionary hits with a salted control; names and subtitles written into the Ogg Opus tags. |
 | [rsc8_audio.md](rsc8_audio.md) | 641,428 `RSC8` v8001 resources across 4 archives: 100% AWC tag `0x5c` facial/lip-sync `crClipDictionary` paired with 48 kHz mono Opus dialogue, 0 hidden audio containers; the undocumented `0x5a`/`0xd9` companion tags (1,185 `audio.rpf` streams) decoded structurally. |
 | [awc_shorts.md](awc_shorts.md) | Export short streamed-music idents/stings by duration; stereo-aware, no re-encode. |
-| [audio_config.md](audio_config.md) | The music/radio record table: 1,589 records, exact durations, AWC stream ids; no start offsets. |
+| [audio_config.md](audio_config.md) | The music/radio record table: 1,589 records, exact durations, AWC stream ids; no start offsets. AWC tag `0xBD`: 16-byte marker events on 938 of the 3,008 streamed-music banks, track markers in five long mixes. |
 | [radio_stations.md](radio_stations.md) | Audio-config station blocks: 19 records, boundary u32, content-id lists; VCRR 80/80 mapping; no start offsets. |
 
 ## Runtime, GPU and validation
