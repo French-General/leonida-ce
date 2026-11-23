@@ -224,6 +224,8 @@ Not reproduced by the tool: the track-marker cross-checks (the link by `value`, 
 comparison with the config durations) and the name-hash trials. They joined the decoded events with
 `audio_config.py --join --json` in a local script that is not committed, because it works on per-event rows:
 link = equal `value`, stretch = next marker time minus this one, tolerances as stated.
+be matched in the audio itself; no tool in this repository does that yet. The station graphs in
+[radio_stations.md](radio_stations.md#why-this-is-not-a-start-table) are not a start table either.
 
 ## Tool
 
