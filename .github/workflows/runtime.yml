@@ -328,22 +328,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
           wine --version
-      - name: Create the Wine prefix
-        # wineserver -w inside the same X session: once Xvfb is gone, a Wine process left waiting for the display
-        # (explorer.exe) can keep wineserver -w waiting until the job's timeout.
-        timeout-minutes: 5
-        env:
-          WINEPREFIX: ${{ runner.temp }}/wineprefix
-          WINEDLLOVERRIDES: "mscoree,mshtml="
-          WINEDEBUG: "-all"
-        run: xvfb-run -a sh -c 'wineboot --init && wineserver -w'
       - name: Windows tests under Wine
         env:
           WINEPREFIX: ${{ runner.temp }}/wineprefix
           WINEDLLOVERRIDES: "mscoree,mshtml="
           WINEDEBUG: "-all"
         run: >-
-          xvfb-run -a python3 -I scripts/run_wine_tests.py
+          xvfb-run -a bash scripts/run_wine_session.sh
+          python3 -I scripts/run_wine_tests.py
           --tests runtime/build/ctest.json
           --windows-root "$(cat runtime/build/windows-root.txt)"
           --summary "$GITHUB_STEP_SUMMARY" --label "$(wine --version)"
