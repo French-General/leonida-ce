@@ -716,6 +716,16 @@ The compute path, end to end:
 - **GPU address arena** (section 3.3, when the device has `bufferDeviceAddress`): one host-visible,
   device-addressable buffer, 256 MiB by default (`LEONIDA_ARENA_MB`, at most 4095 MiB, so every VA fits 32-bit
   table pointers).
+  - It is also no larger than the device's `maxBufferSize` (Vulkan 1.3) and, counting the buffer's memory
+    requirement, `maxMemoryAllocationSize` (Vulkan 1.1), whichever is smaller (`runtime/src/arena_size.h`). When a
+    limit cuts the request, one log line names the limit and the size used. `arena_size_test` (CPU) checks the
+    decision on synthetic limits; `d3d12_compute_test` checks the arena against the device's limits and a simulated
+    32 MiB `maxMemoryAllocationSize`.
+  - The RX 6800 (RDNA2, AMD driver 26.11.2, Windows 11, measured 2026-11-22) reports 2 GiB for both, so
+    `LEONIDA_ARENA_MB` above 2048 gets a 2048 MiB arena there.
+  - Before the cap, that driver did create a 3000 MiB arena. Buffers placed past 2 GiB in it (VA 0x89820000) were
+    written by a compute shader and read back correctly, but the validation layer reports the allocation as over
+    `maxMemoryAllocationSize`. Nothing relies on this out-of-spec behaviour.
   - The device logs the arena's high-water mark when it is destroyed: the peak end offset against the size, the
     most bytes live at once (by use: buffers, descriptor heaps, shaders, heaps), allocations and refusals (D3D-55).
     `LEONIDA_ARENA_LOG=1` also logs one line per VA handed out, per refused allocation, and per upload or readback
