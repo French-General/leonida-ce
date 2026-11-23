@@ -1696,7 +1696,22 @@ check over the code), the patched code runs as the pixel shader, and `v_interp_p
 pixel centres of a 4 x 1 target gives u = 0.125, 0.375, 0.625, 0.875, with `v_interp_mov_f32` reading the
 parameter words P0 = 0 and P10 = 2.0 (`tests/test_ps_oracle.py`, which runs it on hardware when
 `LEONIDA_PS_ORACLE_BUILD` names a runtime build). On other drivers the binary is not a single PAL ELF (the NVIDIA
-driver returns two blobs) and the tool exits 77. Limits: one draw of one triangle, mrt0 as RGBA32F only; the vertex
+driver returns two blobs) and the tool exits 77.
+
+`--format` picks the color target (rgba32f by default; rgba16f/unorm/snorm/u/i, rg32f, r32f, rgba8*, rgb10a2unorm,
+...), and the driver picks the export format for it as for a game pipeline; the readback is the target's texels as
+stored. Measured on gfx1036 with the `const` template (EGEN-TOOL-PS-ORACLE-FORMATS):
+
+| Target | `col_0_export_format` | What reaches the target |
+| RGBA32F, RGBA32_UINT | 9 (32_ABGR) | the four exported dwords as they are; a channel exported as `off` is 0 |
+| RG32F | 2 (32_GR) | R = the last enabled of x, z; G = the last enabled of y, w (all four enabled: z, w) |
+| R32F | 1 (32_R) | the last enabled channel (all four enabled: w) |
+| RGBA16F, RG16F, RGBA8_UNORM/SNORM, RGB10A2 | 4 (FP16_ABGR) | a `compr` export's halves as f16, converted by the CB; an f16 NaN half becomes `0xfe00` in an f16 target, 0 in a normalized one |
+| RGBA16 UNORM/SNORM/UINT/SINT, RG16_UNORM | 5 / 6 / 7 / 8 | a `compr` export's 16-bit halves bit for bit (unorm16/snorm16/integer values, not f16) |
+| RGBA8_UINT | 7 (UINT16_ABGR) | the 16-bit halves clamped to 255 |
+
+A 16-bit export format takes a `compr` export; an uncompressed one into it is not meaningful (the target got the z
+and w dwords). Limits: one draw of one triangle, mrt0 only; the vertex
 stage is the template's, compiled by the driver; the SPI behaviour comes from the driver's metadata, so a `--set`
 the hardware does not support is not refused here.
 
