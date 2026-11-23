@@ -1313,7 +1313,8 @@ host_address = heap_base + console_va
 where `heap_base` is push-constant dwords 32–33 and `console_va` is an Xbox GPU virtual address the game writes
 into a descriptor, a root argument, or a buffer. This applies to buffer, descriptor-table and shader-code
 addresses. Image descriptors (T#) are hashed by the translator, not dereferenced, so an image's base can be a
-separate key range (below). Some shaders also force the high dword of a descriptor-table pointer to zero, so
+separate key range (below). Most shaders also force the high dword of a descriptor-table pointer to zero (25,865
+of the 26,503 in package 1.0.2.1, counted 2026-11-22; see "Descriptor-table high-dword truncation" below), so
 **shader-visible descriptor heaps must live below 4 GB** in this address space.
 
 The layer therefore owns the console VAs. It returns them from `ID3D12Resource::GetGPUVirtualAddress` and from
@@ -1363,8 +1364,8 @@ Arena VAs (at most 4095 MiB, so 32-bit) pass. A VA biased from outside the arena
 VAs above are at or above 2^40 as unsigned values. That is one more reason for the rule above that every buffer
 a console client can address is an arena range, whichever heap it comes from.
 
-Why not give each buffer its own BDA and set `heap_base = 0`? Because many shaders truncate descriptor-table
-pointers to 32 bits, and host BDAs are not guaranteed to be below 4 GB. The arena keeps console VAs low and stable.
+Why not give each buffer its own BDA and set `heap_base = 0`? Because 25,865 of the 26,503 shaders (97.6%)
+truncate descriptor-table pointers to 32 bits, and host BDAs are not guaranteed to be below 4 GB. The arena keeps console VAs low and stable.
 
 Why one arena rather than several? Because the shader gets exactly one `heap_base` for buffer, descriptor-table and
 code accesses. A draw can reference a descriptor table in one heap and a vertex buffer in another; both must
@@ -1697,8 +1698,19 @@ Things that can invalidate this simple model, all **Open**:
   the root signature. `d3d12_descriptor_test` checks the key before and after and samples with it.
 - **Descriptor-table high-dword truncation.** If a shader forces the high dword of a table pointer to zero, the
   table must be below 4 GB; the layer allocates all shader-visible heaps there. If a shader forces a resource VA's
-  high dword to zero, the resource must also be low; that would constrain the arena layout. The disassembly shows
-  which addresses are truncated; collect them per shader.
+  high dword to zero, the resource must also be low; that would constrain the arena layout. Measured on 2026-11-22
+  over package 1.0.2.1 (`python -I tools/ptr_truncation_census.py <work>/shaders/disasm`, all 26,503 shaders, the
+  `truncates_high` / `ptr32_lo` rule of `tools/shader_meta.py`): 25,865 shaders truncate at least one pointer
+  (VS 2,038 of 2,236, PS 11,666 of 12,101, CS 2,684 of 2,689, GS 195 of 195, MS 9,282 of 9,282), 86,036 truncated
+  pointers in all, at most 5 per shader. Every one is the base of a 4/8/16-dword descriptor load (`s_load_dwordx4/x8/x16`,
+  a table pointer) from a user SGPR, and no 1–2 dword `s_load` base is truncated. No `global_*` in the corpus
+  takes its base from SGPRs: its 10,548 `global_*` instructions (530 shaders) address through VGPR pairs, which the
+  classifier does not follow. 25,669 shaders truncate every user-SGPR pointer they dereference, 196 only some (the
+  195 GS, whose 64-bit s8 pointer has a high dword the classifier cannot resolve, and one CS), and the other 638
+  dereference no user-SGPR pointer. Bases not rooted in a user SGPR (462 shader/access combinations) never have a constant-zero
+  high dword. So what is measured to need the low 4 GB is the descriptor heaps; buffer addresses reach the shaders
+  inside V#s (48-bit bases) or in VGPRs for `global_*`, and this count sees neither, so it does not show that
+  buffers may sit above 4 GB.
 
 **What the console's own D3D12 libraries show** (names only, read statically from a user's console system-file
 dump; nothing from those files is in this repository):
