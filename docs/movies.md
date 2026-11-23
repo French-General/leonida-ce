@@ -85,7 +85,7 @@ these fields plus the audio descriptors and never trusts a size past the stored 
 
 Only the first 0x2C bytes are fixed. When the audio count is non-zero, the next region is:
 
-- `count` u32 values: maximum decoded size per audio track (for example 0x23A00 = 146,432).
+- `count` u32 values: maximum decoded size per audio track (0x23A00 = 145,920 across all 229 tracks; `BinkGetTrackMaxSize` adds 512 bytes and returns 0x23C00 = 146,432).
 - `count` pairs of u16: sample rate and flags. Every readable track in this archive is 48,000 Hz.
 - `count` u32 values: track IDs (0 and 1 in the two-track files).
 - then the frame index: `frame_count` u32 offsets. FFmpeg treats the low bit of each offset as the keyframe flag.
@@ -286,6 +286,26 @@ that rate take effect. RAD's Bink 1 value, `0x00080000`, changes nothing.
   before the next frame is due at the stream's rate.
 - The `HBINK` is readable for at least 256 bytes. Fields that matched no header value are not named here; the
   `BINKTRACK` prefix is in [`bink_audio_test.md`](../runtime/test/bink_audio_test.md).
+### Audio track decoding (`BinkOpenTrack` / `BinkGetTrackData`, ASSET-323)
+
+Using the same temporary `xmem.dll` → `msvcrt.dll` (`malloc`/`free`) copy of `Bink2Scarlett.dll` on Windows 11,
+all **196** audio-bearing streams (**229** tracks total) in `movies.rpf` were opened directly via
+`BinkSetFileOffset` + `BinkOpen(archive, BINKFILEOFFSET)` (`0x20`) and queried through the track API (both with
+default open state and after `BinkSetSoundTrack(0, NULL)`, which behaved identically). No audio bytes were saved.
+
+- **All 229 / 229 tracks opened and decoded (0 failed, 0.98 s total):** `BinkOpenTrack(handle, i)` takes the
+  0-based positional index `i` (`0..audio_tracks - 1`), not the logical track ID, and returned a non-null
+  `HBINKTRACK` for every track (including streams with non-consecutive IDs such as `(3, 1)`, `(1, 3)`, and `(0, 2)`).
+- **Header-to-DLL mapping (229 / 229 exact matches):**
+  - `BinkGetTrackID(handle, i)` equals the header's `track_ids[i]` in **229 / 229** tracks. Header track-ID tuples
+    across the 196 audio-bearing streams: `(0,)` in 165 streams, `(0, 1)` in 21, `(3, 1)` in 6, `(1, 3)` in 2,
+    `(0, 2)` in 1, and `(0, 1, 2, 3)` in 1.
+  - `BinkGetTrackType(handle, i)` packs `(header_flags[i] << 16) | header_rate[i]` in **229 / 229** tracks:
+    `0x7000bb80` (`0x7000`, 48,000 Hz) in 227 tracks and `0x3000bb80` (`0x3000`, 48,000 Hz) in 2 tracks.
+  - `BinkGetTrackMaxSize(handle, i)` returns `146,432` (`0x23C00` = `header_max_size + 512`) for all 229 tracks.
+- **Decoded packet sizes (`BinkGetTrackData` after `BinkDoFrame`):** every track overwrote the sentinel buffer with
+  decoded bytes — **145,920 bytes** on frame 0 (initial pre-roll, matching `header_max_size` in 229/229) and
+  **7,680 bytes** on frame 1 (229/229; confirmed through frame 2 on 1-, 2-, and 4-track samples).
 
 ## 5. What is still unknown
 
@@ -296,6 +316,13 @@ that rate take effect. RAD's Bink 1 value, `0x00080000`, changes nothing.
   belongs to which video frame beyond the interleaving described by the Bink format. `BinkOpenTrack` and
   `BinkGetTrackData` return 16-bit PCM for all 229 tracks (the byte count each run prints; `runtime/test/bink_audio_test.md`,
   [coverage above](#decode-coverage-over-the-whole-archive)), but no track was matched to a language or a mix.
+- **Audio association.** `BinkOpenTrack`, `BinkGetTrackID`, `BinkGetTrackType`, `BinkGetTrackMaxSize`, and
+  `BinkGetTrackData` now succeed on all 229 tracks across the 196 audio-bearing streams
+  ([section 4](#audio-track-decoding-binkopentrack--binkgettrackdata-asset-323)): positional track index `i` maps
+  1:1 to header `track_ids[i]` (`0..3`), `BinkGetTrackType` returns `(flags << 16) | sample_rate`, and
+  `BinkGetTrackData` returned 145,920 bytes on frame 0 and 7,680 bytes on frame 1 across all 229 tracks (with
+  frame 2 also checked on 1-, 2-, and 4-track samples; later frames were not swept and may return 7,680 or 0 bytes).
+  Which language or mix role the game assigns to track IDs `0, 1, 2, 3` at run time remains unknown.
 - **Playback integration.** The executable is not in the package. Where the game calls `BinkOpen`, which flags it
   passes, whether it uses `BinkDoFrameAsync`, `BinkGoto`, subtitles or the GPU path, and how it schedules movies
   against streaming are all unknown.
