@@ -22,9 +22,10 @@ This page collects the setup steps and the problems testers have run into so far
 
   On Linux and macOS, the distribution's or Homebrew's `llvm-mc` on `PATH` is enough, if it is 21 or newer.
 
-  An older `llvm-mc` is not enough for everything. Ubuntu 24.04's default `llvm-18` (18.1.3) rejects `ps_sdwa_f16_const`.
-  LLVM 19+ assembles the stock CI test fixtures. However, full f16 fuzzing with `valu_fuzz.py --family f16`
-  requires LLVM 21+, as LLVM 19 still rejects `op_sel` on the 16-bit integer VOP3 forms that the fuzzer generates
+  An older `llvm-mc` is not enough for everything. Ubuntu 24.04's default `llvm-18` (18.1.3) works for
+  `valu_fuzz.py --family mem` and `lds_fuzz.py`, but rejects `ps_sdwa_f16_const`. LLVM 19+ assembles the stock CI
+  test fixtures. However, full f16 fuzzing with `valu_fuzz.py --family f16` requires LLVM 21+, as LLVM 19 still
+  rejects `op_sel` on the 16-bit integer VOP3 forms that the fuzzer generates
   (`v_ashrrev_i16_e64 ... op_sel:[0,0,0]`: "not a valid operand").
 
   On Windows, ROCm 7.2's bundled `llvm-mc.exe` reports LLVM 21.0.0git. It assembled the TEST-71 memory and

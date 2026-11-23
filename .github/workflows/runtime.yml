@@ -276,6 +276,8 @@ jobs:
           [ -x /usr/lib/llvm-19/bin/llvm-mc ] || pkgs+=(llvm-19)
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
+      - name: Sanity check llvm-mc amdgcn target
+        run: /usr/lib/llvm-19/bin/llvm-mc --version | grep -q 'amdgcn'
       - name: Configure
         run: >-
           cmake -S runtime -B runtime/build -G Ninja
