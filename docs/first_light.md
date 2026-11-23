@@ -1,9 +1,9 @@
-# First light: a game model's UVs drawn with translated game shaders
+# Drawing model UVs and textures with First Light
 
 **Status: measured** on the 1.0.2.1 package and an NVIDIA RTX 2060 SUPER (driver 620.73.04, Vulkan 1.4.357,
-CachyOS). The fixture draws a model from the package with a vertex and pixel shader chosen to display its UVs. The image
-stays in the user's work folder; this note records the counts and the recipe, not the model, the shaders or a
-screenshot.
+CachyOS). The untextured fixture draws a model from the package with a shader pair chosen to display its UVs.
+With `--dds`, the default pixel shader samples the supplied texture at those UVs. Section 6 gives the textured
+draw recipe. The image stays in the user's work folder.
 
 ## 1. What was drawn
 
@@ -14,7 +14,7 @@ those counts and has SHA-256
 assembles it, `tools/first_light.py`, centres and fits X/Y to NDC and flattens Z (the chosen VS applies no
 matrix), so the draw is an orthographic projection of the model's own geometry.
 
-The shaders are two ordinary containers from `shaders.rpf`, carved and translated by the repository's own tools:
+The untextured fixture uses two containers from `shaders.rpf`, carved and translated by the repository's tools.
 
 | stage | FSSM SHA-256 | what it does |
 |---|---|---|
@@ -25,7 +25,7 @@ The model's authored shader assignment can be checked separately. In the model e
 above, `MeshShaders[0]` selects material slot 0, the only slot. Looking up its `Materials[0].Shader` in the
 native shader database yields one effect with one technique and four compute-only passes. The VS and PS
 in the table are the fixture's chosen pair. The model's use during gameplay remains unverified.
-See the [effect lookup](https://github.com/ItsNotRexed/Leonida/pull/3036) and the
+See the [effect lookup tool](../tools/sgd5_effects.py) and the
 [Windows reproduction of the UV draw](https://github.com/ItsNotRexed/Leonida/pull/2893#issuecomment-7084947193).
 
 Both disassemble with no invalid word, translate, and pass `spirv-val`; `tools/shader_link_check.py check` reports
