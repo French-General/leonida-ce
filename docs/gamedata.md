@@ -969,8 +969,8 @@ outside this work by rule; names and exact file boundaries stay unknown until a 
 ## Dirt and canned colours (`CGraphicsDefinitionsData`)
 
 One `CGraphicsDefinitionsData` document holds the dirt/grime presets for peds, vehicles and props and the
-colour table they draw from. Seven sections, each a list of `Item key="..."` records (counts; no values or
-names):
+colour table they draw from. Seven sections, each a list of `Item key="..."` records (the table gives counts,
+no values or names):
 
 | Section | Items | Fields per item | `key` |
 |---|---:|---:|---|
@@ -1006,8 +1006,26 @@ with the `VehSpawnIntensities` keys, which is not evidence of a reference.
 `AlphaChannels` probabilities do not sum to 1 in any of the 7 entries, so they are not a probability
 distribution over the listed channels (independent chances or weights would fit). The `Channel` values are 0, 1 or 2.
 
-Not measured here (hypothesis): which texture channel numbering `Channel` uses, and how `VehSpawnIntensities`
-are chosen at spawn.
+**`Channel` numbers the mask texture's channels in component order: 0 = R, 1 = G, 2 = B** (ASSET-304). The
+dirt presets are ped presets, and `textures.rpf` holds one texture whose name marks it as the ped dirt masks
+(1024×1024 BC7, 11 mips, next to the ped dirt normal/roughness map). `tools/mask_channels.py` on its export:
+
+| Channel | Range | Mean | Cover ≥ 64 / 128 | Blobs ≥ 64 / 128 | Largest blob ≥ 64 |
+|---|---|---:|---:|---:|---:|
+| R | 0-255 | 124.1 | 66.5% / 49.3% | 4,612 / 9,167 | 92.0% |
+| G | 90-255 | 193.6 | 100% / 99.5% | 1 / 7 | 100% |
+| B | 0-255 | 88.4 | 50.7% / 34.9% | 35,175 / 49,374 | 21.0% |
+| A | 255 only | 255 | 100% | 1 | 100% |
+
+Alpha is constant, so the three `Channel` values can only be R, G and B; an order that counts alpha leaves one
+value on a channel with nothing in it. G is a soft layer that never drops below 90, and the two entries whose names
+describe a light dusty or urban grime use only `Channel` 1. R is a broad layer, one connected region at ≥ 64, and
+the snow entry uses only 0. B is the speckled one, with 7.6 times R's blobs at ≥ 64, and the entry named for spots
+uses only 2. The reversed order (0 = B) would put the spots on the broad layer and the snow on the speckled one.
+The three mixed entries combine 0 and 2. Each tie is a name read against measured texture content, so this is
+measured, not confirmed against the shader that samples the mask.
+
+Not measured here (hypothesis): how `VehSpawnIntensities` are chosen at spawn.
 
 ## Entity component sets and component LOD
 
