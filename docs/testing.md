@@ -20,7 +20,10 @@ This page collects the setup steps and the problems testers have run into so far
   - `llvm-21` in WSL, with `LLVM_MC` set to the whole command:
     `LLVM_MC="wsl -d Ubuntu -e /usr/lib/llvm-21/bin/llvm-mc"`.
 
-  On Linux and macOS, the distribution's or Homebrew's `llvm-mc` on `PATH` is enough, if it is 21 or newer.
+  On Linux, the distribution's `llvm-mc` on `PATH` is enough, if it is 21 or newer. On macOS, Homebrew's `llvm` is
+  keg-only, so `brew install llvm` doesn't put `llvm-mc` on `PATH`: the pytest suites find it in
+  `/opt/homebrew/opt/llvm*/bin` (or `/usr/local/opt/llvm*/bin` on Intel), and the other tools need
+  `LLVM_MC="$(brew --prefix llvm)/bin/llvm-mc"`.
 
   An older `llvm-mc` is not enough for everything. Ubuntu 24.04's default `llvm-18` (18.1.3) works for
   `valu_fuzz.py --family mem` and `lds_fuzz.py`, but rejects `ps_sdwa_f16_const`. LLVM 19+ assembles the stock CI
