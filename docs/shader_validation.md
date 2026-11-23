@@ -222,8 +222,13 @@ through the kernel driver (`libdrm_amdgpu`), so nothing sits between the instruc
     object, so the `.amdhsa_*` directives take effect as they do under the HIP runtime: register counts, float
     rounding and denormal modes, IEEE mode, DX10 clamp. A test checks that an f32 rounding mode set there changes
     a sum on the hardware.
-  - A descriptor that asks for something the launcher does not provide (LDS, scratch memory, more than the
-    kernarg pointer in the user SGPRs) is refused instead of being run differently.
+  - The descriptor's group segment becomes `COMPUTE_PGM_RSRC2.LDS_SIZE` (bits 15..23, 512-byte units). The
+    assembler leaves that field 0, so the launcher programs it from the group segment, as the HIP runtime does;
+    a kernel with LDS reads back what it wrote there (`tests/test_hw_oracle.py`, measured on gfx1036).
+  - A descriptor that asks for something the launcher does not provide (scratch memory, more than the kernarg
+    pointer in the user SGPRs, more than 65,536 bytes of LDS) is refused instead of being run differently.
+  - The output buffer takes up to 16,384 words, as the Windows launcher does, so a 64x64 `image_fuzz` case (16,384
+    words) runs here too.
   - Every submission gets command memory of its own. While one buffer was rewritten in place, the second kernel of
     a process ran the first one's commands, every time; `tests/test_hw_oracle.py` runs 300 distinct kernels to
     catch that.
@@ -571,10 +576,20 @@ hardware gives 0 (the swizzle hypothesis above). So the translator differs from 
 fixed here. Partial-wave programs (`--threads` 32
 in wave64) are skipped for the translator, which cannot launch them. NVIDIA was not run.
 
-**Other backends.** The Linux libdrm launcher of #1265 (`tools/hw_oracle/drm.py`) does not run these programs yet:
-it refuses a kernel with LDS and caps the output at 4096 words, and `lds_fuzz` turns that refusal into exit 77
-("unavailable"). Linux RDNA2 results need LDS and a larger word count in that backend first; the gfx1036 numbers
-above come from the Windows HIP launcher.
+**Other backends.** The Linux libdrm launcher of #1265 (`tools/hw_oracle/drm.py`) now runs these programs too. It
+programs `COMPUTE_PGM_RSRC2.LDS_SIZE` from the descriptor's group segment (the assembler leaves that field 0, so the
+4,096 bytes of LDS `lds_fuzz` asks for reach the hardware) and its output buffer takes 16,384 words like the Windows
+launcher's, so a 64x64 `image_fuzz` case fits. On the integrated Radeon of a Ryzen 7 7700X (gfx1036, RDNA2, Linux
+7.3.5-zen1-1-zen, libdrm 2.4.134, AMD clang 23.1.5):
+
+| Run | Programs / cases | Mismatches |
+| --- | --- | --- |
+| `lds_fuzz.py --oracle hw --programs 500 --seed 1` (wave32 and wave64) | 1,000 | 0 |
+| `image_fuzz.py --oracle hw --programs 120 --seed 1` (60 cases per wave; 8 to 64 per side, four 64x64 cases) | 120 | 0 |
+
+`lds_fuzz --oracle hw` no longer exits 77 on Linux for LDS or the word count. The gfx1036 numbers earlier in this
+section are still from the Windows HIP launcher; these two runs put the same model on the same architecture through
+libdrm.
 
 **Overlap with #789.** #789 adds `ds_permute_b32` to the default op mix of `lds_fuzz.py`; here it is opt-in
 (`--permute`) so that existing seeds keep their programs. Whichever lands second reconciles the two.
@@ -786,11 +801,10 @@ Negative control (`--oracle hw --programs 180 --seed 1 --negative-control`): the
 `sint_unsigned` 30, `alpha_zero` 16, `dmask_in_place` 132, `no_sentinels` 168, `transpose` 166), and a kernel built
 with the next format's `FORMAT` code is caught on every format (24 to 30 of 30 cases each). So the GFX10 T# words of
 `hw_oracle/tsharp.py` and the texel-fetch model hold on RDNA2 for these formats; `--oracle translator,hw` was not run
-there. The Linux libdrm backend of #1265
-(`tools/hw_oracle/drm.py`) was not tried: it copies only `.text` (the texture is in `.text`, so that works in
-principle, but it needs the loaded code to be 256-byte aligned, which the kernel checks and reports) and the LDS
-section above records a 4096-word output cap there, while a 64x64 case stores 16,384 words. The RDNA2 results above
-are from the Windows HIP launcher only.
+there. The Linux libdrm backend of #1265 (`tools/hw_oracle/drm.py`) now runs these cases too: `--oracle hw
+--programs 120 --seed 1` on the same gfx1036 iGPU matched on 120 of 120 cases (60 per wave), four of them 64x64 and
+therefore 16,384 words, with no rejections (Linux 7.3.5-zen1-1-zen, libdrm 2.4.134, AMD clang 23.1.5). It copies
+only `.text`, which is where the texture lives, and the loaded code is 256-byte aligned.
 
 ### 32-bit integer VALU in every encoding (`tools/vint_diff.py`)
 
@@ -1252,8 +1266,8 @@ The `16-bit results` row of `docs/design.md` listed `v_exp_f16`/`v_log_f16` and 
 unverified. f16 has only 65,536 bit patterns, so instead of sampling, this tool runs every one of them through
 `v_exp_f16`, `v_log_f16`, `v_rcp_f16`, `v_rsq_f16`, `v_sqrt_f16`, `v_sin_f16` and `v_cos_f16` on the hardware
 oracle (setup above; exit 77 without it). Each op is 8 raw kernels of 1,024 threads. Each thread computes 8 inputs
-and stores them packed two to a dword, which is 4,096 words per kernel, the launcher's limit. The op runs in wave32
-and wave64 and under five MODEs, and MODE is read back with `s_getreg_b32` first:
+and stores them packed two to a dword, which is 4,096 words per kernel; 8 kernels cover every input. The op runs in
+wave32 and wave64 and under five MODEs, and MODE is read back with `s_getreg_b32` first:
 
 | Mode | IEEE | f16 denormals | f16 rounding |
 |---|---|---|---|
