@@ -351,8 +351,10 @@ What is implemented (all of it testable without the game):
     mean one descriptor per range;
   - committed buffers (upload and readback heaps mapped persistently and zeroed), 1D textures and 1D arrays, and
     2D textures in the common render-target, depth and texture formats (typeless families become mutable-format
-    images), plus non-attachment 3D textures with mipmapped upload, image copy and readback, and multisampled 2D
-    textures (single-mip render targets or depth-stencils, in the sample counts the GPU has for the format);
+    images; `R24G8_TYPELESS` and `R32G8X24_TYPELESS` are depth-stencil images with or without
+    `ALLOW_DEPTH_STENCIL`, as Vulkan has no colour format with their layout), plus non-attachment 3D textures with
+    mipmapped upload, image copy and readback, and multisampled 2D textures (single-mip render targets or
+    depth-stencils, in the sample counts the GPU has for the format);
   - packed `R9G9B9E5_SHAREDEXP` textures map to `VK_FORMAT_E5B9G9R9_UFLOAT_PACK32` for uploads and sampled views.
     When `ALLOW_UNORDERED_ACCESS` is requested on a GPU whose `VK_FORMAT_E5B9G9R9_UFLOAT_PACK32` lacks native
     `STORAGE_IMAGE` support (for example NVIDIA), the layer backs the texture with a mutable `VK_FORMAT_R32_UINT`
