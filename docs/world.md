@@ -425,6 +425,8 @@ and joins them with the `InteriorNames` section (full archive, `--jobs 15`, abou
 | ... with as many positions as placements | 1,268 |
 | ... with more positions than placements | 64 |
 | ... with fewer positions than placements | 24 |
+| ... whose placements have no `position` to measure from | 0 |
+| inner-item `Pos` values that are not three numbers (dropped) | 0 |
 
 So a key selects one interior archetype, and its inner items are, in most cases, one per placed copy of that
 interior: the `Name` of each item labels that copy.
@@ -445,7 +447,10 @@ positions to the nearest placed copy of its own interior's box (0 = inside):
 
 The interior and room boxes are scaled by each placement's `scaleXY` and `scaleZ` before measuring. Only 6 of
 the 2,590 placements are scaled at all (`scaleZ` 0.998), so this changes two room hits per convention and none
-of the distances.
+of the distances. A point within 1e-6 m of an interior or room face counts as inside it (`EPS`), since the
+inverse of a float32 rotation can leave a face point about 1e-17 m outside. Positions are float32 and resolve to
+about 1 mm near the map edge, so a tolerance this far below that decides as exact arithmetic would; on the full
+archive it changes no count above.
 
 The interior box's largest side has a median of 16.7 m. Most positions are therefore just outside or just inside
 the interior shell, which fits an entry or label point; that they are doors is a hypothesis (portals were not
