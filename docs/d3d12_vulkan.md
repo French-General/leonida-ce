@@ -1247,6 +1247,16 @@ and any validation error fails them.
   `vk_bindless_test` cases 3 to 6 (the set changes; `release_retired` frees only what its ticket allows). That test
   needs the translated `vs_ids`, `ps_tex` and `ps_imgatomic`; it was not in ctest before D3D-314 (only
   `scripts/run_gpu_tests.py` and `check.py` ran it), and is now, as `vk_bindless_ps_tex` and `vk_bindless_ps_imgatomic`.
+  without the prologue; and the program with four bytes appended. It also covers the dispatch state:
+  - one program in containers with three kind-0 entries picks its own entry for each, an unknown kind 0 is refused, and
+    the bare program is refused as ambiguous;
+  - slot 67 with all four pairs picks by kind 0 too (one entry's module is missing on purpose, so the pick shows as
+    `E_FAIL`), and four inconsistent pairs are refused before they are read;
+  - slot 67 with the description built the way the DLL builds it (`dll_slot67`: the reader's pair order over the
+    container's own directory, kinds 0, 1 and 7 pointing into the payload, kind 6 copied into a 256-rounded buffer
+    padded with `0xcc`) resolves each program to its own translation with its own state;
+  - console slot 11 on a slot-67 and a slot-62 pipeline returns an object whose slot 3 points at the dword 0 and whose
+    slot 4 gives 4 bytes; it releases to 0, and the pipeline's reference count is unchanged.
 - `d3d12_set0_compute_test`: set 0 from the compute bind point, through the proxy and D3D12 alone. The index entry
   of its shader lists set-0 bindings, so the PSO's layout holds the device's bindless set and replay binds it at
   each dispatch; nothing in the test binds it. Four dispatches of `test/glsl/cs_set0_sample.comp` (GLSL written to
@@ -3785,11 +3795,12 @@ on a PC device behind the Xbox-ABI proxy). Measured:
     messages, not the PC method at that index; the proxy routes it to `CreateComputePipelineState`. The dispatch stops where the PC runtime
     refuses the DLL's compute code at slot 62: the DLL's shaders carry an `ACCC` part instead of DXIL, an `FSPX`
     payload with an RDNA2 program ([fspx.md](fspx.md)). The Vulkan device takes both forms at
-    `CreateComputePipelineState`: the `ACCC` container slot 62 gets, and the bare kind-6 program the proxy forwards
-    from the slot-67 description (`+0x28`, size at `+0x30`). It finds the translated module by `fspx_code_sha256`, the
-    SHA-256 of the kind-6 bytes, in `<shaders>/fspx/index.json`, which `make_game.py` writes ([fspx.md](fspx.md),
-    "Build and run-time lookup"; `d3d12_fspx_compute_test`). Not done: the console-only pipeline slot 11 the DLL
-    calls afterwards.
+    `CreateComputePipelineState`: the `ACCC` container slot 62 gets, and the `FSPX` payload the proxy builds from the
+    slot-67 description's four pairs. It finds the translated module by `fspx_code_sha256` and `fspx_state_sha256` in
+    `<shaders>/fspx/index.json`, which `make_game.py` writes ([fspx.md](fspx.md), "Build and run-time lookup";
+    `d3d12_fspx_compute_test`). The pipeline answers the console slot 11 the DLL calls afterwards with 0, so no
+    compute scratch buffer is made ([d3d12_command_objects.md](d3d12_command_objects.md) §3.5a). Not run here: the
+    DLL's own dispatch on this device (`fsr_dispatch_test` needs MSVC structured exception handling).
   - Its `throw 1` reaches the caller. Before #965 the throw carried an image base of 0, because `_CxxThrowException`
     did not know manually mapped images; with #965 it carries the DLL's base, and the DLL still does not catch it on
     that path (measured with `fsr_dispatch_test` and `LEONIDA_FSR_NO_STANDIN=1`).

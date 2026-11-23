@@ -467,9 +467,16 @@ vtable pointer of a public object.
   at `+0x18`, a copy of the kind-6 program at `+0x28` with its exact size at `+0x30`, and kind 7 at `+0x38`
   ([fspx.md](fspx.md)). The proxy maps the console desc to `D3D12_COMPUTE_PIPELINE_STATE_DESC` and routes it to
   `CreateComputePipelineState` (PC slot 11). On a PC device that call fails (`E_FAIL`) because the code is not a PC
-  shader, so the DLL falls back to slot 62; its message for that failure calls the fallback "NewBE". The Vulkan
-  device takes the bare kind-6 program and finds its translated module by `fspx_code_sha256` ([fspx.md](fspx.md),
-  "Build and run-time lookup"), for the programs the build translated.
+  shader, so the DLL falls back to slot 62; its message for that failure calls the fallback "NewBE". With kind 0 in
+  the description (always, from this DLL) the proxy passes all four pairs on as one `FSPX` payload, checking each pair
+  before reading it. The Vulkan device then finds the translated module by `fspx_code_sha256` and `fspx_state_sha256`
+  ([fspx.md](fspx.md), "Build and run-time lookup"), for the programs the build translated.
+  - **The layout is pinned from the DLL's code:** its FSPX reader (`0x1a20`), the same loop inline for a container,
+    and the copy into the description. The kind 0 and kind 6 of one call come from the same payload. With the
+    reader run on all 29 programs, every translated program resolves to its own entry ([fspx.md](fspx.md), "How
+    the table was pinned").
+  - **A failed call is logged with its number** (`slot 67 call N failed`). The DLL creates its pipelines one after
+    another, so a miss is not necessarily the first call's.
 - **Slot 62** (call at `0x5825`) takes the measured `(D3D12_COMPUTE_PIPELINE_STATE_DESC*, 0, 0, riid, out)`. The PC
   runtime refuses the DLL's code (`E_FAIL`): it is not a PC shader. The DLL's pipeline function then returns
   `0x8000000d` (`0x4b85`), but the dispatch goes on, records the null pipeline and faults (`0x65ff`), which is where a
@@ -483,9 +490,20 @@ vtable pointer of a public object.
   the largest value (`+0x10f8`). Before a dispatch whose pipeline has a non-zero value (`0x64d3`; zero skips the
   binding), the DLL creates the scratch buffer once, `largest * 0xd0` bytes rounded up to 64 KiB, through device
   slot 27 in state `UNORDERED_ACCESS` (`0x65ab`), names it `FFX_XBox_ComputeScratch`, and binds it with list slot
-  141 `(2, GPU VA, buffer size, this pipeline's value)` (`0x65f8`). Measured: the calls and the arithmetic. Open:
-  what the slot-11 object is, the unit of its dword (the factor 1024 suggests KiB), the meaning of `0xd0`, and
-  of the leading `2`.
+  141 `(2, GPU VA, buffer size, this pipeline's value)` (`0x65f8`). Measured: the calls and the arithmetic.
+  - **Failure and zero (measured, `0x585c` to `0x58b1`).** The value at `+0x44` is set to 0 before the call. A failed
+    HRESULT or a null `obj` skips to the function's success return with the value still 0, so pipeline creation does
+    not depend on slot 11. At dispatch a value of 0 skips both the scratch buffer and list slot 141 (`0x64d6`).
+  - **The object (measured shape, hypothesis about its type).** Slot 3 is called with no arguments and its result is
+    read as a pointer to the dword; slot 2 releases it. That is the shape of `ID3DBlob::GetBufferPointer` and
+    `Release`.
+  - **No per-program size (measured on the 29 programs).** `COMPUTE_PGM_RSRC2.SCRATCH_EN` is clear in all 29, no
+    program has a `scratch_*` or `flat_scratch` instruction, and kind-0 words 0, 1 and 2 are each one value across
+    all 29.
+  - **Implemented.** The Vulkan device's pipeline answers slot 11 with a blob holding 0; console slots 9 and 10
+    return `E_NOTIMPL`. A translated module keeps its private data in SPIR-V, not in a console scratch buffer.
+  - **Open.** What the console returns there for these programs, the unit of the dword (the factor 1024 suggests
+    KiB), the meaning of `0xd0`, and of the leading `2`.
 - The DLL's 29 shaders are `DXBC` containers with `SFI0`, `ISG1`, `OSG1`, `PSV0`, `RTS0`, `HASH` and `ACCC` parts
   and no `DXIL`. The `ACCC` payload starts with the tag `FSPX` in all 29; the game's own native shaders are `FSSM`
   inside `XBCH` ([design.md](design.md)). `FSPX` is a directory around an uncompressed RDNA2 program and its

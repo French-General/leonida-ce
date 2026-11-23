@@ -55,6 +55,30 @@ The size at `+0x30` is kind 6's own size, not the rounded allocation: the DLL ro
 `0x56d5`). So
 the bytes at `+0x28` with that size are exactly kind 6, and their SHA-256 is the key below.
 
+**How the table was pinned** (read from the DLL's code with `objdump`; checked by running the DLL's reader on all 29
+payloads):
+- **The reader (`0x1a20`).** It zeroes four (pointer, size) pairs, then stores kind 0 in pair 0, kind 1 in pair 1,
+  kind 6 in pair 2 and kind 7 in pair 3 (`0x1bcb` to `0x1bfb`). Each pointer points into the payload itself.
+- **The container branch (`0x5510` to `0x55ea`).** For a `DXBC` container the pipeline function runs the same loop
+  inline over the `ACCC` part and fills the same four places. Unlike the reader, it does not zero the kind-1 and
+  kind-7 places first; all 29 payloads have both kinds.
+- **The copy into the description (`0x567d` to `0x56d5`).** Pair 0 goes to `+0x08`, pair 1 to `+0x18`, the kind-6
+  copy to `+0x28` with pair 2's size at `+0x30`, and pair 3 to `+0x38`.
+- **Code and state come from one payload.** Kind 0 and kind 6 of one call therefore always belong to the same
+  program, so the run-time lookup by code key and state key (below) has the pairing the build gives it.
+- **Run.** A harness mapped the DLL without running it and called its reader on each of the 29 payloads. It built the
+  description that way and called slot 67 on the Vulkan device with the 26 programs translated on `main` at
+  `aa2988cc`:
+  - all 26 resolve to their own entry with their own state, and the other 3 are refused with `E_INVALIDARG`;
+  - the same on llvmpipe, the Ryzen 9 7950X3D's integrated GPU and the RX 7900 XTX (Mesa 26.3.1, under Wine).
+
+`d3d12_fspx_compute_test` builds its slot-67 descriptions the same way, from a container's own directory.
+
+**What happens when a program is not translated.** The DLL creates its pipelines one after another as a dispatch
+needs them. When one of them has no translation, slot 67 fails, and so does the slot-62 fallback with the same
+container. The DLL then records the null pipeline and faults at `0x65ff`, as on a PC device. The proxy logs every
+failed slot-67 call with its number (`slot 67 call N failed`), because only the first call of a slot is announced.
+
 The DLL's own messages name that call `DeserializeComputePipelineStateX` and the path "ACO". When the call fails,
 the message says it falls back to "NewBE", and the DLL sets the environment variable `FFX_FSR4_XBOX_ACO_ACTIVE` to
 `0`. Its next pipeline call is slot 62 (measured in #864), so "NewBE" is inferred to be that path, the one a PC
@@ -159,10 +183,20 @@ clamped total), so a malformed directory, or one without kind 0 or kind 6, gives
 pipeline's code base, which a translated shader reads its embedded constants through, is the kind-6 bytes: the
 translator's code offsets are into `fspx/<name>.code`.
 
-The proxy maps slot 67's description onto `CreateComputePipelineState` with `CS` = the kind-6 pointer and size
-(#1714), which is the bare-program row above. Not done here: the console-only pipeline slot 11 the DLL calls after
-either path ([d3d12_command_objects.md](d3d12_command_objects.md) §3.5a), and using
-kind 0 at run time beyond what the translated module already carries (its thread-group size and `RSRC2`).
+**Slot 67.** The proxy maps slot 67's description onto `CreateComputePipelineState` (#1714). When kind 0 is in the
+description, which the DLL always passes (its reader refuses a payload without one), the proxy builds one FSPX
+payload from the four pointer and size pairs (`leonida::fspx_payload_from_parts`) and passes that as `CS`, the
+bare-payload row above. Two programs with the same code and different dispatch state therefore stay apart at slot 67
+too. Each pair is checked before it is read: a pointer without a size or a size without a pointer, a size over
+16 MiB, or a missing kind 6 refuses the call with `E_INVALIDARG`. Only a description without kind 0 still passes the
+kind-6 bytes alone (the bare-program row).
+
+**Slot 11.** After either path the DLL calls the pipeline's console slot 11. The Vulkan device's pipeline answers
+with a blob holding the dword 0, so the DLL creates no compute scratch buffer; why 0 is justified is in
+[d3d12_command_objects.md](d3d12_command_objects.md) §3.5a.
+
+Not done here: using kind 0 at run time beyond what the translated module already carries (its thread-group size
+and `RSRC2`).
 
 ## Translation status
 
