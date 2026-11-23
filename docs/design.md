@@ -158,9 +158,10 @@ Full-scan indexes are also saved to `%LOCALAPPDATA%\RpfPreview\Indexes`, so the 
 
 ## Other prepared pieces
 
-- `tools\shader_profile.py` writes the instruction profile to `<work>\shaders\profile.json`. An earlier corpus
-  run reported 551 distinct mnemonics, with 204 accounting for 99% of instructions. Those counts predate the
-  filter for assembler directives and comments.
+- `python -I tools\shader_profile.py <work>\shaders\dxbc\disasm` writes the instruction profile to
+  `<work>\shaders\dxbc\profile.json` by default. Use `--out` to choose a different file. An earlier corpus run
+  reported 551 distinct mnemonics, with 204 accounting for 99% of instructions. Those counts predate the filter
+  for assembler directives and comments.
 - `tools\shader_ir.py`: parses every disassembled instruction into opcode, typed operands (s/v registers and
   ranges, NSA register lists, constants, literals, export targets, interpolation attributes), modifiers and
   encoding bytes. On 1,000 shaders, 12 of 2.2M operands were left untyped before the last fix. This is the front end
