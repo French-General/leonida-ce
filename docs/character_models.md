@@ -32,8 +32,8 @@ The decoded export used by the previews contains 13 parts:
 | head L2 | same | 599 | 514 | same preset |
 | eyes | `…_head_fr1_lat_000_m_eyes.#dr` | 434 | 816 | `0x429453B7A2EB9980` (sRGB + alpha) |
 | eyecap | `…_head_fr1_lat_000_m_eyecap.#dr` | 214 | 304 | `0x5CE55BAA340248BD` (sRGB + alpha) |
-| hands | `hand_fr1_000_nude_cull.#dr` | 10,440 | 13,534 | none in the package — `0x4D89F2311DBBB7A8` is in no TTPF pool (see [Hands and feet](#hands-and-feet)) |
-| feet | `feet_fr1_000_full.#dr` | 2,309 | 4,082 | none in the package — `0xA54D9F8B51CA6034` is in no TTPF pool (see [Hands and feet](#hands-and-feet)) |
+| hands | `hand_fr1_000_nude_cull.#dr` | 10,440 | 13,534 | no exact hit for `0x4D89F2311DBBB7A8` in the 57 scanned TTPF pools (see [Hands and feet](#hands-and-feet)) |
+| feet | `feet_fr1_000_full.#dr` | 2,309 | 4,082 | no exact hit for `0xA54D9F8B51CA6034` in the 57 scanned TTPF pools (see [Hands and feet](#hands-and-feet)) |
 | body (legacy) | `cs_lucia_legacypedcs_fr1_000_fullbody_ws00_full.#dr` | 874 | 908 | `0x996FDBA2DB30CC12` |
 | legacy head | `cs_lucia_legacyheadcs_fr1_001_regular_ws00_full.#dr` | 592 | 1,028 | `0x707771F769AA3542` |
 | jacket (biker) | `cs_lucia_jacketbiker_fr1_000_regular_c_hl_long_full.#dr` | 9,818 | 10,837 | none — `speculartex` only (`0xF5073AA039BB3CED`) |
@@ -130,7 +130,7 @@ the export binds the slot (1,372 of 1,372). Both keys are 512x256 `BC3_UNORM_SRG
 other textures (`0x93CB433D30220BA6` and `0x5D237CCCD91F8E4D`, 256x128 `BC7_UNORM`), where the
 jacket's and the crop tee's table keys are `BC7_UNORM` `speculartex` sheets themselves.
 
-The hands and feet bind an albedo key that is not in the package (see [Hands and feet](#hands-and-feet)).
+The hands and feet bind albedo keys with no exact hit in the scanned TTPF catalogs (see [Hands and feet](#hands-and-feet)).
 The head drawable has no material texture reference, but its face is selected by
 a **head-skin preset** keyed by the head name's `joaat32`:
 
@@ -144,22 +144,27 @@ The preset library covers 897 heads; `cs_lucia_head_fr1_lat_000_y_full` is not i
 ### Hands and feet
 
 Measured against the catalogs of all 57 TTPF pools (357,115 textures). The hands and the feet bind
-the four maps on the same two shaders (`210FBC6A`, `8D69EDAB`), and **only the normal maps are in
-the package**:
+the four maps on the same two shaders (`210FBC6A`, `8D69EDAB`); for the two examples below,
+**only the normal-map keys have exact catalog hits**. "None" means no matching full 64-bit
+`AssetKey` in these scanned catalogs, not proof that no runtime source exists:
 
 | Part | `diffusetex` | `speculartex` | `bumptex` (normal) | `speculartex2` (ORM) |
 |---|---|---|---|---|
 | hands (`hand_fr1_000_*`) | `0x4D89F2311DBBB7A8` — none | `0xA805B9A446CCE950` — none | `0x9D337DABCA636906` — `ttdb_peds_2_3`, 512×1024 BC5 | `0x09D2C98C5B40D16C` — none |
 | feet (`feet_fr1_000_*`) | `0xA54D9F8B51CA6034` — none | `0x752EA8A7A086558F` — none | `0x5091E86DE6196BC3` — `ttdb_peds_3_3`, 512×1024 BC7 | `0xD5C8D2A180326DE7` — none |
 
-Each material has ten slots; the other six bind `0x5D7A3A87CC19967D` on both shaders, which is in
-no pool either: it reads as an engine-supplied default, not a missing asset.
+Each material has ten slots; the other six bind `0x5D7A3A87CC19967D` on both shaders, with no
+exact pool hit. The [independent indexed-record check](https://github.com/ItsNotRexed/Leonida/pull/3256#pullrequestreview-6014627459)
+found this same reference in all 176 material
+rows, including the 12 positive-control rows whose four named maps all resolve. An engine-supplied
+default is a hypothesis: the repeated unresolved reference alone does not establish its runtime use.
 
-**They are not textured on their own.** The hands and feet share their maps with the body skin
-pieces in `pack/core_restofworld/core_restofworld.rpf`:
+**Shared static material references.** The hands and feet have bindings in common with body skin
+pieces in `pack/core_restofworld/core_restofworld.rpf`; these references do not establish runtime
+sheet selection:
 
 - `bodynipplesgen_fr1_000_regular_ws00_full`, the female upper body, binds **the same four keys**
-  as the hands, on the same two shaders. The hands are drawn with the upper-body skin sheet.
+  as the hands, on the same two shaders.
 - `bodygenitalsgen_f{r,b,o}1_008_regular_ws00_full`, the female lower body (and the `fr1`
   `_alt_00`–`_02` variants), binds the feet's
   `speculartex`, `bumptex` and `speculartex2`, and its own `diffusetex` `0x5B6829CFEC0F41A1`, also in
@@ -167,20 +172,22 @@ pieces in `pack/core_restofworld/core_restofworld.rpf`:
 - The male lower body, `bodygenitalsgen_mr1_000_*`, has all four maps in the pools
   (`diffusetex` `0xBCE4D91DA23689C7`).
 
-So the female body skin has no albedo, specular or ORM map in the package, for the hands and feet
-and for the body pieces that share their sheets. The skin colour has to come from data outside these
-materials, as the face comes from the head-skin preset. That data was not found: none of the keys
-above appears in another resource of `data.rpf`, `common.rpf`, `script.rpf`, `packs.rpf`,
+The unresolved female-body albedo, specular and ORM references above also have no exact hit in
+these pools. The recorded search found none of these keys in another resource of `data.rpf`,
+`common.rpf`, `script.rpf`, `packs.rpf`,
 `anim.rpf`, `core_restofworld.rpf` or `core_restofworld001.rpf` (`story000.rpf` and
-`story000_restofworld.rpf` recover no entries with this reader).
+`story000_restofworld.rpf` recover no entries with this reader). These are static lookup results;
+the source of skin colour and the runtime's sheet selection remain open.
 
-The pattern holds across the set. Of the 56 `hand_`/`feet_` drawables in `packs.rpf`, 52 bind only a
-`diffusetex` key that is in no pool; the four exceptions with all four maps shipped are
+Across 162 indexed records (176 material rows, 56 distinct `hand_`/`feet_` drawable names), all
+176 rows carry the four named references. Of the 56 names in `packs.rpf`, 52 have no exact
+diffuse-key hit in the scanned pools; the four exceptions with all four maps resolved are
 `hand_fsk1_000_nude_cull`, `feet_fsk1_000_nude_cull` and the first-person hands
 `hand_mb1_000_nude_cull_fp` and `hand_mo1_000_nude_cull_fp`. The male hands and feet
-(`hand_mr1_000_nude_cull`, `feet_mr1_000_nude_cull`) also ship only their normal maps, and male and
-female feet bind the same `diffusetex` key. Until the skin data is decoded, render these parts with
-their normal map and a flat skin tone; do not borrow another part's albedo.
+(`hand_mr1_000_nude_cull`, `feet_mr1_000_nude_cull`) also have exact hits only for their normal
+maps, and male and female feet bind the same `diffusetex` key. For previews, use the resolved normal
+map and a flat skin tone; this is a fallback, not a reconstruction of the runtime's skin colouring.
+Do not borrow another part's albedo.
 
 ## Materials
 
@@ -319,16 +326,6 @@ print(sum(1 for i in items if i.get("IsFragment")), "fragments")
 print([n for n in names if "lucia" in n.lower()])
 ```
 
-```python
-import json
-
-items = json.load(open(r"<outdir>/packs/models/manifest.json", encoding="utf-8"))["Items"]
-names = sorted({i["Name"] for i in items})
-print(len(items), len(names))
-print(sum(1 for i in items if i.get("IsFragment")), "fragments")
-print([n for n in names if "lucia" in n.lower()])
-```
-
 The material rows are in the same manifest, one per shader of a record, each with the texture
 references by slot:
 
@@ -346,19 +343,50 @@ A key's size and format come from the pool that holds it: the `AssetKey`, `Width
 `DxgiFormat` and `Mips` fields of the manifest `rpf9dump ttpf <pool.ttpf> <outdir>` writes.
 
 The [Hands and feet](#hands-and-feet) tables also need `core_restofworld.rpf` and the 57 pool
-catalogs (`AssetKey` in each pool's `manifest.json`):
+catalogs (`AssetKey` in each pool's `manifest.json`).
+
+`rpf9dump ttpf` writes a pool's catalog to `<output root>\<pool basename>\manifest.json`, and pool
+basenames repeat: the 57 pools in [`game/xbox-1.0.2.1.json`](../game/xbox-1.0.2.1.json) have 51
+distinct basenames (`ttdb_maps` and `ttdb_terrain_image_based` twice, `ttdb_ui` and `ttdb_vfx` three
+times). With one output root for all of them, later pools overwrite earlier catalogs. Give each pool
+its package-relative parent folder under `<outdir>\ttpf` as its output root:
 
 ```powershell
-rpf9dump models <pack\core_restofworld\core_restofworld.rpf> <outdir>
-rpf9dump ttpf <each .ttpf under data\ttdb and pack\*\data\ttdb> <outdir>\ttpf\<pool>
+$game = (Resolve-Path "<game root>").Path.TrimEnd("\")
+rpf9dump models "$game\pack\core_restofworld\core_restofworld.rpf" <outdir>
+Get-Item "$game\data\ttdb", "$game\pack\*\data\ttdb" | Get-ChildItem -Recurse -File -Filter *.ttpf | ForEach-Object {
+    rpf9dump ttpf $_.FullName "<outdir>\ttpf\$($_.DirectoryName.Substring($game.Length + 1))"
+}
 ```
 
+Each catalog records its source pool in `src`. The lookup finds catalogs at any depth under
+`<outdir>\ttpf` and stops unless their sources are exactly the 57 pools of the game root, so a
+catalog that was overwritten, exported in another layout or taken from another folder is caught
+before an absent key is read as a lookup miss:
+
 ```python
-import glob, json
+import json
+import os
+from pathlib import Path
 
 maps = {"C8E8C282": "diffusetex", "C6F46E79": "speculartex", "1E77BF4C": "bumptex", "739E3D0D": "speculartex2"}
-pooled = {t["AssetKey"] for m in glob.glob(r"<outdir>/ttpf/*/manifest.json")
-          for t in json.load(open(m, encoding="utf-8"))["Textures"]}
+game = Path(r"<game root>")
+pool_root = Path(r"<outdir>/ttpf")
+
+
+def source(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+pools = {source(p) for pattern in ("data/ttdb/**/*.ttpf", "pack/*/data/ttdb/**/*.ttpf") for p in game.glob(pattern)}
+sources, pooled = set(), set()
+for m in pool_root.rglob("manifest.json"):
+    catalog = json.loads(m.read_text(encoding="utf-8"))
+    sources.add(source(catalog.get("src", m)))
+    pooled.update(t["AssetKey"] for t in catalog.get("Textures", []))
+if len(pools) != 57 or sources != pools:
+    raise ValueError(f"{len(pools)} pools under {game} (expected 57); {len(pools - sources)} have no catalog "
+                     f"under {pool_root}, {len(sources - pools)} catalogs come from other sources")
 items = [i for m in (r"<outdir>/packs/models/manifest.json", r"<outdir>/core_restofworld/models/manifest.json")
          for i in json.load(open(m, encoding="utf-8"))["Items"]]
 for name in ("hand_fr1_000_nude_cull.#dr", "feet_fr1_000_full.#dr", "bodynipplesgen_fr1_000_regular_ws00_full.#dr",
