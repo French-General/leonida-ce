@@ -48,4 +48,6 @@ python -I tools/hello_pixels.py --work <dir> --size 512 --run --check
 ```
 
 On Windows the same command works against `runtime/build/windows/vk_harness.exe`; on a machine without
-`spirv-as`, pass prebuilt `vs.spv`/`ps.spv` from `--emit-only` on a machine that has one.
+`spirv-as`, drop the `vs.spv`/`ps.spv` that `--emit-only` produced on a machine that has one into the `--work`
+directory; the tool uses the prebuilt pair when `spirv-as` is absent (fresh assembly always wins when it is
+present).
