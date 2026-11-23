@@ -444,7 +444,8 @@ python -I tests/test_bvh_geometry_check.py
 `tools/bvh_packing_check.py` checks the §4a packing on every stream of a pack, without geometry. The checks are
 listed in §4a and in the tool's docstring. It scans an `.rpf` the way `tools/bvh_index.py` does, in parallel windows
 (a stream belongs to the window it starts in). A `bvh4-chunk` is joined with the streams after it up to its
-declared end. The tool also takes carved stream files (`--header-offset 256` for a whole payload).
+declared end. The joined streams are counted as `continuation`, once each, even when one starts in the next window.
+The tool also takes carved stream files (`--header-offset 256` for a whole payload).
 
 The JSON report holds offsets and counts only: stream kinds, streams checked and passed, and failures per reason
 with up to 20 example offsets. It also holds summed statistics: nodes, leaves, child pointers by type, child counts,
