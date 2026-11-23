@@ -470,6 +470,32 @@ The GPU tools of `runtime/test/shaders` (`vk_compute_test`, `vk_harness`, ...) r
 | A GPU test that uses `image_load` (or lighting built from real shaders) reads zeros from its image; @Silliana saw every texel except pixel (0,0) come back zero in their own layer (#603, not reproduced here) | In this runtime the shader turns the T# words into an index through the descriptor hash table (`runtime/src/descriptor_table.h`: a miss gives index 0), and index 0 is a 1×1 image of zeros (`runtime/src/vulkan_bindless.h`), so a hand-built or zeroed T# that was never registered reads zeros even at (0,0). The translator does not compare coordinates with the T# size, and `cs_imgload.asm` only uses its T# words as a hash key | Register the descriptor through the runtime (for D3D12, create it with `CreateShaderResourceView`) so its T# hits the table, with the image's real width and height (stored as size − 1, see `runtime/src/gfx10_descriptors.h`) |
 | `cs_sample_lz_int_d16`, `ps_sample_implicit_sint`, `ps_ssharp`, `ps_tex`, `ps_texture_mip0`, `ps_texture_sample` and `ps_texture_sample_d16` crash (exit -11 or 139) on an Intel GPU on Linux, while NVIDIA and llvmpipe pass them (TEST-399) | A bug in Mesa ANV's shader compiler: compiling these texture-sampling shaders, `nir_opt_gcm` (`nir_opt_gcm.c:430`, `gcm_schedule_early_src`) dereferences a phi source an earlier pass has freed. The SPIR-V passes `spirv-val`. Seen with Mesa 26.1.6 (Arrow Lake) and 26.2.7 (Iris Xe, ADL GT2); Mesa 26.3.1 and `main` (bb98606) pass the whole suite on the same Iris Xe | Use Mesa 26.3.1 or newer. To check a newer Mesa without installing it, build its Intel Vulkan driver and point `VK_DRIVER_FILES` at its `src/intel/vulkan/intel_devenv_icd.x86_64.json` |
 
+### Signed zero in a float storage image (SHADER-605)
+
+Build `vk_store_test` as above and put `spirv-as` and `spirv-val` on PATH. Run this standalone
+probe from the repository root, passing the path to the executable you built:
+
+```powershell
+python -I runtime/test/shaders/probe_signed_zero.py runtime/build/vulkan/vk_store_test.exe
+```
+
+The probe assembles and validates two hand-written Vulkan 1.2 compute modules. Each requests
+`SignedZeroInfNanPreserve 32` and executes three constant `OpImageWrite` instructions into
+a `VK_FORMAT_R32G32B32A32_SFLOAT` image. Only the SPIR-V image format changes (`Unknown` or
+`Rgba32f`). The harness copies the images back, issues a transfer-write to host-read barrier,
+waits for completion, and compares all 768 words, including 756 prefilled guard words.
+A bit mismatch prints the word index and returns exit code 1. Both variants run even if the
+first comparison fails.
+
+On a GeForce RTX 5070 with Windows driver 616.56, both formats matched 765/768 words.
+In the first texel, `(-0, +0, +0, +0)`, word 0 read back as positive zero. The second texel,
+`(-0, 1, +0, +0)`, retained every bit. In the third, `(-0, -0, +0, +0)`, words 8 and 9 both
+read back as positive zero. All guards matched. This reproduces the discrepancy independently
+of RDNA translation. Independent runs of the same probe reproduced those three mismatches on
+a Linux RTX 5090 (595.99.02). On Windows, a Ryzen 7 9800X3D Radeon iGPU (25.10.30.02),
+an RTX 3080 (616.64) and an RTX 3060 (621.14) preserved all 768 words in both formats.
+The device reports are in [PR #3260](https://github.com/ItsNotRexed/Leonida/pull/3260).
+
 ## Posting your result
 
 Use the template at the top of [#166](https://github.com/ItsNotRexed/Leonida/issues/166): GPU, driver, subgroup
