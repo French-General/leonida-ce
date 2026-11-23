@@ -243,13 +243,19 @@ writes/clears its in-flight report even when validation fails. Exit 1 without a 
 of repeating failed setup for the remaining batches; diagnostic probes use the same distinction. Each process
 starts with a cleared report path, so an earlier process's report cannot hide an initialization failure.
 
+An abnormal diagnostic-probe exit confirms a module crash only when that probe's fresh in-flight report names
+the selected module. A missing, empty or unrelated report makes the result inconclusive and stops the stage
+without blaming that module. The native report is periodic for small modules, so even a real fast crash can
+leave no evidence; this conservative fallback does not guess its cause or add an unconfirmed crash-list entry.
+
 The batch size limits the index range, **not total memory usage**. Concurrent heavy modules, loading a large
 saved cache or compiling one large shader can still exceed a process's available memory; a range that
 cannot complete even alone fails with a diagnostic rather than being counted as checked.
 
 `tests/test_make_game_pipeline_batches.py` runs the real build-stage orchestration against scripted child processes:
 bounded coverage and cache checkpoints, collective memory-crash recovery, a genuinely crashing module, validation
-failures, interruptions, setup failures and compatibility with older checkers. It needs no game files or GPU.
+failures, interruptions, setup failures, inconclusive probes and compatibility with older checkers. It needs no
+game files or GPU.
 
 ## Crash isolation (`--isolate`)
 
