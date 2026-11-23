@@ -1687,9 +1687,11 @@ metadata to copy the conventions from. With the built-in `interp2` template on g
 the perspective I/J barycentrics are in v0/v1, M0 comes from s2 (`s_mov_b32 m0, s2`), and parameters 0 and 1 are
 the vertex shader's locations 0 = (u, v, 0, 1) and 1 = (u, v, 0, 0), u and v going 0..2 across the screen.
 
+```powershell
 $env:LEONIDA_VK_DEVICE = "radeon"
 python -I tools/ps_oracle.py --build <runtime build> --template interp2 --show-template
 python -I tools/ps_oracle.py --build <runtime build> --template interp2 --asm body.s --size 4 1 [--json out.json]
+```
 
 Checked on an AMD Radeon iGPU (gfx1036, Windows driver 26.10.1): the driver accepts a patched binary (there is no
 check over the code), the patched code runs as the pixel shader, and `v_interp_p1/p2_f32` of `attr0.x` at the four
