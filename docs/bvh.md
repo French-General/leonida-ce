@@ -163,8 +163,9 @@ The same file defines the packed records: `XboxBvh4NodePacked` at L2326, `XboxBv
 
 The layouts above are source definitions. The dehydrated stream is not a contiguous array of runtime `Node16`
 records. Its element and box packing is measured in §4a: a CPU model that reads it reproduces the library's
-rehydrated output byte for byte. The `BVVDHeader` table is not used by the samples there and stays **Open**. A
-decoder must not feed the dehydrated root to the runtime traversal path; it has to rehydrate first.
+rehydrated output byte for byte, and its structure holds on all 272,874 streams of the two packs. The
+`BVVDHeader` table is not used by the samples there and stays **Open**. A decoder must not feed the dehydrated root
+to the runtime traversal path; it has to rehydrate first.
 
 ### 3.2 Instance descriptor (208 bytes)
 
@@ -273,6 +274,42 @@ library on the 8 samples whose geometry is identified (0 differing bytes; 384 to
   `2^(e - 127)` with `e` the bytes 0, 1 and 2; bit 30 enables a translation per axis, the centre of `sceneBounds`
   where the bounds do not straddle zero; bits 24-29 select one of 64 rotations, `Rz * Ry * Rx` in steps of pi/8
   about each axis (index 0, the identity, on every sample).
+
+**The packing holds on every stream (structure only).** The byte-exact match above covers 8 samples.
+`tools/bvh_packing_check.py` reads every stream with the same packing, without geometry (§7). It checks that the
+bytes form exactly one tree:
+
+* the level table is in order and ends before itself;
+* every group fits in the bytes its nodes occupy;
+* every node has 1 to 4 children and no override bit past them;
+* a box pointer names a node of its own width on a lower level;
+* a TRI0 pointer names a leaf slot `offsetToElements + 64 * k` with `k < numElements`;
+* nothing points to the root, and every other node and every leaf has exactly one parent;
+* every vertex-order byte is a permutation;
+* every stored override lies inside `sceneBounds` in the leaf frame.
+
+Result: **272,874 of 272,874** streams pass. That is 271,627 complete streams and 10 split ones (joined) in
+`core_bvh4.rpf`, plus 1,237 in `shared_minigame000_bvh4.rpf`.
+
+In `core_bvh4.rpf`:
+
+| | count |
+|---|---:|
+| box nodes | 413,539,798 |
+| leaves | 1,068,494,700 |
+| stored override components | 17,082,560 |
+| nodes with 2 / 3 / 4 children | 54,219,680 / 63,956,971 / 295,363,147 |
+| nodes with 1 child | 0 |
+| child pointers to BOX16 / BOX32 / TRI0 | 48,220,482 / 365,047,695 / 1,068,494,684 |
+| child pointers of any other type | 0 |
+| levels per structure | 1 to 19 (mode 7) |
+
+Roots:
+
+* 271,594 are BOX16 and 27 are BOX32. Each is the last node of a top level that holds only it.
+* The other 16 structures are a single TRI0 leaf with no box levels.
+* No root stores an override. Its box is therefore always recomputed from its children, and `sceneBounds` cannot be
+  compared with stored values alone.
 
 **The instance transform.** The 3x4 at descriptor `+0x50` is applied to the geometry, `x' = M * x`, before the BLAS
 is built. The samples carry the identity or an axis-aligned 90-degree rotation. Without it, most leaves of the
@@ -402,6 +439,31 @@ On the 8 samples the right geometry passes every check and a wrong decode fails 
 ```powershell
 python -I tools/bvh_geometry_check.py <dehydrated.bin> --geom <vertices.f32>[,<indices.u32>] [--json report.json]
 python -I tests/test_bvh_geometry_check.py
+```
+
+`tools/bvh_packing_check.py` checks the §4a packing on every stream of a pack, without geometry. The checks are
+listed in §4a and in the tool's docstring. It scans an `.rpf` the way `tools/bvh_index.py` does, in parallel windows
+(a stream belongs to the window it starts in). A `bvh4-chunk` is joined with the streams after it up to its
+declared end. The joined streams are counted as `continuation`, once each, even when one starts in the next window.
+The tool also takes carved stream files (`--header-offset 256` for a whole payload).
+
+The JSON report holds offsets and counts only: stream kinds, streams checked and passed, and failures per reason
+with up to 20 example offsets. It also holds summed statistics: nodes, leaves, child pointers by type, child counts,
+levels, overrides, and where the root sits.
+
+Measured on Windows with 14 workers:
+
+| pack | time | streams passed |
+|---|---:|---:|
+| `core_bvh4.rpf` | 235 s | 271,637 / 271,637 |
+| `shared_minigame000_bvh4.rpf` | 3 s | 1,237 / 1,237 |
+
+The exit status is 1 when a stream fails.
+
+```powershell
+python -I tools/bvh_packing_check.py <core_bvh4.rpf> --json <temp>/packing.json
+python -I tools/bvh_packing_check.py <stream.bin> --header-offset 256
+python -I tests/test_bvh_packing_check.py
 ```
 
 `tools/bvh_match.py` finds the drawable geometry a dehydrated BLAS was built from, on top of `rpf9dump`'s model
