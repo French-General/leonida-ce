@@ -401,6 +401,11 @@ specification allows a driver to split GLSL `Fma` into two roundings, which is w
 `LEONIDA_FMA=exact` (`--fma exact`) builds the single rounding from plain f32 operations and needs no extension; with
 it `cs_fma_fused` passes on both of those, on an RTX 3050 Laptop (617.42), an RTX 5060 Laptop (621.01), an RTX 5070 Ti
 (621.24) and a Radeon 780M (26.11.2).
+Intel UHD Graphics (Xe-LP, Windows 101.7088) splits it too, words 0, 2, 3 and 5 (`v_fma_f32`, `v_fmaak_f32`,
+`v_fmac_f32`), and has no `VK_KHR_shader_fma`, so `khr` can't be used there. For such a device,
+`LEONIDA_FMA=exact` (`--fma exact`) builds the single rounding from plain f32 operations and needs no extension;
+under it, as under `khr`, all 8 words must be strictly fused, and they are on that Intel UHD and on an RTX 3050
+Laptop (617.42).
 
 ## Hardware oracle (optional, AMD)
 
