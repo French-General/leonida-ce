@@ -508,6 +508,7 @@ of RDNA translation. Independent runs of the same probe reproduced those three m
 a Linux RTX 5090 (595.99.02). On Windows, a Ryzen 7 9800X3D Radeon iGPU (25.10.30.02),
 an RTX 3080 (616.64) and an RTX 3060 (621.14) preserved all 768 words in both formats.
 The device reports are in [PR #3260](https://github.com/ItsNotRexed/Leonida/pull/3260).
+| On an AMD integrated GPU (gfx1036) with AMD's Windows driver (`32.0.21042.62` and `32.0.21045.16010` measured), `crosslane_fuzz.py --wave 64 --w64-native --dpp --no-maskdata --seed 82001 --programs 600` reports one native mismatch: `cs_xl64_8200346406` differs in 96 words (32 lanes of each of its three waves), while `--wave64-emulate` and the hardware oracle match | AMD's Windows driver, not the translator (SHADER-705; the driver's generated code was not inspected). The same native wave64 SPIR-V is exact under RADV (Mesa 26.3.1) on another gfx1036 and on an RX 7900 XTX, and in the CPU interpreter. The wrong instruction is a `v_permlanex16_b32` that reads a register a DPP op with a partial `row_mask` has just written ([shader_validation.md](shader_validation.md), FUZZ-7) | Nothing to change in a build: no shader of the game has that shape (0 of 26,503; the two instructions meet in 6 shaders, all wave32 compute). `--wave64-emulate auto` stays native on this driver because of #857, and the emulated translation of the program matches there |
 
 ## Posting your result
 
