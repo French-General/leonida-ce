@@ -466,6 +466,23 @@ records. No unhandled layout tag appears:
 
 Not measured here (hypothesis): whether the estimates are precomputed from handling data or measured by
 simulation, and what fixes the top of the rating scale.
+- **The estimates are a separate stored table, not the performance maps.** `common.rpf`'s data area at `0x9580`
+  also holds `CVehiclePerformanceMaps` (285 rows, 10 result fields) and `CTyreDataSet` (40 tyre types). 251 of the
+  252 estimate keys join the performance rows, but no field reproduces an estimate exactly: the best OLS over
+  all ten gives R^2 0.872, and `fAccelerationTime` against `accelZeroSixty` is R^2 0.811 with a median |residual|
+  of 0.54 s. The clearest relation is internal to the estimates: over the 231 rows with a finite top speed,
+  `fStandingQuarterTime = 6.73 + 401.0 / fTopSpeed` (R^2 0.99998, median |residual| 1.01 s; R^2 0.82 over the
+  209 rows under 30 s). For the seven top-speed-limited rows, `fTopSpeed * fStandingQuarterTime` is
+  402.339 +/- 0.0003 m, a quarter mile; the residual tracks the 0-60 time.
+- **The ratings are deterministic functions of the estimates.** Each of the 223 distinct road top speeds gives
+  one `fSpeedRating`; handling/corner has 221 levels, acceleration/acceleration time 204, brakes two collisions,
+  and `fOverallRating` uses more than one field. The rating scale and the overall weighting are still not fitted.
+- **The handling inputs are not in the readable archives.** No `CHandlingData`/`handling.meta`, `fMass`,
+  `fInitialDriveForce`, `fInitialDragCoeff`, `nInitialDriveGears`, `fTractionCurve*`, `fBrakeForce` or
+  `fSuspensionForce` occurs in `common.rpf`, `data.rpf`, `packs.rpf` or `script.rpf`; the executable is absent.
+  `levels.rpf` is map data and was not fully scanned. The table is therefore consistent with an offline
+  estimator fed by handling-derived scalars, but whether it was fitted to handling or copied from a simulation
+  cannot be verified from this package.
 
 ## Character skeletons
 
