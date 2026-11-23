@@ -1969,7 +1969,9 @@ The trace will enumerate them.
   and resolve bits also require the format's image-usage/sample-count query to succeed. D3D12's per-format
   rules then apply, as native D3D12 reports them (RX 9070 XT, AMD 26.11.2, and WARP):
   - `MIP` wherever the image can have more than one level.
-  - `SHADER_GATHER` with `SHADER_SAMPLE` (not `A8_UNORM`, whose swizzled view isn't verified for gathers).
+  - `SHADER_GATHER` with `SHADER_SAMPLE`, including `A8_UNORM`. Its swizzled R8 view gathered the same four
+    alpha values as native D3D12 and WARP on 49 footprints. `d3d12_descriptor` also verifies a view that forces
+    alpha to zero.
   - `UAV_TYPED_LOAD` with every typed UAV. Typed UAV texture reads use the sampled binding (`image_read_typed`),
     not a storage-image read. Typed buffer UAVs: the layer now writes their V# (section 3.4, "Buffer UAVs"); the
     gap left is `rdna2spirv.py` `FORMATS`, which decodes only some buffer formats (the 32-bit SINT ones, but no
