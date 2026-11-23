@@ -267,3 +267,35 @@ jobs:
           node-version: "24"
       - name: Viewer chunk streaming (synthetic, no browser or game data)
         run: node --test tests/test_*.cjs
+
+  # The check job runs the standard-library loop on Windows, which has no SPIRV-Tools or numpy: the spirv-val checks
+  # (test_split_big_switch, test_image_load_typed...), the numpy paths and the POSIX-only tests skip there. This job
+  # runs the same loop on Linux with them installed, so those tests run somewhere.
+  stdlib-tests-linux:
+    needs: change-scope
+    if: ${{ !cancelled() && needs.change-scope.outputs.docs-only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: tests/requirements.txt
+      - name: Install SPIRV-Tools and numpy
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends spirv-tools
+          pip install -r tests/requirements.txt
+      - name: Tests (standard library only, Linux)
+        shell: bash
+        run: |
+          while IFS= read -r t; do
+            if grep -Eq "$PYTEST_FILE_MARKERS" "$t" || ! grep -q '__main__' "$t"; then
+              continue
+            fi
+            echo "== $t"
+            python -I "$t" || exit 1
+          done < <(find tests -path 'tests/semantic' -prune -o -type f -name 'test_*.py' -print | LC_ALL=C sort)
