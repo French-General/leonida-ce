@@ -1,8 +1,9 @@
 # Movies (`movies.rpf`)
 
-**Status: indexed. All 515 Bink 2 streams have been enumerated and their fixed headers read; representative
-frames decode with the package's own Bink 2 library. The RPF9 table of contents is encrypted, but the streams can be
-named from the game's mount lists ([section 8](#8-names-from-the-mount-lists)). Nothing here is a playback path yet.**
+**Status: indexed. All 515 Bink 2 streams have been enumerated and their fixed headers read; the first two frames
+of every stream, and the start of every audio track, decode with the package's own Bink 2 library. The RPF9 table
+of contents is encrypted, but the streams can be named from the game's mount lists
+([section 8](#8-names-from-the-mount-lists)). Nothing here is a playback path yet.**
 
 Every number below was measured on the Xbox Series 1.0.2.1 package on 2026-11-21. The archive is read-only. No
 game video, audio, frames, carved streams or reports that quote them are in this repository; the tools write only
@@ -26,6 +27,7 @@ offsets and header facts. Commands are at the end.
 | Total duration at 30 fps | 14,181.3 s (3 h 56 min) |
 | Audio tracks (header field) | 319 streams with 0, 165 with 1, 30 with 2, 1 with 4; 229 tracks total |
 | Decoded samples | 9 streams, 14 frames, both revisions, 512x512 to 3840x2160 |
+| Decode test over the archive | 515 of 515 streams: frames 0 and 1; 229 of 229 audio tracks: PCM for the first 60 frames ([below](#decode-coverage-over-the-whole-archive)) |
 | ffprobe decode result | 0 of 515 (`decodes=no` with a forced `-f bink` probe) |
 
 `8,831,336,892 + 1,094,744 + 22,812 = 8,832,454,448`, the span from the RPF header's data start to EOF. Readable
@@ -177,6 +179,23 @@ build dependency. With that copy:
 - `BinkGetSummary` with a guessed `BINKSUMMARY` layout crashed with an access violation. The `HBINK`,
   `BINKSUMMARY`, `BINKTRACK` and related struct layouts are not established.
 
+### Decode coverage over the whole archive
+
+The two package-gated runtime tests were run on every stream of `movies.rpf`, one at a time: each stream is copied
+from its `bink_index.py` offset and size to one temp file, the test runs on it, and the file is overwritten by the
+next. Both tests map the package's `Bink2Scarlett.dll` with `rt::Loader` and bind its two `xmem.dll` imports to the
+runtime's shim, so no patched copy of the DLL is involved.
+
+| Test | Scope | Result |
+|---|---|---|
+| `bink_decode_test` | all 515 streams | 515 exit 0: `BinkOpen` returns a handle, and frames 0 and 1 each replace the sentinel buffer with more than one byte value |
+| `bink_audio_test`, `LEONIDA_AUDIO_FRAMES=60` | all 229 tracks of the 196 streams that have audio (`LEONIDA_AUDIO_TRACK` 0..n-1) | 229 `RESULT PASS`, 0 `FAIL` lines: track id, type and maximum size match the header, `BinkOpenTrack` returns a track, and `BinkGetTrackData` returns a non-empty, whole number of 16-bit samples on every track |
+
+Measured at `main` `16282101` and again at `f847748c`, with the same counts, on Windows 11 (MSVC 14.44,
+RelWithDebInfo). This is a decode check of the start of
+each stream. It does not decode every frame, compare pixels with a reference, or look at the frames (none was
+viewed), so it says the library accepts all 515 streams and all 229 tracks, not that every frame is correct.
+
 The nine sampled streams (all at 30 fps):
 
 | Revision | Resolution | Frames | Duration | Audio tracks |
@@ -205,8 +224,9 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
   the mount lists ([section 8](#8-names-from-the-mount-lists)), and the folder names group the streams by use. What
   the game does with each folder at run time is not established.
 - **Audio association.** The header gives a track count, sample rate, flags and track IDs, but not which audio
-  belongs to which video frame beyond the interleaving described by the Bink format. No Bink Audio packet was
-  decoded, and no track was matched to a movie. `BinkOpenTrack`/`BinkGetTrackData` were not called successfully.
+  belongs to which video frame beyond the interleaving described by the Bink format. `BinkOpenTrack` and
+  `BinkGetTrackData` return 16-bit PCM for all 229 tracks (`runtime/test/bink_audio_test.md`,
+  [coverage above](#decode-coverage-over-the-whole-archive)), but no track was matched to a language or a mix.
 - **Playback integration.** The executable is not in the package. Where the game calls `BinkOpen`, which flags it
   passes, whether it uses `BinkDoFrameAsync`, `BinkGoto`, subtitles or the GPU path, and how it schedules movies
   against streaming are all unknown.
@@ -219,9 +239,10 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
   the RPF9 trailer ([rpf.md](rpf.md#the-trailer-at-eof); confirmed in 14 of the package's 22 archives, 8
   undecided, none against). Its contents are high-entropy (7.99 bits per byte) with no zlib or `KB2` header, like the TOC; this
   project does not decode them.
-- **Whether all 515 streams are playable by the game.** Nine were decoded as a sample; the other 506 were only
-  header-validated. A full decode pass would need the same DLL experiment for every stream and is not part of the
-  index.
+- **Whether every frame of all 515 streams decodes correctly.** All 515 open and decode their first two frames
+  through the package's DLL ([coverage above](#decode-coverage-over-the-whole-archive)); nine were decoded as a
+  sample with frames viewed. No stream was decoded from its first frame to its last, and nothing compares the
+  output with a reference.
 
 ## 6. No-sharing rule
 
