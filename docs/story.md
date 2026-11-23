@@ -389,6 +389,23 @@ full: they read only w2 bit 28. `story000` also has e = 2 to 4 on about 456 mesh
 few rows will move slightly when recounted. Most of the remaining misses come from the group-to-block binding:
 several blocks in a page share a vertex count (@Pipodi's count on #2991).
 
+**Which `42 40` block a group is checked against (ASSET-294).** `--faces` and `--centres` decode a group with
+a `42 40` block of its vertex count in the same page. When several blocks have that count, the order in the
+page doesn't decide it. In `Q0 Q1 G0 G1` pages, G0 is built on Q0 in some pages and on Q1 in others, and taking
+the k-th block for the k-th group fits only 9,295 of the 15,997 `story000` groups that have several blocks and a
+fitting one. The link is in the drawable's pointers, outside the page. So the walker takes the block whose vertex
+boxes are closest to the group's stored centres (`centre_distance`, summed over its meshlets), keeping the nearest
+block before the group on a tie. Over all of `story000.rpf` (all 7,577 mesh pages parsed), before and after:
+
+| Pairing | Groups with several blocks | Block changed | Shared edges | Faces within ~25° | Opposed |
+|---|---:|---:|---:|---:|---:|
+| nearest block before | 16,059 | — | 36,707,506 | 33,342,470 (90.8%) | 518,120 (1.41%) |
+| closest centres | 16,059 | 8,668 | 36,719,379 | 34,037,683 (92.7%) | 16,415 (0.045%) |
+
+The face check doesn't use the centres, so it is the independent evidence. The centre counts rise too (same step
+212,479 → 222,572 of 827,496 axes), but for those 8,668 groups they no longer measure the centres on their own.
+The tables above were counted with the old pairing; the first row is the story000 face count above.
+
 Still open: the +0x5C word, the type-1 normal's
 bits 20-31, and what the `42 40` colour and UV slots hold beyond rpf9-explorer's reading.
 
