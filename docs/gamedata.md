@@ -777,11 +777,34 @@ Measured over the 434 patches and 7,839 points:
   `ShoreWaveMaxAmplitude` and `ShoreWaveWindScale` fields of the `CContentsOfWeatherXmlFile` weather data
   (its layout is documented in #1175).
 - **`maxDistance`** ranges 3.0 to 120.4 (median 74.9): how far the wave runs from the line.
-- **`lateralCoord`** is a float in -2.94..3.50 with 7,820 distinct values. It is not arc length and not monotonic
-  along 433 of the 434 patches, so it is not a running texture coordinate along the line.
+- **`lateralCoord`** is a float in -2.94..3.50 with 7,820 distinct values. It is a coordinate *along* the line,
+  not across it: within a patch it is linear in arc length (distance along the polyline from the first point),
+  `lateralCoord ≈ a + b × arc length`.
+  - The least-squares fit leaves a median largest residual of 0.012 per patch (90th percentile 0.059).
+  - The per-patch correlation with arc length has magnitude at least 0.994 on more than three quarters of the
+    patches.
+  - The rate is the same everywhere: |b| has a median of 0.00200 per world unit, so it changes by 1.0 every
+    500 world units (median 500.4; 10th to 90th percentile 473 to 544). The median rate per `waveType` is 0.00199
+    to 0.00202, so the wave type doesn't set it.
+  - It *decreases* along the point order: strictly on 416 of the 434 patches, and b < 0 on 426. Only 197 of the
+    7,405 point-to-point steps go against the patch's direction, by a median of 0.018. (It is monotonic, just not
+    increasing; an earlier count here only tested increasing.)
+  - On those 426 patches, `direction` points to the left of the polyline, so the coordinate runs the same way
+    relative to the waves everywhere.
+  - The offset a spreads over -2.0 to 3.4 (median 0.70), and a whole patch changes it by a median of -0.33. So
+    neighbouring patches can continue one another rather than each starting at 0 (10 start within 1e-4 of 0).
 
-Not measured here (hypothesis): what the five `waveType` values select, and what `lateralCoord` encodes (an
-offset across the line is one reading).
+  Hypothesis, from the shape rather than a consumer: a phase or texture coordinate along the coast that repeats
+  every 500 world units.
+- **`waveType`** doesn't change `amplitude` (1.0 at every point of every type) or the `lateralCoord` rate, and the
+  types overlap across the map. What differs:
+  - Type 3 (147 patches) has the shortest reach: its `maxDistance` median is 64.6, with the only values below
+    17 (down to 3.0). Types 0, 1 and 4 have medians of 72.4 to 78.1.
+  - The six type 2 patches lie in one area (patch centres x 358 to 1,560, y -1,685 to 6,041). The other types
+    span the whole coastline box.
+
+Not measured here: what the five `waveType` values select. Reach is the only measured difference besides type 2's
+location; a consumer of the field would settle it.
 
 ## Readable vs binary
 
