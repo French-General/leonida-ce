@@ -326,6 +326,16 @@ instruction"), which is why the second run is limited to compute. llvmpipe is no
 real GPU in [#166](https://github.com/ItsNotRexed/Leonida/issues/166): it catches regressions, not hardware
 differences.
 
+## Macs in CI
+
+The `macos` job in `.github/workflows/runtime.yml` builds the runtime on GitHub's `macos-26` arm64 runner and runs
+`ctest` and `run_gpu_tests.py` on MoltenVK; `macos-python` in `ci.yml` runs the Python suites. The runner is a VM
+whose Metal device is "Apple Paravirtual device" (Metal family Mac2, not Apple7): MoltenVK runs on it with 32-wide
+subgroups, so the wave64 and "32 lanes on request" tests skip there (about 75 of 190 in November 2026), and Mesa's
+KosmicKrisp finds no device. `macos-15` can't build the runtime: Xcode 16's libc++ has no floating-point
+`std::from_chars`. A test known to fail on MoltenVK is listed in the step's `EXPECTED_FAILURES` with the pull
+request or coordination-issue finding that tracks it; it still runs, and `scripts/ci_expected_failures.py` fails the step on any other failure.
+
 ## GPUs without fragment barycentrics (NVIDIA Volta, Pascal and older)
 
 `ps_bary`, `ps_persp_bary`, `ps_uniform_branch` and `ps_scc_mask32` read raw barycentrics, which need
