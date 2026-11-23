@@ -99,6 +99,23 @@ lands), the IID/extension tables, and the call-sequence observations that Leonid
 [d3d12_vulkan.md §7](d3d12_vulkan.md#7-prior-art-and-measured-xbox-abi) still lists as unknown. SCARAB forwards to
 D3D12; Leonida translates to Vulkan. The ABI facts carry over, the forwarding architecture does not.
 
+## holdmysocks/SixNG
+
+<https://github.com/holdmysocks/SixNG>
+
+A Rust extractor for the same package: models, textures, map placements, collision, navmesh, the lane graph and
+audio, with format notes in its module headers.
+
+**Licence:** GPL-3.0, compatible with this project's GPL-3.0-or-later. As with SCARAB, **facts first**: nothing of
+it is copied here.
+
+**What we use it for:** two navmesh facts, read in `crates/sixng-core/src/navmesh.rs` at commit `0619601` and
+re-measured on this package by `tools/navmesh_nodes.py`
+([navmesh.md](navmesh.md#polygon-flags-under-the-lane-graph)): its label "road surface" for polygon `+0x18` bit
+13, which it bases on a visual check, and the vertex formula `tile minimum + u16 / 65535 * extent`. The formula is
+confirmed by the lane-graph heights. The label is consistent with the count, but not settled by it: nine in ten
+lane nodes stand on polygons with both bit 8 and bit 13, and which bit or combination means road surface is open.
+
 ## microsoft/libHttpClient
 
 <https://github.com/microsoft/libHttpClient>
