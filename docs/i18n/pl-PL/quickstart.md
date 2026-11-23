@@ -29,6 +29,8 @@ Projekt jest na wczesnym etapie: **gra jeszcze się nie uruchamia**.
   `.rpf` czytelnymi na dysku jako zwykłe pliki).
 - **Windows 10/11 x64** z około **350 GB wolnego miejsca** na pliki robocze (mogą trafić na inny dysk dzięki
   `--work`).
+- **Twoja własna kopia** paczki Xbox Series w wersji `1.0.2.1` (folder z plikiem `MicrosoftGame.Config` i archiwami `.rpf` czytelnymi na dysku jako zwykłe pliki).
+- **Windows 10/11 x64** z około **400 GB wolnego miejsca** na pliki robocze (mogą trafić na inny dysk dzięki `--work`).
 - [Python 3.12+](https://www.python.org/downloads/) (zaznacz *„Add python.exe to PATH”*).
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 - [Vulkan SDK](https://vulkan.lunarg.com/) (`spirv-as`, `spirv-val` i `vulkaninfo`).
@@ -138,6 +140,9 @@ procesora (można to zmienić przez `--jobs`).
 Build zapisuje polecenie i wersję `llvm-mc`, które utworzyły pliki `.s`, oraz źródła translatora, które utworzyły
 shadery. Zmiana któregokolwiek z nich, a także użycie starszego folderu roboczego, uruchamia ponownie deasemblację
 albo tłumaczenie z zachowaniem wyodrębnionych wejść shaderów.
+- **`--wave64-emulate`**: emuluje shadery compute/mesh wave64 na kartach z podgrupami 32-wątkowymi (NVIDIA i Intel). Domyślny tryb `auto` pyta `vulkaninfo` i sam włącza emulację, gdy jest potrzebna.
+- **`--work`**: najlepiej wskazać dysk z co najmniej 400 GB wolnego miejsca. Etap `shaders` trwa najdłużej i domyślnie używa połowy wątków procesora (można to zmienić przez `--jobs`).
+- **Linux i Wine/Proton**: `make_game.py` działa też na Linuksie. Aby wykonać etap `runtime` poza Windowsem, podaj `--runtime-build <folder>` z buildem dla Windowsa (`gta6rt.exe` i `gta6rt_tls_host.dll`). Skrypt utworzy wtedy `gta6rt.sh`, który uruchamia program przez `wine` (albo przez Wine wskazane zmienną `WINE`, np. z Protona).
 
 ## Częste problemy
 

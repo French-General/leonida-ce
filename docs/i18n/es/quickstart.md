@@ -28,6 +28,8 @@ El proyecto está en una fase inicial: **el juego todavía no arranca**.
   y los archivos `.rpf`, como ficheros legibles en el disco.
 - **Windows 10/11 x64**, con unos **350 GB libres** para una compilación completa. Los archivos de trabajo pueden
   ir a otra unidad con `--work`; más abajo se explica cómo omitir la exportación de recursos y usar unos 30 GB.
+- **Windows 10/11 x64**, con unos **400 GB libres** para los archivos de trabajo. Pueden ir a otra unidad con
+  `--work`.
 - [Python 3.12+](https://www.python.org/downloads/) (marque «Add python.exe to PATH» durante la instalación).
 - [SDK de .NET 8](https://dotnet.microsoft.com/download/dotnet/8.0).
 - [SDK de Vulkan](https://vulkan.lunarg.com/) (`spirv-as`, `spirv-val` y `vulkaninfo`).
@@ -180,6 +182,16 @@ También puede pasar `--runtime-build <carpeta>` con una compilación de Windows
 descomprimido. Así evita compilar el runtime; la misma opción funciona en Windows. En Linux el script escribe
 `gta6rt.sh`, que lanza `gta6rt.exe` con `wine`, o con el Wine indicado por la variable `WINE` (para Proton, su
 `files/bin/wine`).
+- **`--wave64-emulate`**: traduce los shaders compute y mesh wave64 de forma exacta cualquiera que sea el tamaño de
+  subgrupo de la GPU. Las GPU NVIDIA e Intel usan subgrupos de 32 y lo necesitan. El valor predeterminado, `auto`,
+  consulta `vulkaninfo` y activa la emulación salvo que todas las GPU anuncien subgrupos de 64.
+- **`--work`**: elija un disco con al menos 400 GB libres. La traducción de shaders es la etapa más larga; por
+  defecto usa la mitad de los hilos del procesador (ajustable con `--jobs`).
+- **`--wav`**: desactivado por defecto, porque el WAV PCM de 16 bits ocupa varias veces más que el Ogg Opus.
+- **Linux y Wine/Proton**: `make_game.py` también funciona en Linux. El cargador es un programa de Windows y se
+  ejecuta bajo Wine o Proton. Para la etapa `runtime` puede pasar `--runtime-build <carpeta>` con una compilación
+  de Windows (`gta6rt.exe` y `gta6rt_tls_host.dll`): el script escribe entonces `gta6rt.sh`, que lanza
+  `gta6rt.exe` con `wine`, o con el Wine indicado por la variable `WINE` (para Proton, su `files/bin/wine`).
 
 ## Problemas habituales
 

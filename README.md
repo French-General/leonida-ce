@@ -110,7 +110,7 @@ Your game folder is the one that holds `MicrosoftGame.Config` and the `.rpf` arc
 **Prerequisites:**
 
 - **Your own copy** of the Xbox Series package, version 1.0.2.1.
-- **Windows 10/11 x64**, with about **350 GB** free for work files. They can go on another drive with `--work`.
+- **Windows 10/11 x64**, with about **400 GB** free for work files (an assets export alone measured about 337 GB before its audio step, in about 2 h 35 min). Disk sizes here are as Windows Explorer shows them, which are GiB: 400 GiB is about 430 GB in decimal units. They can go on another drive with `--work`.
 - [Python 3.12+](https://www.python.org/downloads/) (tick "Add python.exe to PATH").
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 - [Vulkan SDK](https://vulkan.lunarg.com/), for `spirv-as` / `spirv-val`.
@@ -126,8 +126,8 @@ Your game folder is the one that holds `MicrosoftGame.Config` and the `.rpf` arc
   runtime stage (the runtime uses version 1.2 root signatures, which older SDKs don't declare).
 - [ffmpeg](https://ffmpeg.org/download.html) on PATH (optional: decodes the XMA2 streams, and required for `--wav`).
 
-**Low disk space:** the ~350 GB figure is for the full build. To *run* the port, `--stages check,shaders,runtime`
-needs about 30 GB; the `assets` stage (~300 GB) is only for the asset tools, and `--wav` adds several times the
+**Low disk space:** the ~400 GB figure is for the full build. To *run* the port, `--stages check,shaders,runtime`
+needs about 30 GB; the `assets` stage (~370 GB) is only for the asset tools, and `--wav` adds several times the
 Ogg Opus size (the preflight prints this choice when the assets stage is what does not fit). `--work` and `--out`
 can sit on another drive. The runtime maps the package in place, so a read-only package drive needs
 `gta6rt --overlay <writable folder>`; `--overlay` is a `gta6rt` option, not a `make_game.py` one. Leave the `.s`
