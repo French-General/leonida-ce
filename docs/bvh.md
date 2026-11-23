@@ -107,6 +107,25 @@ is source type `int32_t`, so the indexer keeps it signed. `offsetToParents` is s
 indexer keeps its raw value; it is a signed offset from the start of the structure (RT-151: rehydrated console BLASes
 have it negative), and only the entries from the header end to `offsetToElements` are stored.
 
+**Measured over every stream (ASSET-329):** 272,864 complete `bvh4` streams, 271,627 in `core_bvh4.rpf` and 1,237 in
+`shared_minigame000_bvh4.rpf` (`story000_bvh4.rpf` has none), indexed with `tools/bvh_index.py`. Counts only.
+
+| word | holds on |
+|---|---|
+| `offsetToPrimRemap` (`0x12c`) is 0 | 272,864 / 272,864 |
+| `rootNodePtr` (`0x130`) is valid, and `(ptr >> 3) * 64` (64-byte units from `0x100`) lies in `[offsetToNodes, 0x40 + 64 * totalSizeIn64BNodes)` | 272,848 (types: `box16` 272,821, `box32` 27) |
+| the other 16: `numElements` = 1, no node region, root is a `tri0` leaf in the element region | 16 (all in `core_bvh4.rpf`) |
+| `offsetToElements` (`0x134`) and `offsetToNodes` are 128-byte aligned, and `offsetToNodes - offsetToElements` = `numElements * 64` rounded up to 128 | 272,864 |
+| `offsetToParents` (`0x138`) is a multiple of 4 | 272,864 |
+| `offsetToParents` is negative as `int32` | 237,347 |
+
+So the "`u16` table at header `0x130`" of section 4 is not a table: it is these three header words read as `u16`s
+(a root pointer, the element offset and the parent offset, the last usually negative; hence "often monotonic"). With `offsetToPrimRemap` 0 everywhere there is no
+primitive remap table either, and the element region allocates 64 bytes per element, `numElements` of them, padded
+to 128 bytes (a stride, not a record layout: section 4a describes the packed arrays inside it).
+**Open:** where the parent array starts and how big it is. Neither `offsetToParents + 4 * unit` against the header end
+or `offsetToElements`, nor a size of `4 *` the node or element count, holds on every stream.
+
 The `flags` word has version `6` in its low 16 bits. It also sets `0x80000000` (bottom level), `0x00020000`
 (offline) and `0x01000000` (dehydrated). It does not set `0x00010000` (compressed). The sample is therefore a
 bottom-level, offline, dehydrated BVH, not a ready-to-traverse runtime tree.
@@ -235,8 +254,8 @@ their source geometry, `RehydrateRaytracingAccelerationStructureX` returns `S_OK
 model of the packing gives the same bytes. Whether the game's runtime calls that path or rebuilds from source
 geometry is still **Open**; `docs/d3d12_vulkan.md` §4.8/§7.2 lists that call-path question.
 
-**Not present as a whole:** source vertex/index meshes. The only geometry-like structure is the `u16` table at
-header `0x130`, whose size is even and which is often monotonic; it is a candidate remap/primitive table. No
+**Not present as a whole:** source vertex/index meshes. The `u16` "table" at header `0x130` once read as a remap table is the
+`rootNodePtr`/`offsetToElements`/`offsetToParents` words, and `offsetToPrimRemap` is 0 on every stream (§3.1). No
 vertex-format header, index-format header or RSC resource container was found. The leaves carry primitive
 references only; the triangles come from the drawables in `levels.rpf`, in the frame of the instance descriptor's
 transform (§4a).
