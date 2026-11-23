@@ -301,8 +301,8 @@ fragment-part or kit names rather than models.
 ### Stored vehicle navmeshes (ASSET-332)
 
 The vehicle navmeshes are **stored**, not left to a runtime generator: the 161 local-space non-grid meshes in this
-archive (`flags = 7`, the non-grid partition above) were built on the cell sizes
-these documents set. Measured over all 161 on 1.0.2.1:
+archive (`flags = 7`, the non-grid partition above) were built on cell grids, and 9 of them on the one cell size
+only these documents set. Measured over all 161 on 1.0.2.1 with `tools/navmesh_cell_fit.py`:
 
 - **Cell grid.** A mesh's `u16` vertices are dequantised over its `+0x60` extents (step `extent / 65535`, at most
   0.0011 m on these meshes) and an x or y coordinate counts as on a grid of cell size `c` when it is within 1.5 steps
@@ -318,8 +318,13 @@ these documents set. Measured over all 161 on 1.0.2.1:
   | 0.0325 | 9 | 1 | 3 |
 
   No mesh fits both 0.03125 and 0.0325. Of six other values tried (0.1, 0.125, 0.15, 0.2, 0.25, 0.5), only 0.125
-  fits any mesh at that 90.9% cut: 2 of the 87 at 0.0625, whose coordinates a coarser grid can also hold.
-- **The 0.0325 meshes.** 0.0325 is the one value that is not a power of two, so it is the sharpest test. All 9
+  fits any mesh: 2 at the 90.9% cut (4 at 90%), all among the 87 at 0.0625, whose coordinates a coarser grid can
+  also hold. Every mesh's x and y extents are a whole number of its cells.
+- **The static tiles are on a grid too.** Every 200th static 128 m tile (137 tiles) fits 0.0625 and 0.03125 (chance
+  baselines 9.4% and 18.8% at their step of 128/65535 m), and none fits 0.0325. So the world navmesh is built on a
+  0.0625 grid as well, and a fit at 0.0625 or 0.03125 alone does not show that a mesh used a vehicle override.
+- **The 0.0325 meshes.** 0.0325 is the one value that is not a power of two and that no static tile fits, so it
+  is the test that ties meshes to these documents. All 9
   meshes on it share one footprint, 1.755 × 5.1675 m, which is exactly 54 × 159 cells of 0.0325. They are flat
   (z extent 0) and have 47 vertices (6) or 55 (3). The 3 documents with that value name 3 different models.
 - **No name hash.** None of the 161 meshes (nor the whole-world coarse mesh) contains the `joaat` of any of
@@ -329,13 +334,15 @@ these documents set. Measured over all 161 on 1.0.2.1:
 
 Not measured (hypothesis): which mesh belongs to which model, and so which vehicles they are. 161 meshes for 31
 models means either several meshes per model (states or variants) or meshes for vehicles without a
-`CVehiclePoints` document. The 87 meshes at 0.0625 against 1 document with that value would fit 0.0625 being the
-default when the override is 0 or absent (5 documents: 4 with 0, 1 without the field). The 128 m static tiles are
-no control for this test: their quantisation step (1/512 m) divides 0.03125 exactly, so every static vertex is on
-these grids by construction.
+`CVehiclePoints` document. The 87 meshes at 0.0625 against 1 document with that value, and the static tiles on the
+same grid, would fit 0.0625 being the default cell size when the override is 0 or absent (5 documents: 4 with 0,
+1 without the field).
 
 ## Tools
 
+- `tools/navmesh_cell_fit.py` (stdlib-only) measures the cell grid of the local-space meshes and, with `--common`,
+  counts the `CVehiclePoints` cell sizes and searches the meshes for the models' name hashes; `--static-every N`
+  adds a static-tile control. It prints aggregates only (ASSET-332).
 - `tools/navmesh_index.py` (stdlib-only) performs the quick `0DRP` header inventory (`offset`, sizes, version, `+0x20`,
   raw `+0x60`/`+0x68`).
 - `tools/navmesh_decode.py` (stdlib-only) decodes all four resource classes (`0DRP`, `0x00010015`, `grid`, `PSIN`),
