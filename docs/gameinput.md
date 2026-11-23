@@ -470,6 +470,15 @@ rests on a transcription rather than on a side-by-side compile.
   printed, on a pad the shim reports no force-feedback motor for), and prints whether SDL created that effect and is
   running it, separately from GameInput accepting it, then prints the live reading and the newest raw input report.
 
+On hardware so far, with `gameinput_probe` and SDL 3.4.20 on Windows 11: a DualSense (`054c:0ce6`) over USB. It
+connects as player 1 with trigger effects and gyro (`motors=0xf forcefeedback=0 haptic=2`). Pressed one at a time,
+each of the 14 gamepad buttons set the one bit of the name [Mapping](#mapping) gives it: Cross, Circle, Square and Triangle
+as `A`, `B`, `X` and `Y`, the d-pad, L1/R1, L3/R3, Create as `View` and Options as `Menu`. Both triggers reached
+1.00 and both sticks -1.00 and +1.00 on each axis. At rest the accelerometer read about 0.5 on one axis and the gyro
+0.0; shaking the pad by hand reached 1.00 on the accelerometer. With `--rumble` (the default `rumble` trigger mode)
+and `LEONIDA_DS_LIGHTBAR=00ff00`, the person holding the pad reported the motors, the trigger effects and the lightbar
+as working; nothing measured them, and the `resistance` mode was not tried.
+
 ## VERIFY
 
 These need the game executable or a test on hardware:
@@ -491,7 +500,8 @@ These need the game executable or a test on hardware:
 - **`UnregisterCallback` timeout** is not honoured; it waits for a callback that is running.
 - **Motion normalisation maxima** (2 g accel, 2000 deg/s gyro) are this shim's choice; SDL exposes no sensor range,
   and whether the game reads motion, and against what scale, is unknown until it runs. The accelerometer range a
-  DualSense exposes can also be wider than 2 g, so hard shakes may clamp at 1.0.
+  DualSense exposes can also be wider than 2 g, so hard shakes may clamp at 1.0: a hand shake of a real DualSense
+  did reach 1.00 on one axis.
 - **Motion members the shim does not provide** (magnetic field, orientation) are zero with
   `GameInputMotionAccuracyUnknown`; whether a title wants a synthesised quaternion there is unknown.
 - **Device family**: every pad is reported as `GameInputFamilyXboxOne`; a title that filters on family sees only
@@ -527,11 +537,15 @@ These need the game executable or a test on hardware:
 - **Haptic waveforms**: the single intensity waveform (usage 0x0F/0x58) is this shim's choice, not the pad's table, so
   a title that asks for a particular waveform gets intensity-only behaviour. Whether the game uses haptic motors at
   all — as opposed to `SetRumbleState` — is unknown.
-- **Raw HID on a real pad**: only the synthetic tests and the XInput refusal have run.
+- **Raw HID on a real pad**: the synthetic tests, the XInput refusal and one DualSense over USB have run.
   - What ran: an Xbox Series X controller over Bluetooth on Windows 11 connects and plays normally, with no raw I/O,
     and the log names the reason.
-  - Still to confirm: a DualSense, DualShock 4 or Switch Pro through `gameinput_probe`, which should print the
-    descriptor's reports and changing raw input bytes.
+  - What ran: a DualSense (`054c:0ce6`) over USB on Windows 11 through `gameinput_probe`. Its descriptor gives 1
+    input report (id 1, 63 bytes), 1 output report (id 2, 47 bytes) and 20 feature reports, and the raw input report
+    changed on every reading (2,442 distinct reports in a 40 s capture). No output or feature report was sent
+    through the raw calls.
+  - Still to confirm: a DualSense over Bluetooth, a DualShock 4 or a Switch Pro through `gameinput_probe`, which
+    should print the descriptor's reports and changing raw input bytes.
   - Size convention: report sizes exclude the id byte, and `GetRawData` returns the payload without it. What
     Microsoft's runtime does for a device with report ids is not documented on the reference pages.
   - Readings: a pad that streams reports makes a reading for each changed one, like the runtime's
