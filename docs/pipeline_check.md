@@ -255,8 +255,8 @@ failures, interruptions, setup failures and compatibility with older checkers. I
 
 A driver that dies while compiling one module (for example the RADV `SIGFPE` in
 [#1721](https://github.com/ItsNotRexed/Leonida/issues/1721)) ends the whole process, so the rest of the corpus
-used to need that module excluded by hand with `--start/--count`. With `--isolate` (POSIX only; on Windows it
-prints an error and exits with 2) the tool runs the check in child processes instead:
+used to need that module excluded by hand with `--start/--count`. With `--isolate` the tool runs the check in
+child processes on native Windows and POSIX:
 
 ```sh
 vk_pipeline_check <spirv dir> cache.bin --isolate [--isolate-batch 256] [--jobs N ...]
@@ -272,6 +272,7 @@ vk_pipeline_check <spirv dir> cache.bin --isolate [--isolate-batch 256] [--jobs 
   that needs several threads at once), the batch is reported as `MODULE CRASH [a, b) not reproduced ...` and
   counts as a failure. A child that fails before it starts work (no device, bad arguments) stops the run
   with exit status 1.
+- Windows reports exception exit codes in hexadecimal, for example `driver exited with status 0xc0000005`.
 - The pipeline cache: children run one after another and each seeds from and saves to the same `cache.bin`,
   like the chunked runs above; the save is atomic, a crashed child saves nothing, so the file stays valid and
   holds everything the finished children compiled. The parent prints its size at the end.
@@ -282,8 +283,9 @@ vk_pipeline_check <spirv dir> cache.bin --isolate [--isolate-batch 256] [--jobs 
   There is no timeout: a hung compile still hangs.
 
 Test hook, not for normal use: `VK_PIPELINE_CHECK_SIMULATE_CRASH=<module name substring>[:SIGNAL]` makes the
-process raise `SIGNAL` (default `SIGFPE`; `SEGV`, `ABRT`, `KILL`, ... also accepted) just before the pipeline of a
-matching module is created. `tests/test_vk_pipeline_check_isolate.py` uses it with five hand-assembled compute
+process simulate a crash just before creating a matching module's pipeline. The default is `SIGFPE`.
+On Windows, `SIGFPE` and `SIGSEGV` use the corresponding exception exit codes.
+`tests/test_vk_pipeline_check_isolate.py` uses it with five hand-written compute
 shaders to check `--isolate` without a crashing driver; it skips when the tool isn't built or there is no
 Vulkan device.
 
