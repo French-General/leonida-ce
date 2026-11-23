@@ -587,6 +587,32 @@ python -I tools/xdxr_bvh.py validate <dumped BVH buffer>    # structural check o
 python -I tests/test_xdxr_bvh.py
 ```
 
+## 7b. The first real pack BLAS on a GPU
+
+Measured on the 1.0.2.1 package with the tools above; counts and offsets only.
+
+* `core_bvh4.rpf` indexes to **271,637 BVH4 streams / 1,896,784,254 nodes (121.4 GB inflated)** in 1,034 s.
+* The first BLAS (stream at `0x12060`, 39,257 nodes, 2,512,512 bytes rehydrated) matches **one** drawable among the
+  258,037 models an export of `levels.rpf` produced: 12 geometries, 21,814 leaves, 0 leaves outside, 335/0
+  overrides, area ratio 1.000 (`bvh_match.py`, `bvh_geometry_check.py`, `bvh_rehydrate.py` on the user's copy).
+* The rehydrated header's `rootNodePtr` is the **dehydrated** root; the runtime root is the first node of the last
+  entry of the level table at the end of the structure. The leaves are in the leaf frame (`(R*v - t)*s`): the header
+  `sceneBounds` are the pre-frame AABB (±2.5), the leaf vertices are scaled (≈19,040), so test rays are built from a
+  leaf's own vertices.
+* Descriptor base: the descriptor's dword0 is the base in **256-byte units**; the game passes `ptr >> 8` there, and
+  the `| 0x30` its shader ORs is only the temporary address it uses for the `rootNodePtr` load, not the descriptor
+  base. Measured at base 0 and at base 0x1000 (structure copied to VA 0x1000, dword0 `0x10`): the game's RT shadow
+  CS (`deferred_tiled` family, 32-bit form) on the RTX 2060 returns the CPU walker's children in the same order at
+  both. Its second traversal site still needs the executable.
+* The base and the address formula were also measured on the **native instruction**, with no emulation in the path:
+  `tools/hw_oracle` ran `image_bvh_intersect_ray` and `image_bvh64_intersect_ray` on gfx1036 (Ryzen 9 9950X3D iGPU,
+  driver 32.0.21030.2001) over hand-built box32 nodes, a decoy node at the buffer start and the real one at +0x1000.
+  dword0 `(P >> 8) + 0x10` with node `0|5`, and dword0 `(P >> 8) + 0x08` with node `0x800>>3|5`, both traverse the
+  node at `P + 0x1000`: address = base × 256 + (node & ~7) × 8, and the base and the node offset add. The control
+  (base `P >> 8`, node `0|5`) reads the decoy. Both instruction widths agree. Not exercised: descriptor bits 39:32
+  (the buffer fits in 32 bits), nodes other than box32, and a `0x1030`-style dword0, which the hardware would read as
+  base 0x103000.
+
 ## 8. No-sharing rule
 
 Nothing from the packs may be committed: no `.rpf`, carved stream, decompressed buffer, XML text, tile list,
