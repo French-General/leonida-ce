@@ -10,6 +10,11 @@ engine** — it scans a payload root and compares file/byte/archive counts again
 The engine binary itself still is not in the corpus (RT-5), so the D3D12 half of this page is unexercised. Nothing
 here quotes game data; a real trace stays on the player's machine.
 
+The package's own metadata agrees: `MicrosoftGame.Config` declares `Identity Name="GTA6.Probe.PC"` and its
+`ExecutableList` names `game_scarlett_master.exe` as the **only** executable, so this payload is a packaging
+verification build that carries the real payload's shape (its counts match the probe's manifest exactly) rather
+than a retail dump missing its engine. All eleven bundled DLLs also initialise cleanly through `gta6rt --init`.
+
 One shim gap the probe exposed, now closed: `GetModuleFileName` was host-bound, so a mapped image asking for its
 own path got `gta6rt.exe`'s; the bundled-module ops now expose the main image and each module's load path, and
 `GetModuleHandle(nullptr)`/`GetModuleFileNameA/W` answer for mapped images first.
