@@ -271,8 +271,9 @@ remain **open**.
 
 ## Vehicle navmesh settings (`CVehiclePoints`, `common.rpf`)
 
-Navmeshes on vehicles that peds walk around on are configured outside this archive, by 32 `CVehiclePoints` XML
-documents in `common.rpf` (see [gamedata.md](gamedata.md)). One document per vehicle; counts only, no names.
+The settings for navmeshes on vehicles that peds walk around on are outside this archive, in 32 `CVehiclePoints`
+XML documents in `common.rpf` (see [gamedata.md](gamedata.md)); the meshes themselves are stored here (below).
+One document per vehicle; counts only, no names.
 
 | Field | Documents | Values |
 |---|---:|---|
@@ -306,8 +307,9 @@ these documents set. Measured over all 161 on 1.0.2.1:
 - **Cell grid.** A mesh's `u16` vertices are dequantised over its `+0x60` extents (step `extent / 65535`, at most
   0.0011 m on these meshes) and an x or y coordinate counts as on a grid of cell size `c` when it is within 1.5 steps
   of a multiple of `c`. Every mesh fits one of the three nonzero `fNavOverrideRecastCellSize` values: at
-  least 90.9% of its x and y coordinates sit on that grid, against about 0.6% on average by chance (20,100 vertices
-  in all). Taking the coarsest of the three that fits:
+  least 90.9% of its x and y coordinates sit on that grid (20,100 vertices in all). The quantisation step alone
+  cannot put them there: over all 65,536 levels of a mesh's own step, at most 5.1% land on its grid (mean 1.0% at
+  0.0625, 1.7% at 0.03125, 0.7% at 0.0325). Taking the coarsest of the three that fits:
 
   | Cell size | Meshes | Distinct x × y extents | Documents with that value |
   |---:|---:|---:|---:|
@@ -316,20 +318,21 @@ these documents set. Measured over all 161 on 1.0.2.1:
   | 0.0325 | 9 | 1 | 3 |
 
   No mesh fits both 0.03125 and 0.0325. Of six other values tried (0.1, 0.125, 0.15, 0.2, 0.25, 0.5), only 0.125
-  fits any mesh at 90%: 2 of the 87 at 0.0625, whose coordinates a coarser grid can also hold.
+  fits any mesh at that 90.9% cut: 2 of the 87 at 0.0625, whose coordinates a coarser grid can also hold.
 - **The 0.0325 meshes.** 0.0325 is the one value that is not a power of two, so it is the sharpest test. All 9
   meshes on it share one footprint, 1.755 × 5.1675 m, which is exactly 54 × 159 cells of 0.0325. They are flat
   (z extent 0) and have 47 vertices (6) or 55 (3). The 3 documents with that value name 3 different models.
 - **No name hash.** None of the 161 meshes (nor the whole-world coarse mesh) contains the `joaat` of any of
   the 31 model names, as written, lower-cased, or with `.yft` appended, at any byte offset. So a mesh is not tied
-  to its model by a stored name hash. The link is in the table of contents, which this project does not read
-  (see [rpf.md](rpf.md)).
+  to its model by a stored name hash. Where the link is is not measured; the encrypted table of contents is one
+  candidate (see [rpf.md](rpf.md)).
 
 Not measured (hypothesis): which mesh belongs to which model, and so which vehicles they are. 161 meshes for 31
 models means either several meshes per model (states or variants) or meshes for vehicles without a
 `CVehiclePoints` document. The 87 meshes at 0.0625 against 1 document with that value would fit 0.0625 being the
-default when the override is 0 or absent (6 documents). The 128 m static tiles are no control for this test: their
-quantisation step (1/512 m) divides 0.03125 exactly, so every static vertex is on these grids by construction.
+default when the override is 0 or absent (5 documents: 4 with 0, 1 without the field). The 128 m static tiles are
+no control for this test: their quantisation step (1/512 m) divides 0.03125 exactly, so every static vertex is on
+these grids by construction.
 
 ## Tools
 
