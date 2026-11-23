@@ -69,8 +69,10 @@ python -I tools/first_light.py --check --out ~/leonida-work/first_light/out
 ```
 
 `--check` on an existing folder re-runs the harness through the same fresh path and `check_image` as the test; a
-harness that exits 0 without writing, an all-opaque image and a swapped-U/V image all exit 1. The test has seven
-cases: the two package-gated draw/manifest checks, the `--check` command and four oracle fixtures.
+harness that exits 0 without writing, an all-opaque image and a swapped-U/V image all exit 1. The test has
+twenty-five cases: the two package-gated draw/manifest checks, the `--check` command, four oracle fixtures, the
+mesh depth fit, a preview with non-finite readback channels, the stage files of two shaders with the same name, two
+OBJ parsing checks, seven checks of the textured path (section 6) and six CPU checks of `--camera` (section 7).
 
 `first_light.py` carves `shaders.rpf` if the work folder does not have it, translates only the chosen pair, converts
 the OBJ to the harness's mesh file (`u32 vertex_count, u32 index_count`, `(x,y,z,u,v) f32` vertices, `u32`
@@ -146,10 +148,64 @@ python -I tools/first_light.py --game "<package>" --work ~/leonida-work \
 LEONIDA_FIRST_LIGHT_DIR=~/leonida-work/first_light/out python -I tests/test_first_light.py -v
 ```
 
-## 7. Limits and next
+## 7. A camera (TEST-523)
 
-* The chosen VS applies no matrix; the tool's fit is an orthographic stand-in for the game's view/projection. A
-  real camera needs a VS that reads its constants, which is the next model/shader pair.
+`first_light.py --camera` draws the same model in perspective with a game VS that applies a world matrix and a
+view-projection matrix of its own, read from two constant buffers. The PS is the one from section 1:
+
+| stage | FSSM SHA-256 | what it does |
+|---|---|---|
+| VS | `e909a9e5a0096e00bc2b621ae3bdc96ac904f3047aed3917835774cbccb09716` | POSITION × world × view-projection to clip space (computed w); TEXCOORD to a varying |
+| PS | `ed4147a5f7514947c2eb8d79255bd80f72761ac1ba2205dd811d3e050cf1b495` | as in section 1 |
+
+The VS's scalar loads give its constant layout. The 32-bit address of a descriptor table is in s9 (the high half is
+0). The V# at table + 0x20 points at the world rows: X, Y, Z and translation, one float4 each at 0x00–0x30, of
+which the VS reads xyz. The V# at table + 0x60 points at a constant buffer whose view-projection rows sit at
+0x160–0x19f. Both matrices multiply a row vector: `world = [x y z 1] W`, `clip = [world 1] VP`. The view-projection
+block is common in the game: on 1.0.2.1, all 9 translated VS modules with exactly POSITION and TEXCOORD inputs and
+a clip w that is not the constant 1.0 read 16 dwords at 0x160 of a constant buffer, as do 123 of the 254 VS
+modules with a POSITION input and a computed w, and 1,266 of all 2,236 VS modules. That it is the view-projection
+everywhere is a hypothesis; for this VS the arithmetic shows it.
+
+The mesh keeps the model's own coordinates. The tool builds a world matrix that centres the model and scales its
+bounding sphere to radius 1. The camera sits 3 radii away, `--yaw` degrees around Z (the game's up axis) from −Y
+and `--pitch` degrees above the XY plane, with a vertical `--fov` (defaults 30, 25 and 50). The projection is
+Vulkan's, with the near and far planes just outside the sphere, so depth clips no vertex. The tool writes the two
+matrices, the two V#s (raw buffers, stride 0, sized to what the VS reads) and the table into `vk_harness`'s heap
+(`VKH_HEAP`) and the table address into s9 (`VKH_SGPRS`). The manifest's `camera` block keeps both, so `--check`
+and the test draw with the same constants. The prediction projects the same vertices with the same float32
+matrices on the CPU and interpolates UV perspective-correctly, dividing each screen-space weight by its vertex's
+clip w. The output goes to `<work>/first_light/camera`, leaving the orthographic folder for section 5.
+
+On an Apple M4 (macOS, MoltenVK 1.4.2), with the section 1 model and the default camera at 128×128:
+
+* The draw covers **6,851 of 16,384 pixels (0.418)**.
+* The centre pixel matches the predicted UV `(0.8100, 0.3096)`, and so do the four U ≠ V probes, within the
+  oracle's 2e-3. The corner keeps the clear value.
+* On a full 32×32 grid of pixel centres, the predicted coverage agrees on all 1,024. The UV agrees within 2e-3 on
+  all 428 covered ones, with the worst at 5.05e-4.
+* The same draw without the constants covers nothing and is rejected. With the camera turned 2° in yaw, the
+  centre pixel is off and the check is rejected too.
+* The pair passes `spirv-val`, and `shader_link_check.py check` reports it compatible.
+
+The model's triangles are small, so perspective-correct and affine UV differ by at most 1e-4 at the probes. The
+image therefore does not tell the two apart; `CameraTests` in `tests/test_first_light.py` checks the
+perspective-correct weights on one large triangle instead. Those CPU tests also read the constants back the way
+the VS's loads do (table, V#, num_records, rows) and compare the result with the matrices the prediction uses.
+
+```sh
+python -I tools/first_light.py --game "<package>" --work ~/leonida-work \
+    --obj ~/leonida-work/assets/data/models/<model>.obj --camera --run   # coverage window 0.2-0.99
+LEONIDA_FIRST_LIGHT_DIR=~/leonida-work/first_light/camera python -I tests/test_first_light.py -v
+```
+
+## 8. Limits and next
+
+* The camera draw (section 7) runs in `vk_harness` only. Through the D3D12 layer, s9 and the table it points at
+  have to come from root arguments, which `d3d12_first_light_test` does not set up yet.
+* `--camera` and `--dds` don't combine: the camera VS's table and the textured PS's T# both take s9 of the shared
+  push constants and heap VA 0x100, so `first_light.py` refuses the pair. A textured perspective draw needs a
+  second constant layout.
 * One model and one draw. The `levels.rpf` windows have world props with POSITION/NORMAL/COLOUR/UV layouts that
   match the `sga_dr_*`/`Rage_Transform*` families by signature; pairing one of those is the natural next image.
 * The game still cannot boot: the executable is not in the package (RT-5), so no call site selects these programs.
