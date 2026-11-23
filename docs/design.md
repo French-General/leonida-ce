@@ -146,9 +146,11 @@ add a source file, add it to `runtime\CMakeLists.txt` and to the file list in `b
 
 ```
 dotnet build tools\rpf9dump\rpf9dump.csproj -c Release -o <work>\tools\rpf9dump
-rpf9dump models|textures <archive.rpf> <work>\assets
+rpf9dump models <archive.rpf> <work>\assets
+rpf9dump textures <archive.rpf> <work>\assets
 rpf9dump ttpf <pool.ttpf> <work>\assets\ttpf
 rpf9dump audio <audio.rpf> <work>\assets
+rpf9dump xma <audio.rpf> <work>\assets
 python -I make_game.py --stages assets   # everything, in order; skips what is done
 ```
 
