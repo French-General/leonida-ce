@@ -277,6 +277,21 @@ What is implemented (all of it testable without the game):
   property reports it, so nothing is gated. The format is the depth
   format or the plane's own (`R32_FLOAT`, `R24_UNORM_X8_TYPELESS`, `X24_TYPELESS_G8_UINT`, and for D32S8
   `R32_FLOAT_X8X24_TYPELESS` and `X32_TYPELESS_G8X24_UINT`; all compared with the PC runtime, TEST-847).
+  property reports it, so nothing is gated. A depth-only source above array layer 0 is resolved in a
+  `VkRenderPass` with a framebuffer of the same two views instead of the rendering scope, on every GPU (D3D-417, a
+  driver workaround): AMD's Windows driver (32.0.21042.62, Ryzen 7 9700X iGPU) resolves a dynamic-rendering depth
+  attachment from layer 0 of the image when the multisampled view starts at another layer, while it honours the
+  resolve view's first layer. Measured with a raw Vulkan program on a 4x D32 image of four layers: a layer range
+  cleared with `vkCmdClearDepthStencilImage`, a `CLEAR` load or `vkCmdClearAttachments` reads back right through a
+  `texelFetch` of every sample, through a resolve of all four layers in one scope and through a copy of the layer
+  into a one-layer image that is then resolved, but a one-layer view resolved in a rendering scope gives layer 0
+  for every layer (view type `2D` or `2D_ARRAY`, store `NONE` or `STORE`), and views of layers 1-3 resolved in one
+  scope give layers 0-2. The render pass gives the right layer there; an RTX 3070 (610.74) does in every variant.
+  `d3d12_view_slices_test` reads a 4x D32 array back slice by slice. A depth-stencil source above layer 0 still
+  uses the rendering scope, because its two planes can be in different layouts, which the render pass's attachment
+  description cannot say without the planes' layouts at recording; a 4x D24S8 or D32S8 array is still read back
+  as its slice 0 on that driver (measured). The format is the depth
+  format or the plane's own (`R32_FLOAT`, `R24_UNORM_X8_TYPELESS`, `X24_TYPELESS_G8_UINT`, and the D32S8 pair, untested).
   What the PC runtime accepts was measured on an RTX 5070 (driver 621.24) and on WARP: `MIN` and `MAX` of either
   plane by either format, and `AVERAGE` of the depth plane by its own format only (its `Close` fails for `AVERAGE`
   by the depth format or of stencil); the layer accepts the same. WARP is no reference for two of them: a resolve
