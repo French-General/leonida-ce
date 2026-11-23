@@ -930,12 +930,39 @@ the game's present entry point (`PresentX`; the DXGI factory/swapchain and the p
     wave32) needs no chain. Where the size cannot be required (stage not listed, feature off) but the device default is
     the wanted one, the shader works as it is (`device_default`; nothing guarantees the default, so it is not logged
     as inexact); any other size is `unavailable` and logged.
-  - **Which stages can be required:** it is the driver's list, not a fixed rule. The AMD Windows driver reports
-    FRAGMENT | COMPUTE | TASK | MESH (measured on a Radeon 880M, 26.11.2, sizes 32..64), so wave64 and wave32 pixel
-    shaders run exact there; so does current Mesa RADV on GFX10+ (COMPUTE | FRAGMENT | task/mesh, Mesa main at
-    152b9cde, `src/amd/vulkan/radv_physical_device.c`, `requiredSubgroupSizeStages`; older Mesa reported compute only).
-    NVIDIA lists every stage but only size 32, so a native wave64 shader cannot get 64 there. Vertex and geometry
-    stages are in neither list.
+  - **Which stages can be required:** it is the driver's list, not a fixed rule, and AMD's Windows driver gives
+    different lists for different GPUs, on the same 26.11.2 release too:
+    - Radeon 880M (RDNA3.5, gfx1150), 26.11.2: FRAGMENT | COMPUTE | TASK | MESH, sizes 32..64, so wave64 and wave32
+      pixel shaders run exact there.
+    - RX 6800 (RDNA2 like the console; gfx1030), 26.11.2 (Windows driver 32.0.21045.29003), measured 2026-11-22:
+      COMPUTE only, sizes 32..64, default 64 (`vulkaninfo`; the device log says `requirable in stages 0x20`). No
+      size can be requested for pixel or mesh shaders (`vk_harness` chains none for `VKH_SUBGROUP_SIZE`), and at the
+      default they run 64-wide: a GLSL probe pixel shader drawn by `vk_harness` counts 64 live invocations per
+      subgroup (`subgroupBallotBitCount`) on a full-screen draw (SPIR-V 1.5 and 1.6), and `ms_w64x_ballot` (both
+      halves of a wave64) passes natively. For the translated SPIR-V 1.5 modules, made without
+      `ALLOW_VARYING_SUBGROUP_SIZE`, the specification fixes `SubgroupSize` at that default ("Varying Subgroup
+      Size"); only the driver's default could change. So wave64 pixel and mesh shaders work at the default
+      (`device_default`; the layer has no mesh PSO yet), and a wave32 pixel shader is `unavailable`: two of its
+      waves share a subgroup. `ps_bitmask_perm` shows it: lanes 0-31 exact, while the
+      other 2,048 of 4,096 pixels read `v_mbcnt_lo` = 32 instead of their lane (the fixture's check judges lanes
+      0-31 only). Of the 1,127 wave32 pixel shaders in the corpus, 1,010 contain a `v_readlane`/`v_writelane`/
+      `v_readfirstlane`, 146 a `v_mbcnt`, 105 an `s_bcnt1`/`s_ff1` of a lane mask, and all 1,127 a branch on EXEC
+      or VCC or an SCC vote on a mask, which the translator decides by a subgroup vote (117 have only those). 926
+      also have `v_permlanex16` and row DPP and 826 quad ops, which stay inside a 32-lane half as translated
+      (`tools/wave32_pixel_scan.py`; counts of candidates, not verdicts).
+    - Ryzen 7 9800X3D iGPU (RDNA2, gfx1036), Windows driver 32.0.21045.5002: COMPUTE only, sizes 32..64; RX 9070 XT
+      (RDNA4, gfx1201), Windows driver 32.0.31041.1004: FRAGMENT | COMPUTE | TASK | MESH, sizes 32..64
+      (@AC-Storm-YT, `vulkaninfoSDK` from Vulkan SDK 1.4.363.1,
+      [#313](https://github.com/ItsNotRexed/Leonida/issues/313#issuecomment-7086133354)). The same two lists on
+      AMD 26.11.2 (Windows drivers 32.0.21045.29003 and 32.0.32029.2010), where `ps_bitmask_perm` also shows the
+      live fragment width: the gfx1036 iGPU gets the RX 6800's split (2,048 of 4,096 pixels read lane 32), the
+      RX 9070 XT is exact on all 4,096 (@AC-Storm-YT,
+      [#3982](https://github.com/ItsNotRexed/Leonida/pull/3982#issuecomment-7088523396) and #4225).
+
+    Current Mesa RADV on GFX10+ lists COMPUTE | FRAGMENT | task/mesh (Mesa main at 152b9cde,
+    `src/amd/vulkan/radv_physical_device.c`, `requiredSubgroupSizeStages`; older Mesa reported compute only), so
+    pixel shaders run exact there. NVIDIA lists every stage but only size 32, so a native wave64 shader cannot get 64
+    there. Vertex and geometry stages are in neither list.
   - **A size the device cannot give** is logged once per stage with the first shader's name (and again at 10, 100,
     1000 shaders of that stage): `[rt] d3d12: <name> (<stage>) is a 64-wide shader but this device cannot require that
     subgroup size ...`. For compute and mesh the fix is the build, `--wave64-emulate` (`make_game.py
@@ -947,7 +974,7 @@ the game's present entry point (`PresentX`; the DXGI factory/swapchain and the p
 
 Known gaps: set 0 in pipelines (the device keeps the bindless set, but no pipeline declares or binds it yet) and
 therefore every translated shader that declares bindings; tessellation, geometry and mesh pipelines,
-multisampled pipelines, several viewports, primitive restart; subgroup size for mesh pipelines (the decision covers them, no mesh PSO exists to chain it into), and for wave64 vertex, geometry and, on a GPU that cannot require 64 for pixel shaders (NVIDIA), pixel shaders, which have no emulation (SHADER-10);
+multisampled pipelines, several viewports, primitive restart; subgroup size for mesh pipelines (the decision covers them, no mesh PSO exists to chain it into), and for wave64 vertex, geometry and, on a GPU that cannot require 64 for pixel shaders (NVIDIA), pixel shaders, which have no emulation (SHADER-10); wave32 pixel shaders on a GPU that runs the fragment stage 64-wide and cannot require 32 for it (RDNA2 under AMD's Windows driver, "Subgroup size" above), where two waves share a subgroup;
 the game's present entry point (DXGI factory/swapchain or `PresentX`; the presenter above is what either
 calls), HDR and fullscreen; buffer and constant-buffer views (UAV clears read the descriptor bytes, so they do
 not wait on view creation), typeless volume RTVs, depth-stencil resolves to a destination offset other than
@@ -1208,6 +1235,10 @@ and any validation error fails them.
     .asm header where the PSO required 64: 4096 of 4096 on the 880M. The control is asserted to differ only where the
     default pixel subgroup is not 64; the 880M runs pixel shaders 64-wide by default, so its control is exact too. On
     the RTX 5070 the shader gets no 64 (0 of 4096 exact, not judged).
+  - **RX 6800 (RDNA2, AMD Windows driver 26.11.2, 2026-11-22):** the compute requests take effect (wave32 compute
+    goes from 64-wide to 32-wide), but nothing can be requested for the fragment stage: the pixel probe runs at the
+    64-wide default for the wave64, wave32 and emulated entries (outcomes `device_default`, `unavailable`, `emulated`), and
+    `ps_w64x_readlane` is not judged; its control, at the 64-wide default, is 4096 of 4096 exact.
 - `d3d12_descriptor_test`: descriptors through the proxy.
   - Copies, checked on the slots' bytes: one run, range lists of different shapes on each side, null size
     arrays, and a destination longer than its source.

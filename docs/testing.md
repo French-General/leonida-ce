@@ -238,12 +238,15 @@ partition invariance"). `runtime/test/shaders/w64_graphics.py` checks those tier
 must differ. CI has no GPU, and the CPU wave interpreter (`tests/semantic/test_wave64_halves.py`) runs vertex shaders
 only, so this comparison needs real hardware.
 
-Vulkan can require a subgroup size for pixel shaders (`VKH_SUBGROUP_SIZE`) but not for vertex or geometry shaders, so
-those two use a RADV switch instead: on GFX10 and newer, RADV runs them as wave64 by default and as wave32 with
-`RADV_PERFTEST=gewave32`. The runner sets it itself and checks the result with a probe fixture per stage
-(`vs_w64_c_lane_id`, `gs_w64_c_lane_id`): the largest lane id must reach 32 at wave64 and stay below 32 at wave32. On
-other drivers (AMD Windows, NVIDIA, Intel) the probe sees no change, and only the default-size checks run; tier C is
-then a `SKIP`, not a failure.
+Vulkan can require a subgroup size for pixel shaders (`VKH_SUBGROUP_SIZE`) where the driver lists the fragment stage in
+`requiredSubgroupSizeStages`, but not for vertex or geometry shaders, so those two use a RADV switch instead: on GFX10
+and newer, RADV runs them as wave64 by default and as wave32 with `RADV_PERFTEST=gewave32`. The runner sets it itself
+and checks the result with a probe fixture per stage (`vs_w64_c_lane_id`, `gs_w64_c_lane_id`): the largest lane id
+must reach 32 at wave64 and stay below 32 at wave32. On other drivers (AMD Windows, NVIDIA, Intel) the probe sees no
+change, and only the default-size checks run; tier C is then a `SKIP`, not a failure. Not every driver lists the
+fragment stage either: on an RX 6800 (RDNA2) with AMD's Windows driver 26.11.2 the list is compute only, no size can
+be requested for pixel shaders (they run at the 64-wide default), and the tier C pixel fixtures are a `SKIP` too
+(2026-11-22, [d3d12_vulkan.md](d3d12_vulkan.md), "Subgroup size").
 
 Build and run it on Linux with RADV, pinned to one GPU (`LEONIDA_VK_DEVICE`, see "Choosing the GPU"):
 
