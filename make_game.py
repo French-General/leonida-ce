@@ -695,6 +695,19 @@ def visual_cpp_tools_ok() -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def windows_powershell() -> str:
+    """Windows PowerShell 5.1 by its full path, to start scripts/build_runtime.ps1.
+
+    CreateProcess searches System32, but powershell.exe is in System32\\WindowsPowerShell\\v1.0, so the bare name is
+    found only while that folder is on PATH. On a PC whose PATH had lost it the runtime stage ended in a
+    FileNotFoundError traceback, after the shader and asset stages had already run. The bare name is still the
+    answer where the file is not at its usual place.
+    """
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    exe = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    return exe if os.path.isfile(exe) else "powershell"
+
+
 def xwin_dir() -> "str | None":
     """The xwin /winsysroot splat for the cross-build: XWIN_DIR, else the folder docs/testing.md uses."""
     d = os.path.expanduser(os.environ.get("XWIN_DIR") or XWIN_DEFAULT)
@@ -1729,7 +1742,7 @@ def runtime(game: str, out: str, v: dict, runtime_build: str | None = None, jobs
         build = cross_build_runtime(jobs)
     else:
         log("runtime: building")
-        run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        run([windows_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              os.path.join(ROOT, "scripts", "build_runtime.ps1"), "-Jobs", str(jobs)])
         build = os.path.join(ROOT, "runtime", "build")
     artifacts = [os.path.join(build, name) for name in RUNTIME_FILES]
