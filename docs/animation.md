@@ -635,7 +635,13 @@ fields are in the object table above. Measured on all 17,247 `.motion` clips:
   sample count at `+0x90`, `+0x90`, `+0x50` and `+0xA0`: on all 2,281 of them that are a `.motion`'s only node, it
   equals the number of `+0x90` sample lists below. The word list resolves 1,135 of their 8,404 axis names, the same
   names as type 3 (`verticalheight`, `yawangle`, `surfaceincline` the most); `anim_clips.py` counts them as
-  `motion_node_axis_name:<type>:<name or unresolved>`.
+  `motion_node_axis_name:<type>:<name or unresolved>`. Types 4–8 have a second `{ptr, count}` array at `+0x20`
+  (found by @ismailchaka1): null on all 2,644 type-4 nodes and on 431 of the 482 type-5 nodes, present on the other
+  51 type-5 nodes and on every type-6 (295) and type-8 (98) node. On all 393 type-6 and type-8 nodes its 16-byte
+  items read `{u32, u32 0, u32, u32 0}` and none of those words is one of the node's axis names or the `.motion`'s
+  child or dictionary hashes; on type 5 only 2 of the 51 arrays have that shape. The item count is 5 on 184 type-6 nodes, 3 on 57, 2 on 44; 9 on 47 type-8 nodes and 6 on 42.
+  It equals the child count on only 5 of the 444 nodes. Not decoded; `anim_clips.py` counts the item counts as
+  `motion_node_pairs:<type>:<count or null>`.
 - **Type 3: one sampled axis.** It has one axis entry, then 1–16 `{u32 sample index, f32 value}` items and the
   axis min and max. On all 10,171 (29,123 samples), the items are sorted by value, min and max are the first and
   last values, and the sample indices are 0..n−1 in some order. They are not child indices: the sample count
