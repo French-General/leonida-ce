@@ -93,12 +93,35 @@ Seven u32 words.
 | 0, 1 | Unknown | The same two values in all 29. |
 | 2 | 0 | All 29. |
 | 3 | `NumThreadsX` (bits 15..0), `NumThreadsY` (31..16) | Measured: equal to the container's `PSV0` thread-group size in all 29. |
-| 4 | `NumThreadsZ` (15..0); bit 20 set = wave32 | Z measured against `PSV0` in all 29. Wave size inferred: bit 20 is clear in exactly the programs whose code has a wave64 marker (`rdna2spirv`'s `WAVE64_RE`) in 28 of 29; the 29th has no marker either way. |
+| 4 | `NumThreadsZ` (15..0); bit 20 set = wave32 | Z measured against `PSV0` in all 29. Wave size: bit 20 is set in 24 programs and clear in 5, and nothing measured contradicts it (below the table). The translator takes it as the wave size. |
 | 5 | `COMPUTE_PGM_RSRC1` | Inferred. `FLOAT_MODE` 0xC0, `DX10_CLAMP` and `MEM_ORDERED` in all 29. With a VGPR granule of 8 for wave32 and 4 for wave64, the highest VGPR the code uses is inside the allocation in all 21 programs that decode with no invalid word, at its last register in several. |
 | 6 | `COMPUTE_PGM_RSRC2` | Inferred. `LDS_SIZE` covers the largest `ds_*` offset in all 29. `USER_SGPR` plus the enabled `TGID` SGPRs cover the SGPRs the code reads before writing them in 20 of those 21 (8 or 14 user SGPRs here). In the 21st, a wave64 program, the only SGPRs past them are the carry-out destination of a `v_add_co_ci_u32_e64`, which the check counted as a read. |
 
-`rdna2spirv.py` reads words 3, 4 (low half) and 6 from `fspx/<name>.json` where it reads the FSSM header for a game
-compute shader.
+`rdna2spirv.py` reads words 3, 4 and 6 from `fspx/<name>.json` where it reads the FSSM header for a game compute
+shader: the thread-group size, `RSRC2`, and the wave size from word 4 bit 20 (the `wave32` field).
+
+**Word 4 bit 20 is the wave size.** Over the 29 programs of 1.0.2.1 (`tests/semantic/test_fspx_wave_size.py` has
+the rule):
+
+- **Strict markers (measured).** A strict wave64 marker (`rdna2spirv`'s `WAVE64_RE`: `exec_hi`, `v_mbcnt_hi`,
+  `*_saveexec_b64` and the 64-bit lane-mask SOP ops) is in 4 of the 5 programs with the bit clear and in none of the
+  24 with it set. A wave32 marker (`*_saveexec_b32`, `*_wrexec_b32`) is in 4 programs with the bit set and in none
+  with it clear.
+- **VGPR granule (measured).** In the 21 programs that decode with no invalid word, the highest VGPR is inside the
+  `RSRC1` allocation with the granule the bit gives (8 for wave32, 4 for wave64) in all 21. All 18 of those with the
+  bit set use a VGPR past what the wave64 granule would allocate. The 3 with the bit clear would fit either granule.
+- **`PSV0` (measured).** Its expected wave lane counts are stated in 5 programs and agree with the bit in all 5 (64 in
+  3 programs with it clear, 32 in 2 with it set); the other 24 leave them open (0 and the maximum).
+- **Thread groups (measured; the reading is a hypothesis).** The programs with the bit clear have 64 or 256 threads
+  per group; 17 with it set have 32, which as one wave64 would leave half its lanes idle.
+- **`_b64` ops on `vcc` are not markers (measured counts; the reading is a hypothesis).** The three wave32 programs
+  the old heuristic called wave64 write `vcc` from an SGPR pair with `s_mov_b64` (2 to 5 times each) and otherwise use
+  `vcc_lo` and `vcc_hi`, including `vcc_lo` as the lane mask of `v_cmp`/`v_cndmask`: `vcc` held as an ordinary pair.
+- **The one program with no evidence beyond the bit.** It has the bit clear and no marker either way, and its highest
+  VGPR is the last register of the wave64 allocation, so the bit alone decides.
+
+A strict marker against the bit makes the translation refuse the program, as a contradicting FSSM header does. A
+program whose kind 0 is too short for word 4 keeps the code heuristic.
 
 ## Kind 6: the program
 
@@ -202,6 +225,12 @@ and `RSRC2`).
 
 With `tools/fspx_unpack.py --disasm` and `tools/rdna2spirv.py` on the 29 programs (`main` at `aa2988cc` with the
 `v_fma_mix*` literal repair in [design.md](design.md), "Printed encodings"):
+**Wave size.** On `main` at `aa2988cc`, `make_game.py`'s FSPX step translates 26 of the 29, and each now gets the
+wave size of its dispatch state. Before, the code heuristic gave 4 of the 26 the other size: one wave64 program
+was translated as wave32, and three wave32 programs as wave64, because they write `vcc` with `s_mov_b64`. The
+translated and `spirv-val`-valid count is the same (26) either way. The breakdown below was measured when 17 translated.
+
+With `tools/fspx_unpack.py --disasm` and `tools/rdna2spirv.py` on the 29 programs:
 
 - **27 translate and pass `spirv-val`**, 11 of the 13 programs that use dot4 among them (design.md, "Signed-byte
   dot products"). Without the repair, 26: the `v_fma_mix_f32` it is for is refused.
