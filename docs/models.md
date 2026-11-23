@@ -20,8 +20,8 @@ reader. Commits `917e9b9..e293917` add upstream `v1.2` model-discovery changes (
 optional fragment pointers, skipping texture dictionaries in drawable-dictionary scans, 16-bit
 bone-palette indices, probe-count parity, and zero-radius drawables) plus BCPack BC1/BC3/BC4/BC5
 decoding (PR #7). A full ten-archive re-count at `e293917` recovers **382,781 models** (**+32,530**
-over `917e9b9`'s 350,251) with **0 decode failures**; the `levels.rpf` fragment, bone-binding and
-triangle cells are not independently reproduced (see the table note), and the earlier
+over `917e9b9`'s 350,251) with **0 decode failures**, **55,417 fragments** and **2,636,248,990
+triangles** (the `levels.rpf` cells from a full export, see the table note), and the earlier
 `917e9b9`, `c3708fb`, and `48557ea` measurements are kept below as controls. This page records the
 measured state; it is not a competing patch.
 
@@ -60,22 +60,29 @@ effect of upstream `v1.2` PRs #8–#12:
 | `pack/story000_restofworld/...` | 1 | **3** | 3 | 0 | 0 | 0 | 2,620 | 0 | 0 |
 | `pack/story000/story000.rpf` | 4,195 | **7,461** | 4,156 | 3,305 | 0 | 0 | 39,861,747 | 0 | +1 |
 | `packs.rpf` | 26,389 | **26,585** | 23,720 | 2,865 | 2,865 | 26,585 | 64,966,572 | 0 | +2,551 |
-| `levels.rpf` | 235,330 | **343,327** | 130,239 | 213,088 | † | † | † | 71 | +29,327 |
+| `levels.rpf` | 235,330 | **343,327** | 130,239 | 213,088 | 50,731 | 59,544 | 2,509,947,536 | 71 | +29,327 |
 | `textures.rpf` | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | `common.rpf`, `core_restofworld001` | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **270,819** | **382,781** | **159,511** | **223,270** | **†** | **†** | **†** | **72** | **+32,530** |
+| **Total** | **270,819** | **382,781** | **159,511** | **223,270** | **55,417** | **89,887** | **2,636,248,990** | **72** | **+32,530** |
 
-† `levels.rpf` was counted with `count.exe recover --verify`, which reports candidates, models,
-dictionary children, standalone models, rejects and decode failures only: no `levels.rpf` manifest
-exists and the harness emits no fragment, bone-binding or triangle field. Those three `levels.rpf`
-cells, and the totals that would include them, are therefore **not independently reproduced**. The
-other archives measure 4,686 fragments, 30,343 bone-bound and 126,301,454 triangles.
+`levels.rpf` was first counted with `count.exe recover --verify`, which reports candidates, models,
+dictionary children, standalone models, rejects and decode failures only, so its fragment,
+bone-binding and triangle cells were open. A full `rpf9dump models <levels.rpf> <out>` export at
+`e293917` (25 min, about 340 GB of OBJ, deleted afterwards) fills them from its manifest: 235,330
+candidates, 235,259 recovered, 71 not recovered, 343,327 entries, `fail=0`, the recovery count to
+the row. Its `Drawable` field is set on 130,239 entries and null on 213,088, the dictionary-children
+and standalone cells above (3,694 dictionaries have a single child, so counting shared offsets
+instead gives 126,545 / 216,782). `IsFragment` is true on 50,731 entries and `HasBoneBindings` on
+59,544; `Tris` sums to 2,509,947,536. The same counting on a fresh `data.rpf` export gives that
+row's 268 / 2,907, 1,758, 2,891 and 3,387,016. The other archives measure 4,686 fragments, 30,343
+bone-bound and 126,301,454 triangles.
 
 Every recovered entry was read back from its archive segments and decoded through
 `RageModelDecoder.Decode`: **382,781 / 382,781 decoded, 0 decode failures**. The other archives
 measure **236,311 meshes**, **104,183,438 vertices**, **126,301,454 triangles** and **512 embedded
-textures**; the `levels.rpf` mesh/vertex/triangle/embedded cells are not independently reproduced
-(see the table note).
+textures**; `levels.rpf` adds 3,854,587 meshes, 2,364,218,711 vertices, 2,509,947,536 triangles and
+1,293 embedded textures (the export's own summary line), for **4,090,898 meshes**, **2,468,402,149
+vertices**, **2,636,248,990 triangles** and **1,805 embedded textures** over all ten archives.
 
 What moved between `917e9b9` and `e293917`:
 
@@ -129,7 +136,7 @@ entries are dictionary children.
 ### Re-count at `e293917`
 
 A full `rpf9dump models` re-run over the same archives at the current pin (the manifests are
-local; `levels.rpf` has a recovery count but no full OBJ export):
+local; `levels.rpf` was exported separately, see the table note above):
 
 | Archive | Rows | Non-fragment | Fragments | Delta vs `917e9b9` |
 |---|---:|---:|---:|---:|
@@ -141,7 +148,8 @@ local; `levels.rpf` has a recovery count but no full OBJ export):
 | `story000_restofworld` | **3** | 3 | 0 | 0 |
 | `common`, `textures`, `story000_script`, `core_restofworld001` | 0 | 0 | 0 | 0 |
 | **Total, excluding `levels.rpf`** | **39,454** | **34,768** | **4,686** | **+3,203** |
-| `levels.rpf` | recovery count only, see below | - | - | +29,327 |
+| `levels.rpf` | **343,327** | 292,596 | 50,731 | +29,327 |
+| **Total** | **382,781** | **327,364** | **55,417** | **+32,530** |
 
 The gain outside `levels.rpf` is fragments: upstream `v1.2` PRs #8-#12 recover zero-radius
 fragments that the earlier export skipped (2,551 in `packs.rpf`, 594 in `data.rpf`), plus one
@@ -150,8 +158,8 @@ is 0.
 
 `levels.rpf` was re-counted at `e293917` (10 shards over 235,330 candidates): **343,327 models**
 (130,239 dictionary children + 213,088 standalone), against 314,000 at `917e9b9` (206,981
-candidates; 130,225 children + 183,801). The +29,327 is a recovery count, not a row-for-row delta,
-and no full OBJ export was run. Triangle totals were not re-run either.
+candidates; 130,225 children + 183,801). The +29,327 is a recovery count, not a row-for-row delta.
+The full OBJ export at `e293917` (table note above) gives the same 343,327 rows.
 
 The last column is the `c3708fb` recovery for comparison. `story000`'s standalone count is
 3,304 vs 3,305; the full new-pin standalone total is 190,765, 27 below the `c3708fb` 190,792.
@@ -248,9 +256,8 @@ reproduced the ten-archive total. The `48557ea` column is the pre-fix control:
 The `packs.rpf` row is the pre-dictionary-root control: at `917e9b9` that archive recovers
 24,034 models (26,585 at `e293917`), and the other archives' new-pin counts are in the table above.
 The rows here are the `c3708fb` measurements (190,792 models); the `917e9b9` re-count is 350,251,
-and the `e293917` re-count outside `levels.rpf` is 39,454. Triangle totals have not been re-run at
-either new pin; the `e293917` `levels.rpf` geometry cells are not independently reproduced (see
-the table note above).
+and the `e293917` re-count outside `levels.rpf` is 39,454. The `e293917` triangle totals of all ten
+archives, `levels.rpf` included, are in the table above.
 
 At `c3708fb`, every candidate is recovered, read back and decoded: 0 decode failures, 0 readback
 failures, no duplicate model names, and 2.22 billion triangles (1.95 billion before). The
@@ -778,13 +785,12 @@ jacket's `GM_U01_*` helpers); every weight sums to 255 and the rest-pose reconst
 1. **Done:** [rpf9-explorer PR #1](https://github.com/breadbbbb/rpf9-explorer/pull/1) is merged upstream.
 2. **Done:** the pin is `e293917` (was `917e9b9`, originally `48557ea`).
 3. **Done:** all ten `MODEL_ARCHIVES` were re-counted and read-back decoded at `e293917` (**382,781
-   models**, **0 decode failures**; table above; the `levels.rpf` geometry cells are not
-   independently reproduced).
+   models**, **0 decode failures**; table above, `levels.rpf` geometry from a full export).
 4. Investigate the 71 remaining unrecovered fragment candidates in `levels.rpf` (and the 1
    texture-dictionary candidate in `textures.rpf`) if further upstream recovery is wanted.
 5. Keep issue #29 in sync with the `e293917` counts.
 3. **Done:** `tools/rpf9dump models` was re-run over the model-bearing archives at `e293917`;
    the six non-`levels.rpf` archives total 39,454 rows (+3,203, almost all recovered fragments).
-   `levels.rpf` has a recovery count (343,327 models, +29,327) but no full OBJ export; triangle
-   totals were not re-run.
+   `levels.rpf` has the same 343,327 rows in a full export (50,731 fragments, 2,509,947,536
+   triangles).
 4. Keep the README and issue #29 in sync with the new counts.
