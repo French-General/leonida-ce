@@ -84,6 +84,9 @@ Each run stages its pair in `<work>/first_light/dxbc` and translates it into `<w
 are removed at the start of a run, so they hold that run's two shaders and nothing an earlier run selected; do not
 keep files there. The output folder (`first_light/out` or `--out`) and `<work>/shaders` are not emptied. If either
 folder is a symlink or a junction, or a file in it cannot be removed, the run stops and names it.
+With `--keep-z` or `--no-fit`, a triangle can cross the near or far clip plane. For the
+passthrough VS, the CPU predicts a UV only where the interpolated depth is between 0 and 1,
+inclusive. If several triangles cover a probe there, the last one drawn supplies its UV.
 
 ## 4. The harness mode
 
