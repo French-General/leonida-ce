@@ -223,6 +223,8 @@ addEventListener("blur", () => { keys.clear(); dragging = false; });
 const world = await loadWorld();
 addEventListener("keydown", e => {
   keys.add(e.code);
+  // Track Ctrl for slow movement, but leave modified shortcuts to the browser.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "KeyF" && !e.repeat) wire = !wire, applyWire();
   if (e.code === "KeyT" && !e.repeat) clay = !clay, applyClay();
   if (e.code === "KeyG" && !e.repeat) toggleBounds();
