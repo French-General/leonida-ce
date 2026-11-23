@@ -430,8 +430,9 @@ counts.
 
 ## Vehicle navmesh settings (`CVehiclePoints`, `common.rpf`)
 
-Navmeshes on vehicles that peds walk around on are configured outside this archive, by 32 `CVehiclePoints` XML
-documents in `common.rpf` (see [gamedata.md](gamedata.md)). One document per vehicle; counts only, no names.
+The settings for navmeshes on vehicles that peds walk around on are outside this archive, in 32 `CVehiclePoints`
+XML documents in `common.rpf` (see [gamedata.md](gamedata.md)); the meshes themselves are stored here (below).
+One document per vehicle; counts only, no names.
 
 | Field | Documents | Values |
 |---|---:|---|
@@ -456,11 +457,51 @@ rated vehicles. Of the mod part names, only the 5 `RoofModName` values that are 
 49 chassis, 32 utility, 35 exterior-propset and 4 interior names match no archive entry, so they are probably
 fragment-part or kit names rather than models.
 
-Not measured here (hypothesis): whether the vehicle navmeshes are generated at runtime from these parameters or
-stored elsewhere, and which vehicles the 31 are (wagons, boats and trains would fit the field set).
+### Stored vehicle navmeshes (ASSET-332)
+
+The vehicle navmeshes are **stored**, not left to a runtime generator: the 161 local-space non-grid meshes in this
+archive (`flags = 7`, the non-grid partition above) were built on cell grids, and 9 of them on the one cell size
+only these documents set. Measured over all 161 on 1.0.2.1 with `tools/navmesh_cell_fit.py`:
+
+- **Cell grid.** A mesh's `u16` vertices are dequantised over its `+0x60` extents (step `extent / 65535`, at most
+  0.0011 m on these meshes) and an x or y coordinate counts as on a grid of cell size `c` when it is within 1.5 steps
+  of a multiple of `c`. Every mesh fits one of the three nonzero `fNavOverrideRecastCellSize` values: at
+  least 90.9% of its x and y coordinates sit on that grid (20,100 vertices in all). The quantisation step alone
+  cannot put them there: over all 65,536 levels of a mesh's own step, at most 5.1% land on its grid (mean 1.0% at
+  0.0625, 1.7% at 0.03125, 0.7% at 0.0325). Taking the coarsest of the three that fits:
+
+  | Cell size | Meshes | Distinct x × y extents | Documents with that value |
+  |---:|---:|---:|---:|
+  | 0.0625 | 87 | 42 | 1 |
+  | 0.03125 | 65 | 20 | 23 |
+  | 0.0325 | 9 | 1 | 3 |
+
+  No mesh fits both 0.03125 and 0.0325. Of six other values tried (0.1, 0.125, 0.15, 0.2, 0.25, 0.5), only 0.125
+  fits any mesh: 2 at the 90.9% cut (4 at 90%), all among the 87 at 0.0625, whose coordinates a coarser grid can
+  also hold. Every mesh's x and y extents are a whole number of its cells.
+- **The static tiles are on a grid too.** Every 200th static 128 m tile (137 tiles) fits 0.0625 and 0.03125 (chance
+  baselines 9.4% and 18.8% at their step of 128/65535 m), and none fits 0.0325. So the world navmesh is built on a
+  0.0625 grid as well, and a fit at 0.0625 or 0.03125 alone does not show that a mesh used a vehicle override.
+- **The 0.0325 meshes.** 0.0325 is the one value that is not a power of two and that no static tile fits, so it
+  is the test that ties meshes to these documents. All 9
+  meshes on it share one footprint, 1.755 × 5.1675 m, which is exactly 54 × 159 cells of 0.0325. They are flat
+  (z extent 0) and have 47 vertices (6) or 55 (3). The 3 documents with that value name 3 different models.
+- **No name hash.** None of the 161 meshes (nor the whole-world coarse mesh) contains the `joaat` of any of
+  the 31 model names, as written, lower-cased, or with `.yft` appended, at any byte offset. So a mesh is not tied
+  to its model by a stored name hash. Where the link is is not measured; the encrypted table of contents is one
+  candidate (see [rpf.md](rpf.md)).
+
+Not measured (hypothesis): which mesh belongs to which model, and so which vehicles they are. 161 meshes for 31
+models means either several meshes per model (states or variants) or meshes for vehicles without a
+`CVehiclePoints` document. The 87 meshes at 0.0625 against 1 document with that value, and the static tiles on the
+same grid, would fit 0.0625 being the default cell size when the override is 0 or absent (5 documents: 4 with 0,
+1 without the field).
 
 ## Tools
 
+- `tools/navmesh_cell_fit.py` (stdlib-only) measures the cell grid of the local-space meshes and, with `--common`,
+  counts the `CVehiclePoints` cell sizes and searches the meshes for the models' name hashes; `--static-every N`
+  adds a static-tile control. It prints aggregates only (ASSET-332).
 - `tools/navmesh_index.py` (stdlib-only) performs the quick `0DRP` header inventory (`offset`, sizes, version, `+0x20`,
   raw `+0x60`/`+0x68`).
 - `tools/navmesh_decode.py` (stdlib-only) decodes all four resource classes (`0DRP`, `0x00010015`, `grid`, `PSIN`),
