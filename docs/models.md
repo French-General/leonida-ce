@@ -635,7 +635,21 @@ They are reachable through the **effect records** in `shaders.rpf` (found by @je
 are little-endian:
 
 1. **The effect record.** It starts with a one-byte name length and the name, including its terminator, then a
-   u32 whose meaning is not known. Six stage lists follow, each a u32 count and that many u32 ordinals.
+   u32 (below). Six stage lists follow, each a u32 count and that many u32 ordinals.
+
+   The u32 is a size computed from the record's own counted fields (@jeremygold02). Let G be the ordinals in the
+   six lists, T the techniques, P the passes, and W the post-pass word count. Let A and B be the two block
+   lengths after them, E the post-pass entry count, I the payload bytes of the entries whose tag is a length
+   (not `0x80000000`), and S the string-pool length. Lengths don't count their own prefixes. Then, with
+   `x = 4W + A + B`:
+
+   ```text
+   word = 48 + 8(G + T + E) + 32P + I + S + (round_up(x, 8) if E else x)
+   ```
+
+   This holds for all 932 records of this build (910 + 22, recomputed here). The value never equals the record's
+   serialized length (0 of 932), so the next record is found by the sequential walk, not by this word. What the
+   runtime uses it for is unknown. Groups 3 and 4 are empty here, so their share of it is unmeasured.
 
    `shaders.rpf` holds **two shader databases** (SGD5), and an ordinal counts within one of them (found by
    @jeremygold02). Each database stores six program groups, each a u32 count followed by its programs. A program
@@ -682,7 +696,8 @@ record, technique and pass. The record and pass format below was also checked by
 
 Two things are still open:
 
-- **The u32 after an effect's name.** What it means is still unknown.
+- **The u32 after an effect's name.** It is reproduced from the record's fields; how the runtime uses it is
+  still unknown.
 - **Which technique and pass the game draws with.** That is a run-time choice; it is presumably made in the
   executable (RT-5).
 
