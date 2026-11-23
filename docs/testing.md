@@ -145,10 +145,13 @@ python -I runtime/test/shaders/mullit_readback.py <out-dir> <harness-directory>
 
 For D3D12/runtime tests, `LEONIDA_VK_VALIDATION=1` enables `VK_LAYER_KHRONOS_validation`. When running with validation, set `DISABLE_RTSS_LAYER=1` and `DISABLE_VULKAN_OBS_CAPTURE=1` if MSI Afterburner (RivaTuner) or OBS is installed: their overlay layers can add unsupported swapchain usage, and in an elevated (administrator) terminal the loader ignores `VK_LOADER_LAYERS_DISABLE=~implicit~` (see "Known problems").
 
-The shader test programs (`vk_harness`, `vk_compute_test`, `vk_store_test`, `vk_texture_test`, `vk_bindless_test`,
-`vk_sampler_test`, `vk_image_fuzz`) don't read `LEONIDA_VK_VALIDATION`. To check one, load the layer through the
-loader and run it by hand, for example
-`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_KHRONOS_VALIDATION_GPUAV_ENABLE=1 vk_compute_test x.spv 1 dump`.
+`vk_compute_test`, `vk_bindless_test` and `vk_image_fuzz` read `LEONIDA_VK_VALIDATION` too (`vk_compute_test`
+through `runtime/test/vk_validation.h`): each validation message goes to stderr and a validation error makes the
+program exit 1, so `LEONIDA_VK_VALIDATION=1 VK_KHRONOS_VALIDATION_GPUAV_ENABLE=1 python scripts/run_gpu_tests.py` fails
+every compute test the layer objects to; the program's output ends with "N validation errors". The other shader test
+programs (`vk_harness`, `vk_store_test`, `vk_texture_test`, `vk_sampler_test`) don't read it.
+To check one, load the layer through the loader and run it by hand, for example
+`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_KHRONOS_VALIDATION_GPUAV_ENABLE=1 vk_harness vs.spv ps.spv out.raw`.
 The layer prints its messages to stdout and the program's exit status doesn't change, and `run_gpu_tests.py` shows
 only each test's last line, so read the program's own output. GPU-assisted validation (`..._GPUAV_ENABLE=1`)
 instruments the translated shaders and reports what they actually do at run time: out-of-bounds buffer accesses, and
