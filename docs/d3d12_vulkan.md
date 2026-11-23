@@ -2075,10 +2075,13 @@ The trace will enumerate them.
   refused for an `R8G8B8A8` texture (its clear failed `Close` and its draws were dropped), and a typed `B8G8R8A8`
   texture's RTV kept the image's format whatever the view named, so its clears came out in BGRA order and without
   the sRGB encoding (its draws were right already, as they use the PSO's format). A format the list doesn't name
-  stays refused; a typed `B8G8R8A8` texture without a list still ignores the RTV's format, as before.
-  `d3d12_clear_test` compares 8 such textures with WARP in full and rectangle clears (the X byte of an X8 view left
-  out: WARP and AMD write different values there) and checks that 3 unlisted formats get no RTV, `d3d12_draw_test`
-  draws through the same views, and `typeless_rtv_test` checks the replay's crossing and its refusals.
+  is refused, on a typed `B8G8R8A8` or `B8G8R8X8` texture as on an `R8G8B8A8` one (the `B8G8R8A8` and
+  `B8G8R8X8` ones kept the image's format before); a typed `B8G8R8A8` texture without a list still ignores the
+  RTV's format, as before. `d3d12_clear_test` compares 8 such textures with WARP in full and rectangle clears
+  within 1 (the X byte of an X8 view left out: WARP and AMD write different values there) and checks that an
+  `R8G8B8A8`, a `B8G8R8A8` and a `B8G8R8X8` texture each take their own and their listed format and refuse 3
+  formats their lists don't name, `d3d12_draw_test` draws through the same views, and `typeless_rtv_test` checks
+  the replay's crossing and its refusals.
 - **Typed RTV clears:** `ClearRenderTargetView` still takes `FLOAT[4]`. For every integer RTV format the device
   exposes (`R8G8`, `R8G8B8A8`, `R16G16`, `R16G16B16A16`, `R32`, `R32G32` and `R32G32B32A32` in `_UINT` and `_SINT`,
   plus `R10G10B10A2_UINT`; `R8`/`R16` `_UINT`/`_SINT` are handled in replay too) convert those values numerically
