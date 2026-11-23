@@ -814,7 +814,7 @@ the game's present entry point (`PresentX`; the DXGI factory/swapchain and the p
       AMD 26.11.2 (Windows drivers 32.0.21045.29003 and 32.0.32029.2010), where `ps_bitmask_perm` also shows the
       live fragment width: the gfx1036 iGPU gets the RX 6800's split (2,048 of 4,096 pixels read lane 32), the
       RX 9070 XT is exact on all 4,096 (@AC-Storm-YT,
-      [#3982](https://github.com/ItsNotRexed/Leonida/pull/3982#issuecomment-7088222828) and #4225).
+      [#3982](https://github.com/ItsNotRexed/Leonida/pull/3982#issuecomment-7088523396) and #4225).
 
     Current Mesa RADV on GFX10+ lists COMPUTE | FRAGMENT | task/mesh (Mesa main at 152b9cde,
     `src/amd/vulkan/radv_physical_device.c`, `requiredSubgroupSizeStages`; older Mesa reported compute only), so
