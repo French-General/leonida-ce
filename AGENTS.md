@@ -64,7 +64,7 @@ These need no game files and run in seconds:
 ```powershell
 python -m compileall -q make_game.py tools tests
 python -I make_game.py --help
-python -m unittest discover -s tests/semantic -v   # translator regression suite; no LLVM, SPIR-V tools or GPU needed
+python -I scripts/run_semantic_tests.py tests/semantic   # translator regression suite, one file per core; no LLVM, SPIR-V tools or GPU needed
 python -I tests/test_<name>.py                     # standalone standard-library unit test
 node --test tests/test_viewer_streaming.cjs        # viewer streaming; needs Node 22+
 dotnet build tools/rpf9dump/rpf9dump.csproj -c Release
