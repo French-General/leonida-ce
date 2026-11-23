@@ -27,7 +27,7 @@ offsets and header facts. Commands are at the end.
 | Total duration at 30 fps | 14,181.3 s (3 h 56 min) |
 | Audio tracks (header field) | 319 streams with 0, 165 with 1, 30 with 2, 1 with 4; 229 tracks total |
 | Decoded samples | 9 streams, 14 frames, both revisions, 512x512 to 3840x2160 |
-| Decode test over the archive | 515 of 515 streams: frames 0 and 1; 229 of 229 audio tracks: PCM for the first 60 frames ([below](#decode-coverage-over-the-whole-archive)) |
+| Decode test over the archive | 515 of 515 streams: frames 0 and 1; 229 of 229 audio tracks: `RESULT PASS`, and PCM bytes reported for the first 60 frames ([below](#decode-coverage-over-the-whole-archive)) |
 | ffprobe decode result | 0 of 515 (`decodes=no` with a forced `-f bink` probe) |
 
 `8,831,336,892 + 1,094,744 + 22,812 = 8,832,454,448`, the span from the RPF header's data start to EOF. Readable
@@ -187,7 +187,7 @@ runtime's shim, so no patched copy of the DLL is involved.
 | Test | Scope | Result |
 |---|---|---|
 | `bink_decode_test` | all 515 streams | 515 exit 0: `BinkOpen` returns a handle, and frames 0 and 1 each replace the sentinel buffer with more than one byte value |
-| `bink_audio_test`, `LEONIDA_AUDIO_FRAMES=60` | all 229 tracks of the 196 streams that have audio (`LEONIDA_AUDIO_TRACK` 0..n-1) | 229 `RESULT PASS`, 0 `FAIL` lines: track id, type and maximum size match the header, `BinkOpenTrack` returns a track, and `BinkGetTrackData` returns a non-empty, whole number of 16-bit samples on every track |
+| `bink_audio_test`, `LEONIDA_AUDIO_FRAMES=60` | all 229 tracks of the 196 streams that have audio (`LEONIDA_AUDIO_TRACK` 0..n-1) | 229 `RESULT PASS`, 0 `FAIL` lines: track id and type match the header, the maximum size covers the header's, and `BinkOpenTrack` returns a track. Separately, the test's per-track `track N: ... bytes=` line is non-zero for 229 of 229 runs; the test itself checks for whole 16-bit samples only when a track returned some, and does not fail on a track that returns none |
 
 Measured at `main` `16282101` and again at `f847748c`, with the same counts, on Windows 11 (MSVC 14.44,
 RelWithDebInfo). This is a decode check of the start of
@@ -223,7 +223,7 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
   the game does with each folder at run time is not established.
 - **Audio association.** The header gives a track count, sample rate, flags and track IDs, but not which audio
   belongs to which video frame beyond the interleaving described by the Bink format. `BinkOpenTrack` and
-  `BinkGetTrackData` return 16-bit PCM for all 229 tracks (`runtime/test/bink_audio_test.md`,
+  `BinkGetTrackData` return 16-bit PCM for all 229 tracks (the byte count each run prints; `runtime/test/bink_audio_test.md`,
   [coverage above](#decode-coverage-over-the-whole-archive)), but no track was matched to a language or a mix.
 - **Playback integration.** The executable is not in the package. Where the game calls `BinkOpen`, which flags it
   passes, whether it uses `BinkDoFrameAsync`, `BinkGoto`, subtitles or the GPU path, and how it schedules movies
