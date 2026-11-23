@@ -367,12 +367,12 @@ boundaries by itself.
 
 This is the cross-check the navmesh report asked for: the `0x50000000` base is shared by directory pages and typed
 data pages, but only the directory page carries the offset/size table. The typed prefix is not a `q38` payload
-magic; 0 of 60,880 `data.rpf` records, 0 of 6,645 navmesh records and 0 of 269,320 animation records started with
-`0x00010015` at +0x14.
+magic; 0 of 60,880 `data.rpf` records and 0 of the 6,645 navmesh and 269,320 animation records in their sampled
+windows started with `0x00010015` at +0x14.
 
 ## Distribution of the +0x20 count
 
-| Value | `data.rpf` | `navmeshes.rpf` | `anim.rpf` |
+| Value | `data.rpf` | `navmeshes.rpf` (64 MiB) | `anim.rpf` (256 MiB) |
 |---:|---:|---:|---:|
 | 1 | 1,247 | 0 | 480 |
 | 2 | 14,485 | 147 | 5,240 |
