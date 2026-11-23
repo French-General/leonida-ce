@@ -821,7 +821,13 @@ The compute path, end to end:
     allowed to differ. On RX 5700 XT (Windows 32.0.21045.5002), 48 scenario pairs pass on Vulkan and native AMD;
     24 single-sample pairs pass on WARP. WARP's 4x subpixel fixture covers outside the geometric bound; it remains
     reproducible with `--warp-msaa4`, separately from CTest's 1x software comparison. Vulkan's 4x oracle remains
-    strict. The GPU test needs the current graphics path's 144-byte push-constant support; CPU capability checks
+    strict. On RTX 3060 (Windows 11, NVIDIA 610.88), 48 pairs pass on Vulkan and native NVIDIA. The oracle judges
+    the layer alone. A native render that fails it is printed as "host not comparable", with its normal and
+    conservative pixel counts, and that scenario isn't compared with the host. For example, Windows 10's WARP
+    (`d3d10warp.dll` 10.0.19041, the host CTest selects with `LEONIDA_HOST_ADAPTER=warp`) misses pixel (4,4) of
+    scene 4 with conservative rasterization on: seen on an RTX 5060 Ti and an RTX 2060 machine, both of which pass
+    with their NVIDIA GPU as the host (TEST-907).
+    The GPU test needs the current graphics path's 144-byte push-constant support; CPU capability checks
     do not need a GPU. No game-pass usage is claimed by these synthetic tests.
     `d3d12_conservative_tier3_reference` is a native D3D12 reference probe, not Tier 3 support in the Vulkan layer.
     It reports the selected Vulkan device's `fullyCoveredFragmentShaderInputVariable`, matches that device to its
