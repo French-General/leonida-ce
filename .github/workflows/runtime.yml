@@ -109,7 +109,96 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Set up MSVC x64 developer environment
+        shell: pwsh
+        run: |
+          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+          $vswhere = Join-Path $installer 'vswhere.exe'
+          if (!(Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($vs)) {
+            $vs = & $vswhere -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          }
+          if ([string]::IsNullOrWhiteSpace($vs)) {
+            throw 'Visual Studio with Microsoft.VisualStudio.Component.VC.Tools.x86.x64 was not found'
+          }
+          $vcvars = Join-Path $vs.Trim() 'VC\Auxiliary\Build\vcvars64.bat'
+          if (!(Test-Path -LiteralPath $vcvars -PathType Leaf)) {
+            throw "vcvars64.bat not found at $vcvars"
+          }
+
+          $before = @{}
+          foreach ($e in Get-ChildItem Env:) {
+            $before[$e.Name.ToUpperInvariant()] = $e.Value
+          }
+
+          $dump = Join-Path $env:RUNNER_TEMP 'vcvars-env.json'
+          $cmd = Join-Path $env:RUNNER_TEMP 'run-vcvars.cmd'
+          $origPath = $env:PATH
+          $hadInstaller = @(($origPath -split ';') | Where-Object { $_.TrimEnd('\') -ieq $installer.TrimEnd('\') }).Count -gt 0
+          $env:PATH = "$origPath;$installer"
+          $env:LEONIDA_VCVARS_DUMP = $dump
+          try {
+            $batch = @(
+              '@echo off'
+              'chcp 65001 >nul'
+              "call `"$vcvars`" || exit /b 1"
+              'where cl.exe || exit /b 1'
+              'pwsh -NoProfile -Command "[Environment]::GetEnvironmentVariables() | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:LEONIDA_VCVARS_DUMP -Encoding utf8" || exit /b 1'
+            ) -join "`r`n"
+            [System.IO.File]::WriteAllText($cmd, "$batch`r`n", [System.Text.UTF8Encoding]::new($false))
+            & cmd.exe /d /c $cmd
+            if ($LASTEXITCODE -ne 0) {
+              throw "vcvars64.bat setup failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            $env:PATH = $origPath
+            Remove-Item Env:LEONIDA_VCVARS_DUMP -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $cmd -ErrorAction SilentlyContinue
+          }
+
+          $after = Get-Content -LiteralPath $dump -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+          Remove-Item -LiteralPath $dump -ErrorAction SilentlyContinue
+          if ($after['VSCMD_ARG_TGT_ARCH'] -ine 'x64' -or [string]::IsNullOrWhiteSpace($after['INCLUDE']) -or [string]::IsNullOrWhiteSpace($after['LIB'])) {
+            throw "vcvars64.bat did not initialize an x64 MSVC environment (VSCMD_ARG_TGT_ARCH='$($after['VSCMD_ARG_TGT_ARCH'])')"
+          }
+
+          $pathLike = @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')
+          $envLines = [System.Collections.Generic.List[string]]::new()
+          foreach ($name in ($after.Keys | Sort-Object)) {
+            if (!$name -or $name.StartsWith('=')) { continue }
+            $upper = $name.ToUpperInvariant()
+            if ($upper -eq 'LEONIDA_VCVARS_DUMP') { continue }
+            $value = [string]$after[$name]
+            if ($upper -in $pathLike) {
+              $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+              $deduped = [System.Collections.Generic.List[string]]::new()
+              foreach ($entry in ($value -split ';')) {
+                if (!$entry) { continue }
+                if ($upper -eq 'PATH' -and !$hadInstaller -and ($entry.TrimEnd('\') -ieq $installer.TrimEnd('\'))) {
+                  continue
+                }
+                if ($seen.Add($entry.TrimEnd('\'))) {
+                  $deduped.Add($entry)
+                }
+              }
+              $value = $deduped -join ';'
+            }
+            if ($before.ContainsKey($upper) -and $before[$upper] -ceq $value) { continue }
+            if ($value -match '[\r\n]') {
+              $delim = "EOF_$([guid]::NewGuid().ToString('N'))"
+              $envLines.Add("$name<<$delim")
+              $envLines.Add($value)
+              $envLines.Add($delim)
+            } else {
+              $envLines.Add("$name=$value")
+            }
+          }
+          if ($envLines.Count -gt 0) {
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value $envLines -Encoding utf8
+          }
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Cache Vulkan headers
         id: vulkan-headers-cache
