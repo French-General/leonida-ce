@@ -730,15 +730,29 @@ vehicle models to far-away light recipes. Counts only; no model names.
   this build the document is an index from model and variant to recipe with the light positions absent,
   so distant vehicle lights cannot be reconstructed from it.
 
+To reproduce the joins, locate the XML roots in the [common carve catalog](gamedata.md) with
+`python -I tools/gamedata_xml.py <common-carve-dir> --json xml.json`. Trim and lowercase the field
+text, then match each nonempty `CVehicleDistantLightData/recipeLights/Item` by `vehicleModelName`
+and its sorted list of `secondaryRecipes/Item` values against `vehicleName` and the same list on
+`CPaletteIndexedRecipeTintsArray` rows at `.//recipeCombinations/Item`. For the carriage check,
+expand the light lists to distinct pairs and compare with `CTrainConfigs` rows at `.//carriages/Item`.
+
 The sampled `CPaletteIndexedRecipeTintsArray` document reuses 746 of the 780 distinct distant-light
 secondary tokens in its own `secondaryRecipes` field. Of the 1,668 distant-light rows with at least one
 token, 1,339 match a palette recipe on both vehicle name and the complete token list, ignoring case and
-token order. Replacing each vehicle name with the next of the 319 lowercased names in sorted order
+token order. Replacing each vehicle name with the next of the 319 distinct names from all light rows in sorted order
 (wrapping at the end) and keeping its tokens fixed gives 56 matches among the same 1,668 rows.
+
+For a single-token comparison, the distant-light rows give 1,547 distinct (vehicle, secondary token)
+pairs. Four match the `modelName` and `modelSetName` fields on the same `CTrainConfigs` carriage row,
+after trimming whitespace and ignoring case. These four pairs cover two vehicle models and four model
+sets. Rotating the 319 vehicle names as above gives zero matching pairs. Keeping the vehicle fixed and
+rotating the 780 distinct tokens in sorted order, with wraparound, gives two matching pairs.
 
 In the 34-row `CVehicleBoneOffsetsArray` document, 0 of the 780 distinct tokens match a whole text or
 attribute value case-insensitively. In the 2,447-row document of the same type, 178 of the 780 match
-`boneOffsets/Item/name`. These comparisons establish recipe reuse across the light and palette documents.
+`boneOffsets/Item/name`. All 2,447 rows have empty `vehicleName` fields, so those name matches provide
+no same-row vehicle association.
 Which physical parts or liveries a token selects, and where the runtime obtains light positions, remain open.
 
 ## Skinned GLB export
