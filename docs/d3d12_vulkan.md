@@ -421,7 +421,9 @@ What is implemented (all of it testable without the game):
   Swapchain backbuffers are real `ID3D12Resource` COM objects (`BackBufferResource` inheriting from
   `ID3D12ResourceStubs`) registered directly with `VulkanContext`, supporting `CreateSwapChainForHwnd`,
   `GetCurrentBackBufferIndex`, `GetBuffer`, `CreateRenderTargetView`, `Present`, and `ResizeBuffers` (preserving
-  explicit buffer dimensions even when the HWND client size is unchanged via an offscreen backbuffer + blit path).
+  explicit buffer dimensions even when the HWND client size is unchanged via an offscreen backbuffer + blit path,
+  and exposing exactly the requested `BufferCount` even when Vulkan's native image count differs, in which case the
+  offscreen ring is the app-visible swapchain and each present blits the current slot into the acquired image).
   The factory answers up to `IDXGIFactory7` (D3D-2). `EnumAdapterByGpuPreference` returns the one Vulkan adapter
   at index 0 for every preference. It accepts a preference outside the enum, as the host does, and gives
   `DXGI_ERROR_INVALID_CALL` for a null `out` and `DXGI_ERROR_NOT_FOUND` past the end. The adapter list never
