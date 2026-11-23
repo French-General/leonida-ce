@@ -4,6 +4,10 @@
 of every stream, and the start of every audio track, decode with the package's own Bink 2 library. The RPF9 table
 of contents is encrypted, but the streams can be named from the game's mount lists
 ([section 8](#8-names-from-the-mount-lists)). Nothing here is a playback path yet.**
+**Status: indexed and decode-checked. All 515 Bink 2 streams have been enumerated, their fixed headers read, and
+frame 0 of every stream decoded with the package's own Bink 2 library (515/515). The RPF9 table of contents is
+encrypted, but the streams can be named from the game's mount lists ([section 8](#8-names-from-the-mount-lists)).
+Nothing here is a playback path yet.**
 
 Every number below was measured on the Xbox Series 1.0.2.1 package on 2026-11-21. The archive is read-only. No
 game video, audio, frames, carved streams or reports that quote them are in this repository; the tools write only
@@ -28,6 +32,7 @@ offsets and header facts. Commands are at the end.
 | Audio tracks (header field) | 319 streams with 0, 165 with 1, 30 with 2, 1 with 4; 229 tracks total |
 | Decoded samples | 9 streams, 14 frames, both revisions, 512x512 to 3840x2160 |
 | Decode test over the archive | 515 of 515 streams: frames 0 and 1; 229 of 229 audio tracks: `RESULT PASS`, and PCM bytes reported for the first 60 frames ([below](#decode-coverage-over-the-whole-archive)) |
+| Decoded streams (frame 0, `Bink2Scarlett.dll`) | **515 of 515** (0 failed), both revisions, all 19 resolutions |
 | ffprobe decode result | 0 of 515 (`decodes=no` with a forced `-f bink` probe) |
 
 `8,831,336,892 + 1,094,744 + 22,812 = 8,832,454,448`, the span from the RPF header's data start to EOF. Readable
@@ -210,6 +215,35 @@ The nine sampled streams (all at 30 fps):
 | `KB2n` | 720x1280 | 150 | 5.0 s | 1 |
 | `KB2n` | 3840x2160 | 450 | 15.0 s | 1 |
 
+### Full 515-stream decode check (ASSET-328)
+
+Using the same temporary `xmem.dll` → `msvcrt.dll` (`malloc`/`free`) copy of `Bink2Scarlett.dll` on Windows 11,
+every one of the 515 indexed streams in `movies.rpf` was opened directly from the archive with
+`BinkSetFileOffset(offset)` + `BinkOpen(archive, BINKFILEOFFSET)` (`0x20`), decoded (`BinkDoFrame`), and copied
+into a pre-filled sentinel BGRA buffer (`BinkCopyToBuffer(..., BINKSURFACE32)`). No frames, pixels, audio, or
+carved `.bk2` files were saved.
+
+- **Result:** **515 / 515 decoded, 0 failed** (2.9 s total). Every stream returned a non-null `HBINK` handle,
+  overwrote the sentinel buffer with non-zero BGRA bytes on frame 0, and returned `0` from both `BinkDoFrame` and
+  `BinkCopyToBuffer` (confirming the earlier 9-stream observation across the full corpus).
+- **By revision:** `KB2j` **10 / 10** decoded (`0` failed); `KB2n` **505 / 505** decoded (`0` failed).
+- **By stored stream size:**
+
+| Stream size bucket | Decoded | Failed |
+|---|---:|---:|
+| `< 1 MB` | 50 | 0 |
+| `1–10 MB` | 352 | 0 |
+| `10–50 MB` | 74 | 0 |
+| `>= 50 MB` | 39 | 0 |
+| **Total** | **515** | **0** |
+
+- **By resolution:** all 19 distinct header resolutions (`512x256` through `3840x2160`, matching the resolution
+  table in [section 1](#resolution-distribution-header-width-x-height)) decoded 100% (`0` failed).
+
+This establishes that every indexed stream in `movies.rpf` opens and decodes frame 0 with `Bink2Scarlett.dll`;
+only the four frames from the earlier sample were visually inspected, and decoding all 425,440 frames or audio
+tracks remains untested.
+
 To turn a decoded BGRA buffer into a viewable image without a Bink 2 decoder:
 
 ```sh
@@ -243,6 +277,11 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
   through the package's DLL ([coverage above](#decode-coverage-over-the-whole-archive)); nine were decoded as a
   sample with frames viewed. No stream was decoded from its first frame to its last, and nothing compares the
   output with a reference.
+- **Why 22,812 bytes at the end are unread.** They are not a `KB2` stream and not zero. They may be an RPF footer
+  or leftover table data; the encrypted TOC prevents a name-level answer.
+- **Full-stream playback beyond frame 0.** All 515 streams open and decode frame 0 with `Bink2Scarlett.dll`
+  (0 failed; see [Full 515-stream decode check](#full-515-stream-decode-check-asset-328)), settling stream-level
+  decodability. Decoding every one of the 425,440 frames and playing back the 229 audio tracks remain untested.
 
 ## 6. No-sharing rule
 
