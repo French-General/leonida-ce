@@ -367,9 +367,48 @@ Two consequences for a loader. The stored matrices do not include `Scale`, so th
 built from `Position`, `Rotation` and `Scale` rather than read from `TransformMtx`. Profile indices are
 positions in `ProfileList`, so its order must be kept.
 
-Not measured here (hypothesis): with half the volumes at the origin, two profiles in use and no interpolation,
-this list looks like a sample or default set; the placed fog of the map is probably elsewhere (map resources
-or another archive). What `IntExtMode` (interior/exterior) and `BlendMode` select is also untested.
+**Package-wide census (ASSET-308, `tools/fog_volumes.py`).** Scanning all `0x7a` resources (assembled via
+`world_census.assemble`, up to 64 MiB and multi-stream, without a 256 KiB per-stream cutoff) in `packs.rpf`,
+`levels.rpf`, `data.rpf`, and `story000.rpf`, plus bounded zlib-stream scans across the remaining package
+archives (`common.rpf`, `anim.rpf`, `navmeshes.rpf`, `textures.rpf`, `script.rpf`, `story000_script.rpf`,
+`core_restofworld.rpf`, `core_restofworld001.rpf`, `story000_restofworld.rpf`, `shared_minigame000.rpf`,
+`core_bvh4.rpf`, `shared_minigame000_bvh4.rpf`, `appdata0.rpf`, `core_licenses_data.rpf`) for XML, RBF0, and
+`0x7a` schemas matching `CScatteringTransmittance__FogVolumeListData` (`0x03073767`) or
+`CScatteringTransmittance__FogVolume` (`0x81907918`) finds:
+
+- **`levels.rpf`** (`188,449` complete `0x7a`, `0` incomplete), **`data.rpf`** (`15,768` complete `0x7a`, `0`
+  incomplete — matching `docs/world.md` and `docs/page_directory.md` — plus `1,263` `RBF0`), **`story000.rpf`**
+  (`48,084` complete `0x7a`, `0` incomplete, plus `1` `RBF0`), and all other archives except `common.rpf` and
+  `packs.rpf`: **0** `FogVolumeListData` / `FogVolume` resources.
+- **`common.rpf`**: remains the only archive with the XML `FogVolumeProfileList` (`0x236000`, 43 profiles) and
+  world-coordinate `CScatteringTransmittance__FogVolumeListData` (`0x64c000`, 14 volumes).
+- **`packs.rpf`** (`4,678` complete `0x7a` resources assembled, `0` incomplete): **231 complete `0x7a`
+  resources** (`0x8ae9010..0xc120010`) containing **770 stored** `CScatteringTransmittance__FogVolume`
+  (`0x81907918`, 512 bytes, 45 members) records and **384 distinct serialized records**:
+  - **230 smaller resources** (`{1: 80, 2: 146, 3: 3, 4: 1}`, median `2`) carrying **385** stored records (`384`
+    distinct).
+  - **1 larger resource** carrying **385** stored records (`384` distinct) that match the 385 records from the 230
+    smaller resources byte-for-byte (including multiplicities).
+
+| Check (`packs.rpf` 0x7a, 770 stored / 384 distinct across 231 resources) | Result (stored occurrences) |
+|---|---|
+| `Position` | `(0, 0, 0)` in all 770 (local-space attachments) |
+| `PositionOffset` | non-zero in 766 of 770: X `-2.46..2.46`, Y `-9.20..20.62`, Z `-6.50..6.66` m |
+| `Scale` | X `0.43..6.00`, Y `0.13..28.00`, Z `0.13..2.63` m |
+| `Rotation` / `Shear` | non-zero in 82 / 388 of 770 |
+| `RotationMtx` and `TransformMtx` | identity in all 770 (even where `Rotation` or `Shear` is non-zero) |
+| `IsBox` (`+0x000`, `ty=0x01`) | `1` in 730, `0` in 40 |
+| `BlendMode` / `IntExtMode` | `1` in all 770 / `1` in 760, `0` in 10 |
+| `ProfileIndex` / `SecondaryProfileIndex` | `{0: 2, 10: 4, 12: 764}` (all in `0..42`) / `0` in all 770; `ProfileInterpolation` is 0 in all 770 |
+| `Type` / `SortKey` | `{0: 768, 2: 2}` / `{0: 768, 10: 2}` |
+
+This resolves the earlier hypothesis: across all 188,449 complete `0x7a` resources in `levels.rpf`, none carries
+`FogVolumeListData` or `FogVolume`. Instead, `packs.rpf` holds 231 resources totalling 770 stored local-space
+records (384 distinct serialized 512-byte records: 385 in 230 per-asset resources duplicated by 385 in one larger
+resource; `Position = 0`, non-zero `PositionOffset` and `Shear`, `IntExtMode = 1` in 760/770), and
+`RotationMtx`/`TransformMtx` stay identity there too — confirming a loader must compose the volume transform from
+`Position`, `PositionOffset`, `Rotation`, `Shear`, and `Scale`. Runtime placement identity, resource-relative
+reference targets, and what `IntExtMode` and `BlendMode` select at runtime remain untested.
 
 ## Schema style
 
