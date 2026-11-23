@@ -444,14 +444,14 @@ records. No unhandled layout tag appears:
   infinite time (`inf`). `inf` occurs in 38 road and 99 offroad blocks overall, so a parser must accept `inf`
   in these fields (it reads as "never reaches the test speed or distance").
 
-- **The estimates are a generated stats table, not measurements.** `common.rpf`'s data area at `0x9580` also
-  holds `CVehiclePerformanceMaps` (285 rows, 10 result fields) and `CTyreDataSet` (40 tyre types). 251 of the
+- **The estimates are a separate stored table, not the performance maps.** `common.rpf`'s data area at `0x9580`
+  also holds `CVehiclePerformanceMaps` (285 rows, 10 result fields) and `CTyreDataSet` (40 tyre types). 251 of the
   252 estimate keys join the performance rows, but no field reproduces an estimate exactly: the best OLS over
-  all ten gives R² 0.872, and `fAccelerationTime` against `accelZeroSixty` is R² 0.811 with a median |residual|
+  all ten gives R^2 0.872, and `fAccelerationTime` against `accelZeroSixty` is R^2 0.811 with a median |residual|
   of 0.54 s. The clearest relation is internal to the estimates: over the 231 rows with a finite top speed,
-  `fStandingQuarterTime = 6.73 + 401.0 / fTopSpeed` (R² 0.99998, median |residual| 1.01 s; R² 0.82 over the
+  `fStandingQuarterTime = 6.73 + 401.0 / fTopSpeed` (R^2 0.99998, median |residual| 1.01 s; R^2 0.82 over the
   209 rows under 30 s). For the seven top-speed-limited rows, `fTopSpeed * fStandingQuarterTime` is
-  402.339 ± 0.0003 m, a quarter mile; the residual tracks the 0–60 time.
+  402.339 +/- 0.0003 m, a quarter mile; the residual tracks the 0-60 time.
 - **The ratings are deterministic functions of the estimates.** Each of the 223 distinct road top speeds gives
   one `fSpeedRating`; handling/corner has 221 levels, acceleration/acceleration time 204, brakes two collisions,
   and `fOverallRating` uses more than one field. The rating scale and the overall weighting are still not fitted.
