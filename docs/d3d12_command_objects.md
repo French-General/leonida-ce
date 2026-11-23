@@ -470,6 +470,12 @@ vtable pointer of a public object.
   the description (always, from this DLL) the proxy passes all four pairs on as one `FSPX` payload, checking each pair
   before reading it. The Vulkan device then finds the translated module by `fspx_code_sha256` and `fspx_state_sha256`
   ([fspx.md](fspx.md), "Build and run-time lookup"), for the programs the build translated.
+  - **The layout is pinned from the DLL's code:** its FSPX reader (`0x1a20`), the same loop inline for a container,
+    and the copy into the description. The kind 0 and kind 6 of one call come from the same payload. With the
+    reader run on all 29 programs, every translated program resolves to its own entry ([fspx.md](fspx.md), "How
+    the table was pinned").
+  - **A failed call is logged with its number** (`slot 67 call N failed`). The DLL creates its pipelines one after
+    another, so a miss is not necessarily the first call's.
 - **Slot 62** (call at `0x5825`) takes the measured `(D3D12_COMPUTE_PIPELINE_STATE_DESC*, 0, 0, riid, out)`. The PC
   runtime refuses the DLL's code (`E_FAIL`): it is not a PC shader. The DLL's pipeline function then returns
   `0x8000000d` (`0x4b85`), but the dispatch goes on, records the null pipeline and faults (`0x65ff`), which is where a

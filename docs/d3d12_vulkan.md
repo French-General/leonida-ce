@@ -1110,6 +1110,9 @@ and any validation error fails them.
     the bare program is refused as ambiguous;
   - slot 67 with all four pairs picks by kind 0 too (one entry's module is missing on purpose, so the pick shows as
     `E_FAIL`), and four inconsistent pairs are refused before they are read;
+  - slot 67 with the description built the way the DLL builds it (`dll_slot67`: the reader's pair order over the
+    container's own directory, kinds 0, 1 and 7 pointing into the payload, kind 6 copied into a 256-rounded buffer
+    padded with `0xcc`) resolves each program to its own translation with its own state;
   - console slot 11 on a slot-67 and a slot-62 pipeline returns an object whose slot 3 points at the dword 0 and whose
     slot 4 gives 4 bytes; it releases to 0, and the pipeline's reference count is unchanged.
 - `d3d12_set0_compute_test`: set 0 from the compute bind point, through the proxy and D3D12 alone. The index entry
