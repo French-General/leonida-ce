@@ -2873,7 +2873,9 @@ Implemented (`QueryHeap` in `runtime/shims/d3d12_vulkan_device.cpp`, the query c
   one scratch chunk, alternating binary and ordinary resolves under a predicate, gated submissions, crossing
   statistics queries against three unsplit references word by word, and an ordinary query around a binary one, on
   a GPU; `replay_query_predication` pins the segment layouts, the helper dispatches inside an overlap and the
-  binary sum-and-normalize without a GPU.
+  binary sum-and-normalize without a GPU. On a device without `pipelineStatisticsQuery` (MoltenVK) the test
+  leaves the statistics lists out; `vk_overlapping_occlusion_no_statistics` runs it that way (`--no-statistics`)
+  on a device that has the feature, so that path is also run where no such device is at hand.
 - **Helper dispatches during a pipeline-statistics query** (D3D-162). The helper dispatches above (binary
   normalisation, occlusion sums), statistics sums, `SetPredication` captures, predicated buffer copies and D24/RGB96 footprint
   conversions would count in the application's `CSInvocations` if they ran inside its query. Such a query is split.
