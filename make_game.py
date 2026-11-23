@@ -946,6 +946,17 @@ def prepare_shader_disassembly(work: str, disasm: str, resume: bool) -> None:
                     os.unlink(entry.path)
 
 
+def translated_index_is_empty(index: str) -> bool:
+    """Whether a saved translated index is the `{}` that rdna2spirv.py --merge publishes when it translated
+    nothing, so the next run must not keep it as done. A missing, unreadable or non-mapping file is a different
+    problem and is not this: only a whole-file empty mapping came from a merge that ran and produced nothing."""
+    try:
+        with open(index, encoding="utf-8") as f:
+            return json.load(f) == {}
+    except (OSError, ValueError):
+        return False
+
+
 def shaders(game: str, work: str, jobs: int, emulate: bool = False, keep_emulated: bool = False,
             fallbacks: tuple[str, ...] = ()) -> None:
     src = os.path.join(game, "shaders.rpf")
@@ -1034,6 +1045,11 @@ def shaders(game: str, work: str, jobs: int, emulate: bool = False, keep_emulate
         log(f"shaders: the fallback flags are now {want_flags or 'none'} (the shaders were translated with "
             f"{had_flags or 'none'}): translating again")
         drop(translated)
+    if os.path.isfile(translated) and translated_index_is_empty(translated):
+        # An empty merge, or an index that cannot be read, is not a finished translation. The shard plan goes with it:
+        # its parts are what the empty merge read, so a retry has to translate them again rather than reuse them.
+        log("shaders: the saved translated index names no shaders: translating again")
+        drop(translated, shard_plan)
     if not os.path.isfile(translated):
         need("spirv-as", "Install the Vulkan SDK (it includes spirv-as and spirv-val) and reopen the terminal.")
         need("spirv-val", "Install the Vulkan SDK and reopen the terminal.")
