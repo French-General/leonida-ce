@@ -43,8 +43,7 @@ consumer GPU. It does not need the executable and it does not use a synthetic st
 
 The pieces it proves are the ones the D3D12 layer also relies on: ISG register → Vulkan vertex input location,
 the 144-byte push-constant block, the translator's SPIR-V for a graphics pair, and `vk_harness`'s device,
-pipeline and readback code. The remaining step to the port's own path is to run the same pair through the D3D12
-proxy under Wine, which needs a cross build with the MSVC SDK.
+pipeline and readback code. The same pair also draws through the port's D3D12 layer (section 5).
 
 ## 3. Reproduce it
 
@@ -80,14 +79,65 @@ creates a vertex and an index buffer, and draws it with `vkCmdDrawIndexed`. The 
 and only float attributes. The first-light pair above uses no other harness option: the VS reads no user SGPRs and
 the PS has no bindings.
 
-## 5. Limits and next
+## 5. Through the D3D12 layer
+
+`runtime/test/d3d12_first_light_test.cpp` (ctest `d3d12_first_light`) draws the same model and pair through the
+Xbox-ABI device proxy over the Vulkan device, natively on Windows. `CreateGraphicsPipelineState` gets the game's
+own containers and finds both stages by the FSSM hash inside them, in the index `first_light.py` writes next to
+the SPIR-V (`vs.dxbc`, `ps.dxbc`, `index.json`); the input layout (POSITION float3, TEXCOORD float2) is matched
+to the VS signature, the mesh goes through DEFAULT vertex and index buffers, and one `DrawIndexedInstanced` draws
+it into a cleared R32G32B32A32 target read back with `CopyTextureRegion`.
+
+D3D12 clip space is y-up and the layer flips the viewport, so `vk_harness` row r is row 127 − r here. On an RTX
+3060 (Windows 11, driver 616.64, Vulkan SDK 1.4.363.1) the draw covers the same **12,804 of 16,384 pixels**, the
+centre pixel is `(0.49756, 0.49634, 0.0, 1.0)` and the corner keeps the clear (−1). Against `vk_harness`'s
+`image.raw`, 16,383 pixels are bit-exact and one is one f16 step apart (0.74219 here, 0.74170 there): the PS
+exports with `v_cvt_pkrtz_f16_f32`, which rounds toward zero, so an f32 interpolant a few ulps lower under the
+opposite viewport direction drops one step. `vk_harness` drawing the mesh mirrored in y reproduces the D3D12
+image bit for bit. The test allows that one step and nothing else; it is clean under `LEONIDA_VK_VALIDATION=1`.
+
+```sh
+python -I tools/first_light.py ... --no-fit --run          # as in section 3; writes vs.dxbc, ps.dxbc, index.json
+LEONIDA_FIRST_LIGHT_DIR=~/leonida-work/first_light/out ctest --test-dir <build> -R d3d12_first_light -V
+```
+
+Without `LEONIDA_FIRST_LIGHT_DIR` the test prints SKIP and exits 77.
+
+## 6. With a texture (`TEST-524`)
+
+Passing `--dds <exported.dds>` to `tools/first_light.py` switches the default pixel shader to a translated
+single-sample game pixel shader (`PS_Copy_3ea4b38a_Wrapped`, FSSM SHA-256
+`19e2e7612505b9d3b19e6607b47e09dcdde02a2c9987a63e834d9586f217090f`, wave32, `inputs=[0]`, `outputs=[0]`,
+`shader_link_check.py check`: compatible with `VS_main_170e32e6_Wrapped`). `first_light.py` decodes the DDS
+(for example a BCPack-decoded TTPF albedo) with `tools/dds_png.py`, writes `texture.rgba` (`u32 width, u32 height` +
+`R8G8B8A8_UNORM` texels) into the output folder, and passes `VKH_TEX_RGBA`, `VKH_TSHARP_VA` (`0x100`),
+`VKH_SSHARP` (the shader's literal sampler `0x92, 0xc00000, 0x14500000, 0`, bilinear + clamp-to-edge) and
+`VKH_SGPRS` (`s9 = 0x100`) to `vk_harness`.
+
+`vk_harness` enables `bufferDeviceAddress`, `runtimeDescriptorArray` and `descriptorIndexing` only when
+`VKH_TEX_RGBA` is set (inert otherwise), writes the 8-dword `T#` at `VKH_TSHARP_VA` in the 64 KiB heap, binds
+set 0 (`binding 0` 2D images with a 1×1 magenta fallback at index 0 and the decoded texture at index 1; `binding 1`
+samplers with the decoded `S#` at index 1; `binding 2` the `DescriptorTable` hash buffer), and draws the mesh.
+
+The CPU oracle (`check_image`) samples the decoded `R8G8B8A8_UNORM` texture bilinearly (clamp-to-edge) at
+`centre_uv` and each `uv_probes` entry and requires the GPU readback to match within `0.02` (rejecting the
+magenta unbound-texture fallback and wrong-colour probes). Verified on Windows 11 with an NVIDIA GeForce RTX 3060
+(driver 621.24, Vulkan 1.4.357): **12,804/16,384 (0.781)** covered. Without `LEONIDA_FIRST_LIGHT_DIR`,
+`python -I tests/test_first_light.py -v` runs **14 tests: 11 passed, 3 skipped** (the 3 package-gated
+`FirstLightTests` require `LEONIDA_FIRST_LIGHT_DIR`; the 4 `OracleTests` and 7 `TexturedOracleTests` run without a
+package). With `LEONIDA_FIRST_LIGHT_DIR` set against a local package run, all **14/14** tests pass.
+
+```sh
+python -I tools/first_light.py --game "<package>" --work ~/leonida-work \
+    --obj ~/leonida-work/assets/data/models/<model>.obj \
+    --dds ~/leonida-work/assets/ttpf/<pool>/<texture>.dds --no-fit --run
+LEONIDA_FIRST_LIGHT_DIR=~/leonida-work/first_light/out python -I tests/test_first_light.py -v
+```
+
+## 7. Limits and next
 
 * The chosen VS applies no matrix; the tool's fit is an orthographic stand-in for the game's view/projection. A
   real camera needs a VS that reads its constants, which is the next model/shader pair.
-* No texture: the PS writes the UV map. A texture path needs a TTPF albedo, BCPack decode, a T# in the bindless
-  set and the game's sampler.
 * One model and one draw. The `levels.rpf` windows have world props with POSITION/NORMAL/COLOUR/UV layouts that
   match the `sga_dr_*`/`Rage_Transform*` families by signature; pairing one of those is the natural next image.
-* This is the native Vulkan harness, not the port's D3D12 layer. The same pair through `d3d12_translated_draw_test`
-  under Wine is the step that joins this result to the runtime.
 * The game still cannot boot: the executable is not in the package (RT-5), so no call site selects these programs.
