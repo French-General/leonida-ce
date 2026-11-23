@@ -582,9 +582,10 @@ side inwards:
     the key cannot resolve to it, which is accepted. Erasing a key empties its slot and moves no other entry
     (every lookup, CPU and shader, compares all eight probe slots and never stops at an empty one), so it is
     uploaded like an add. Replacing a live key's index, an insert that relocates a live entry, and a table that
-    has grown (a new buffer behind binding 2) change what running lookups see: `flush_needs_idle()` says when a
-    flush would do one of those, and the device waits for the queue before flushing in that case. Erasing used to
-    compact the probe cluster, which moved other keys and made every texture release wait for the whole GPU.
+    has grown (a new buffer behind binding 2) change what running lookups see: `flush_replaces_table()` says when a
+    flush would do one of those, and the flush then makes a new generation instead of writing in place (D3D-314; see the
+    paragraph on the flush at every `ExecuteCommandLists`, below). Erasing used to compact the probe cluster, which
+    moved other keys and made every texture release wait for the whole GPU.
 - **`runtime/src/gfx10_descriptors.h`**: the T#, S# and V# structures (section 5.3), encoded and decoded, with
   their mapping to Vulkan formats, view types, component mappings and samplers. Field positions are Mesa's
   (`src/amd/registers/gfx10-rsrc.json`) and agree with what the translator and the GPU tests already use. Bits
@@ -649,10 +650,42 @@ which image format a sampler will be paired with — on Radeon iGPUs `BC*` forma
 formats support it, whereas RTX supports all queried formats); the storage arrays hold 255 images a dimension at the default counts, more
 where the device has room (4095 2D and 1023 2D-array on an RTX 5070); nothing writes through a
 storage view in a D3D12-level test yet (`vk_bindless_test` goes through the storage bindings at the Vulkan
-level). The set is flushed at every `ExecuteCommandLists`; a flush that erases keys or moves the table to a larger
-buffer (`BindlessSet::flush_needs_idle()`) first waits for the device to be idle and then frees the retired table
-buffers, so no running lookup misses (D3D-76). That wait stalls every queue, which is correct but slow if the game
-destroys textures every frame; a per-queue wait is open.
+level). The set is flushed at every `ExecuteCommandLists`. A flush that moves the table to a larger buffer, changes
+the index of a live key or relocates one (`BindlessSet::flush_replaces_table()`) does not write in place and does not
+wait (D3D-314; D3D-76 first waited for the whole device, which stalled every queue and would have at every texture
+release of a game that churns textures). It makes a new generation: new table buffers (the whole table uploaded to
+them in that submission's command buffer), a new one-set descriptor pool and set (binding 2 names the new table, and
+every descriptor written so far is written again from a CPU shadow of the set, in runs, so unwritten elements stay
+unwritten under `partially_bound`), and replay binds that set at the dispatches and draws of the submission
+(`ReplayFunctions::bindless_set`; the pipelines' own `bindless_set` only marks that they use one). Submissions made
+before keep reading the old set and table, which nothing writes again. The old generation is stamped with the
+latest submission ticket and freed at a later `ExecuteCommandLists` (and at device teardown) once
+`completed_retire_ticket()` has reached it. Those tickets are the layer's per-submission records of (queue timeline
+semaphore, value): the stamp is therefore the latest submitted value of every queue that could have bound the
+set, and the free waits until each of those timelines has passed its value; nothing is waited for. The completed
+prefix is global and in order, so a queue blocked on a fence only delays the free, never another queue. The stamp
+is taken under `tracker_mutex_`, which `execute()` holds from the flush to the end of its submit, so no submission
+that bound the old set is unsubmitted when it is read. `LEONIDA_BINDLESS_IDLE_WAIT=1` restores the old wait
+(a counted `vkDeviceWaitIdle` before the flush) to compare frame times; nothing else uses it. The cost of the new
+path is a full upload of the table and a rewrite of the set's descriptors per replacing flush, where the old one
+uploaded the changed slots after the stall; `d3d12_bindless_churn_test` prints both.
+
+The pattern is the one vkd3d-proton uses to retire GPU-visible objects without a device idle (approach only, no
+code taken): stamp the object with what every queue has submitted and free it at a later submit once those
+submissions have completed. Two further rules come with it here. The submission that carries a new generation's
+table upload makes every other queue's next submission wait for its timeline value (`bindless_upload_semaphore_`,
+like the storage-image initialisation), because that submission is the first to bind the new set and a queue with no
+D3D12 fence on it could otherwise run before the copy; the table's buffers need no ownership transfer because every
+D3D12 queue of the device is made in `info.queue_family`. And at most 8 retired generations are kept: past that, the
+next flush waits (logged once, with the descriptor lock released) for the submissions up to the oldest one's ticket,
+which is a wait for those queues' timelines and not for the device. The commit of a submit's result runs under
+`tracker_mutex_`, so a later flush never sees an earlier submit's outcome unrecorded. If the new generation cannot be
+made (out of memory) the flush leaves the in-use set and the pending writes alone and fails.
+Two bindless hazards that vkd3d-proton documents for games and that this change does not remove: descriptors
+written for resources allocated after the submit that reads them, and an image and a buffer descriptor aliasing one
+heap slot (vkd3d-proton PR #3033, https://github.com/HansKristian-Work/vkd3d-proton/pull/3033). Future path, not
+implemented: `VK_EXT_descriptor_heap` (https://www.khronos.org/blog/vulkan-introduces-roadmap-2026-and-new-descriptor-heap-extension)
+would replace descriptor sets with application-sized heaps.
 
 A typed 3D color target supports default and explicit RTVs. The default covers mip 0; `FirstWSlice` and
 `WSize` select the depth slices in an explicit view's mip. `d3d12_clear_test --volume` checks full and
@@ -1139,6 +1172,28 @@ and any validation error fails them.
   refused with `E_INVALIDARG`: an untranslated program, bare and in a container; kind-6 entries that end past the
   payload, start inside the directory, wrap 32 bits, are too large or are empty; a container without `ACCC`; bytes
   without the prologue; and the program with four bytes appended.
+- `d3d12_bindless_churn_test`: the table churn of D3D-314 through D3D12 alone, on a direct and a compute queue with
+  three frames in flight. Each of 96 frames makes 24 textures with SRVs in a ring of shader-visible heap slots and
+  releases those of seven frames earlier (about 190 live keys, so the table grows), the direct queue uploads, the
+  compute queue waits for it on the GPU, and each queue runs the `cs_set0_sample.comp` shader eight times on SRVs
+  of the frame and the three before it. All 98,304 sampled texels per run are compared with what the CPU wrote.
+  The two D3D12 queues get distinct `VkQueue`s where the device's family has two (`queue_count_wanted = 2`,
+  `command_queues`; the test prints which it got and says so when the family has only one). Two queues on one
+  `VkQueue` are ordered by submission, which hides a missing wait between them. It runs four times: as the layer is (0
+  `vkDeviceWaitIdle` for the bindless set required, at least one generation made, a retired generation seen pending
+  right after the submit that made it); with the compute queue never waiting on the direct queue's fence (it samples
+  textures the CPU has seen finished, so only the grown table is new to it); and both again with
+  `LEONIDA_BINDLESS_IDLE_WAIT=1` (the old wait, counted above 0). Times are printed, not asserted. The async runs
+  are what the layer's wait on the uploading submission keeps correct: with that wait removed, the RTX 5070 run
+  failed at frame 5 (compute read a zeroed table: the grown binding 2 with the upload not yet run), as @duudiis
+  reported on #2740; the old-wait path shares that bug on `main` (the idle wait only covers work already submitted,
+  not another queue's later submission that binds the new table). The Radeon 880M did not reproduce it in two
+  runs. `d3d12_bindless_churn_validated` runs it under the validation layer.
+  The table's growth is the only replacing flush this scenario produces (3 generations). The other kinds (a live
+  key's index replaced, a relocation) and the failed-submit retry are checked at the Vulkan level by
+  `vk_bindless_test` cases 3 to 6 (the set changes; `release_retired` frees only what its ticket allows). That test
+  needs the translated `vs_ids`, `ps_tex` and `ps_imgatomic`; it was not in ctest before D3D-314 (only
+  `scripts/run_gpu_tests.py` and `check.py` ran it), and is now, as `vk_bindless_ps_tex` and `vk_bindless_ps_imgatomic`.
 - `d3d12_set0_compute_test`: set 0 from the compute bind point, through the proxy and D3D12 alone. The index entry
   of its shader lists set-0 bindings, so the PSO's layout holds the device's bindless set and replay binds it at
   each dispatch; nothing in the test binds it. Four dispatches of `test/glsl/cs_set0_sample.comp` (GLSL written to
