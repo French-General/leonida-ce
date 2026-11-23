@@ -19,7 +19,7 @@ offsets and header facts. Commands are at the end.
 | Data start in the RPF header (word at +4) | 27,328 (0x6AC0) |
 | First stream offset | 28,672 (0x7000) |
 | Zero padding between streams | 1,094,744 bytes (includes 1,344 bytes before the first stream) |
-| Other bytes after the last stream | 22,812; not a Bink stream and not zero (purpose unknown) |
+| Bytes after the last stream | 22,812: 3,884 zero bytes to the next 4 KiB boundary, then the 18,928-byte RPF trailer (the header's `u32 +12`; [rpf.md](rpf.md#the-trailer-at-eof)) |
 | Other carved file types | none; the whole data area is Bink 2 |
 | Revisions | 505 `KB2n`, 10 `KB2j` |
 | Frame rate | 30/1 in all 515 headers |
@@ -31,8 +31,8 @@ offsets and header facts. Commands are at the end.
 | ffprobe decode result | 0 of 515 (`decodes=no` with a forced `-f bink` probe) |
 
 `8,831,336,892 + 1,094,744 + 22,812 = 8,832,454,448`, the span from the RPF header's data start to EOF. Readable
-coverage is 100.0%; the 27,328-byte RPF header (before the data start) and the 22,812-byte tail are the only
-unindexed ranges.
+coverage is 100.0%; the 27,328-byte RPF header (before the data start) and the 18,928-byte trailer are the only
+unindexed ranges, and both are part of the RPF container, not of a stream.
 
 `KB2n` is the newer of the two revisions. One DLL string mentions Bink 2.2, but the revision-to-version mapping is
 not independently established.
@@ -113,8 +113,10 @@ reads the 44-byte header and audio descriptors, and writes CSV or JSON. It never
 and then only to a temporary file that is deleted.
 
 On this archive both tools find the same 515 streams, the same 8,831,336,892 bytes, 1,094,744 bytes of zero
-padding and 22,812 unread bytes. Running `bink_index.py` on the 515 carved `.bk2` files finds 515 streams with zero
-unread bytes, which confirms the stored sizes cover each file exactly.
+padding and 22,812 bytes after the last stream. Those 22,812 are 3,884 zero bytes and the 18,928-byte RPF trailer
+(counted by reading the tail directly); `bink_index.py` now counts them as zero padding and `rpf_trailer`, which for
+this archive gives `unread_bytes` 0 and zero padding 1,098,628 (derived from the measured tail, not a rerun). Running `bink_index.py` on the 515 carved
+`.bk2` files finds 515 streams with zero unread bytes, which confirms the stored sizes cover each file exactly.
 
 ## 4. Decoding
 
@@ -232,8 +234,11 @@ The raw buffer and PNG stay in temp. FFmpeg is only the raw-to-PNG step here; it
   `BinkGetSummary` layout, the async API, the GPU API and the XAudio2 setup are not established. The DLL loads on
   Windows only after the missing `xmem.dll` imports are supplied; a proper port needs an allocator shim with the
   Xbox semantics, not necessarily `malloc`.
-- **Why 22,812 bytes at the end are unread.** They are not a `KB2` stream and not zero. They may be an RPF footer
-  or leftover table data; the encrypted TOC prevents a name-level answer.
+- **What the RPF trailer holds.** The 22,812 bytes after the last stream are no longer unexplained (ASSET-318):
+  3,884 zeros pad to a 4 KiB boundary, and the remaining 18,928 bytes, to EOF, are exactly the header's `u32 +12`,
+  the RPF9 trailer ([rpf.md](rpf.md#the-trailer-at-eof); confirmed in 14 of the package's 22 archives, 8
+  undecided, none against). Its contents are high-entropy (7.99 bits per byte) with no zlib or `KB2` header, like the TOC; this
+  project does not decode them.
 - **Whether every frame of all 515 streams decodes correctly.** All 515 open and decode their first two frames
   through the package's DLL ([coverage above](#decode-coverage-over-the-whole-archive)); nine were decoded as a
   sample with frames viewed. No stream was decoded from its first frame to its last, and nothing compares the
@@ -261,7 +266,8 @@ python -I tools/bink_index.py <temp>/movies --out <temp>/movies-probe.csv --prob
 ```
 
 The measured run produced 515 rows, 8,831,336,892 stream bytes, 1,094,744 zero bytes and 22,812 unread bytes from
-the archive, and the same 515 rows with zero unread from the carved directory. `--probe` produced 515 `no` values.
+the archive (before `bink_index.py` split off the RPF trailer; see section 3), and the same 515 rows with zero
+unread from the carved directory. `--probe` produced 515 `no` values.
 
 ## Appendix A: `Bink2Scarlett.dll` exports
 
