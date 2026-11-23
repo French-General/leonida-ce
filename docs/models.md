@@ -485,9 +485,11 @@ python -I tools/character_census.py <models-dir-or-manifest> [--json FILE] [--cs
 It reads every nested `model.json` (the decoded-pack layout: `type`, `vertex_count`,
 `triangle_count`, `materials[].shader_name_hash`, `materials[].textures[].hash64`,
 `drawable.skeleton`/`drawable.models[].bone_palette` and `meshes[].skin_influences`), or the
-`Items[]` of a manifest (`Verts`, `Tris`, `IsFragment`, `HasBoneBindings`, `Materials[]`). It
-prints one row per model with kind, vertex/triangle counts, bones, 8-influence skin, shader
-hashes and texture keys, then totals by kind and by shader hash. A missing or wrongly typed field
+`Items[]` of a manifest (`Verts`, `Tris`, `IsFragment`, `HasBoneBindings`, `Materials[]`). The
+local exporter does not write an index count, so the index column and total normally stay unknown;
+an input that supplies `index_count` is counted, but the field is optional and not part of the
+decoded layout. It prints one row per model with kind, vertex/triangle counts, bones, 8-influence
+skin, shader hashes and texture keys, then totals by kind and by shader hash. A missing or wrongly typed field
 is reported on that row instead of ending the run. An `rpf9dump models` manifest records only
 `HasBoneBindings`, not a bone count or influence width, so those cells stay `?`. Report paths that
 alias an input are refused. The tests are synthetic: `python -I tests/test_character_census.py`.
