@@ -283,9 +283,11 @@ jobs:
           command -v cmake >/dev/null || pkgs+=(cmake)
           command -v ninja >/dev/null || pkgs+=(ninja-build)
           command -v g++ >/dev/null || pkgs+=(g++)
-          [ -x /usr/lib/llvm-18/bin/llvm-mc ] || pkgs+=(llvm-18)
+          [ -x /usr/lib/llvm-19/bin/llvm-mc ] || pkgs+=(llvm-19)
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends "${pkgs[@]}"
+      - name: Sanity check llvm-mc amdgcn target
+        run: /usr/lib/llvm-19/bin/llvm-mc --version | grep -q 'amdgcn'
       - name: Configure
         run: >-
           cmake -S runtime -B runtime/build -G Ninja
@@ -316,7 +318,7 @@ jobs:
       - name: GPU tests on llvmpipe
         run: |
           vulkaninfo --summary | grep -E 'deviceName.*llvmpipe'  # fails the step if llvmpipe isn't there
-          python3 -I scripts/run_gpu_tests.py --build runtime/build --llvm-mc /usr/lib/llvm-18/bin/llvm-mc --work "$RUNNER_TEMP/gpu-native"
+          python3 -I scripts/run_gpu_tests.py --build runtime/build --llvm-mc /usr/lib/llvm-19/bin/llvm-mc --work "$RUNNER_TEMP/gpu-native"
       - name: Pipeline checker exit status on llvmpipe
         shell: bash
         run: |
@@ -356,7 +358,7 @@ jobs:
         # left out: llvmpipe's LLVM backend aborts compiling them ("Cannot emit physreg copy instruction").
         env:
           LEONIDA_W64_EMULATE: "1"
-        run: python3 -I scripts/run_gpu_tests.py --build runtime/build --llvm-mc /usr/lib/llvm-18/bin/llvm-mc --work "$RUNNER_TEMP/gpu-w64" --filter cs_
+        run: python3 -I scripts/run_gpu_tests.py --build runtime/build --llvm-mc /usr/lib/llvm-19/bin/llvm-mc --work "$RUNNER_TEMP/gpu-w64" --filter cs_
       - name: GPU tests on llvmpipe with the barycentric fallback
         # llvmpipe has no VK_KHR_fragment_shader_barycentric, so the native run skips the pixel shaders that read raw
         # barycentrics. Under --bary-fallback they read them from an input a pass-through geometry shader feeds
@@ -367,7 +369,7 @@ jobs:
           LEONIDA_BARY_FALLBACK: "1"
         run: |
           log="$RUNNER_TEMP/gpu-bary.log"
-          python3 -I scripts/run_gpu_tests.py --build runtime/build --llvm-mc /usr/lib/llvm-18/bin/llvm-mc --work "$RUNNER_TEMP/gpu-bary" | tee "$log"
+          python3 -I scripts/run_gpu_tests.py --build runtime/build --llvm-mc /usr/lib/llvm-19/bin/llvm-mc --work "$RUNNER_TEMP/gpu-bary" | tee "$log"
           names=$(sed -n 's/^bary fallback GS: \(.*\)\.bary_gs\.spv$/\1/p' "$log")
           if [ -z "$names" ]; then
             echo "::error::no barycentric fallback geometry shader was built"

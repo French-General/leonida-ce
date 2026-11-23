@@ -22,10 +22,11 @@ This page collects the setup steps and the problems testers have run into so far
 
   On Linux and macOS, the distribution's or Homebrew's `llvm-mc` on `PATH` is enough, if it is 21 or newer.
 
-  An older `llvm-mc` is not enough for everything. Ubuntu 24.04's `llvm-18` (18.1.3) runs `run_gpu_tests.py`,
-  `valu_fuzz.py --family mem` and `lds_fuzz.py`, but rejects `op_sel` on the 16-bit integer VOP3 forms that
-  `valu_fuzz.py --family f16` generates (`v_ashrrev_i16_e64 ... op_sel:[0,0,0]`: "not a valid operand"), so no f16
-  program assembles. 23.1.6 assembles them.
+  An older `llvm-mc` is not enough for everything. Ubuntu 24.04's default `llvm-18` (18.1.3) works for
+  `valu_fuzz.py --family mem` and `lds_fuzz.py`, but rejects `ps_sdwa_f16_const`. LLVM 19+ assembles the stock CI
+  test fixtures. However, full f16 fuzzing with `valu_fuzz.py --family f16` requires LLVM 21+, as LLVM 19 still
+  rejects `op_sel` on the 16-bit integer VOP3 forms that the fuzzer generates
+  (`v_ashrrev_i16_e64 ... op_sel:[0,0,0]`: "not a valid operand").
 
   On Windows, ROCm 7.2's bundled `llvm-mc.exe` reports LLVM 21.0.0git. It assembled the TEST-71 memory and
   LDS programs but rejected the 16-bit shift used by the f16 generator. To check an assembler directly in
@@ -305,13 +306,13 @@ for every pull request that touches the runtime, the scripts or a tool the jobs 
 lists them), and you can do the same on Linux without a GPU:
 
 ```sh
-sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools spirv-tools llvm-18
+sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools spirv-tools llvm-19
 cmake -S runtime -B runtime/build/linux && cmake --build runtime/build/linux --parallel
-python -I scripts/run_gpu_tests.py --build runtime/build/linux --llvm-mc /usr/lib/llvm-18/bin/llvm-mc
+python -I scripts/run_gpu_tests.py --build runtime/build/linux --llvm-mc /usr/lib/llvm-19/bin/llvm-mc
 LEONIDA_W64_EMULATE=1 python -I scripts/run_gpu_tests.py --build runtime/build/linux \
-    --llvm-mc /usr/lib/llvm-18/bin/llvm-mc --filter cs_
+    --llvm-mc /usr/lib/llvm-19/bin/llvm-mc --filter cs_
 LEONIDA_BARY_FALLBACK=1 python -I scripts/run_gpu_tests.py --build runtime/build/linux \
-    --llvm-mc /usr/lib/llvm-18/bin/llvm-mc
+    --llvm-mc /usr/lib/llvm-19/bin/llvm-mc
 ```
 
 With Mesa 25.2 (llvmpipe, LLVM 20) the first run passes 52 of 88 and skips 36, the second passes 37 of 39 and
