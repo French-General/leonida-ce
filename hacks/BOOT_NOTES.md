@@ -143,3 +143,9 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   writes 71/72, the console texture refresh, CBV snapshots).
 - Shell note: never `pkill -f` a pattern that also appears in the command running it (it kills its own shell,
   exit 144); use `pkill -x gdb`.
+- Not the bottom-of-pipe writes (list slots 71/72): with every write logged that carries 0x150 in its high half
+  (none) and the first 40 targets (0x795cb29000xx and 0x795e1259xxxx, values 0 or counters), none lands on the
+  audio object (0x795e17541ec0 in that run). Left to check: the console texture refresh and CBV snapshots (both
+  read title memory, they do not write it), the title's own heaps (which allocator the object came from and its
+  neighbours), and whether the object was ever constructed (a lock word that was never initialised would read
+  as whatever the allocator left there).
