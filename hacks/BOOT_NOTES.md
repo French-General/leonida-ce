@@ -265,3 +265,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   0x47): when the arena struct was overwritten, that allocator was handing out the arena's memory, so the arena
   had been freed before. Ruled out for this stop so far: audio lock, XMem hooks, aliasing, page mapping batches,
   address range, CPU count, DirectStorage ordering, frame pacing, runtime writes into title memory.
+- TURN: it is an overflow, not a use-after-free. Watching the arena object's first word: at the instant it changed
+  (0xc002010 -> 0), its owner tid 180 was inside the float-row memcpy (host memcpy <- +0x550e613 <- +0x1335bea <-
+  +0x186424 <- the walk). The row copy writes past the end of its destination and over its neighbours (the arena
+  object, the objects in the trapped page, heap headers): that is the clobbered vtable, the "freed" arena and the
+  bad free alike, and why it depends on layout and timing. At +0x1335be6 the title calls *0x40 on the object at
+  [rsi+0x30] with destination [rsi+0x50]+0x18 and a source from [rsi+0x58] (vtable +0x10); the copier +0x550e5xx
+  then writes [item+0x38]*16 bytes for each of [item+0x3c] items. Next: compare the destination buffer's size with
+  what is copied, and find which of the two the runtime feeds (a size or count it answers differently from the
+  console: allocation info, texture layout, a query result).

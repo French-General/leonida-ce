@@ -1128,6 +1128,19 @@ void xs_trap_tick(std::uint64_t /*frame*/) {
             int resets = 0;
             for (unsigned tick = 0;; ++tick) {
                 if (const std::uintptr_t arena = g_watch_arena.load()) {
+                    // The arena object's first word: when it changes the object was freed or reused; dump every
+                    // thread once, while the thread that freed it is likely still near the free.
+                    static std::uint64_t first = 0;
+                    static bool dumped = false;
+                    const std::uint64_t head = *reinterpret_cast<const volatile std::uint64_t*>(arena);
+                    if (!first) first = head;
+                    else if (head != first && !dumped) {
+                        dumped = true;
+                        std::fprintf(stderr, "[watch] t=%lu arena %llx head %llx -> %llx: all threads\n", GetTickCount(),
+                                     static_cast<unsigned long long>(arena), static_cast<unsigned long long>(first),
+                                     static_cast<unsigned long long>(head));
+                        xs_dump_thread_stacks();
+                    }
                     const std::uint64_t cur = *reinterpret_cast<const volatile std::uint64_t*>(arena + 0x10);
                     if (prev && cur < prev && resets++ < 12) {
                         char why[160];
