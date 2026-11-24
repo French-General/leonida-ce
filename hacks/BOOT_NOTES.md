@@ -207,3 +207,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   below 2^40, which also makes pool addresses repeat between runs. Next: if the object's address repeats,
   write-protect its page under gdb before 120 s (call mprotect in the inferior) and stop on the fault to find
   the writer of the floats.
+- The corrupted object's page repeats between runs (0x14f341440, 0x14f3414e0: page 0x14f341000, the 0x183 pool
+  at 0x14b200000). hacks: trap.gdb write-protects it from 90 s (mprotect in the inferior) and logs each writer.
+  In that run nothing wrote the page for the whole gdb session and the title did not crash at 120-130 s: it ran
+  to 349 s, loading world data (DirectStorage opens of data/ttdb terrain and map tiles, the furthest so far).
+  The only fault was a later write at +0xaa0c2b (an allocator writing an all-ones block header, legitimate) once
+  gdb had left the page protected. So the float corruption is a race that the gdb slowdown avoided.
+  Next: the same trap inside the runtime (VirtualProtect at about 90 s plus a vectored handler that logs the
+  writer and re-protects; and a periodic float check), which keeps the timing. If floats appear without a
+  trapped CPU write, the writer is the GPU path (memory the GPU writes through host-imported pages).
