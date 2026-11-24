@@ -1,0 +1,39 @@
+GPU:        NVIDIA GeForce RTX 5090 D v2 (Blackwell, PCI 10DE:2B8C)
+Driver:     NVIDIA 621.24, Vulkan device API 1.4.357
+Subgroup:   32..32 (default 32), subgroup size control, no native wave64
+OS:         Windows 11 Pro x64, build 22631.6199
+Commit:     fee9fe22dce0db83eab9219439caf1fb3d08959b, tested 2026-11-24
+Tools:      Python 3.12.4, conda-forge llvm-mc 23.1.6 (AMDGPU), SPIRV-Tools 2026.4
+Runtime:    runtime-windows artifact from the same commit, GitHub Actions run 45317660462
+            https://github.com/IAmNotSiob/leonida-ce/actions/runs/45317660462
+
+run_gpu_tests.py: 251/251 synthetic shaders translated and passed spirv-val in each full run.
+            LEONIDA_W64_EMULATE=0: 196/245 passed, 48 skipped, 1 failed (exit 1)
+            LEONIDA_W64_EMULATE=1: 227/245 passed, 17 skipped, 1 failed (exit 1)
+Failed:     ms_wave_info_s3 in both modes. At (0,0) the harness read
+            (-1.0000,-1.0000,-1.0000,-1.0000), expected (0.0078,0.0078,0.5,1.0).
+Reruns:     --filter ms_wave_info_s3 selected one test. It failed in one isolated rerun
+            per mode (0/1 passed each time, exit 1) with the same pixel and values.
+Skipped:    Both modes skipped 16 fixtures covered by other runners and ps_w64x_readlane
+            (requires a 64-wide fragment subgroup). The native run also skipped 30 compute
+            cases and ms_w64x_ballot. All 31 passed with wave64 emulation enabled.
+
+Standalone depth/stencil resolve test:
+            d3d12_depth_resolve_test.exe exited with 0xC0000409 (3221226505) on the
+            first run and the one isolated retry. Both produced no stdout or stderr.
+            This executable is separate from the 245 GPU suite cases.
+
+Reproduction (PowerShell, from the matching checkout):
+            Put llvm-mc.exe, spirv-as.exe and spirv-val.exe on PATH. Set $build to the
+            extracted artifact directory containing vk_harness.exe.
+            $env:LEONIDA_VK_DEVICE = '5090 D'
+            $env:VK_LOADER_LAYERS_DISABLE = '~implicit~'
+            py -3.12 -I tools/vk_subgroup_info.py --stage-caps
+            For each value '0' and '1' of $env:LEONIDA_W64_EMULATE, run:
+            py -3.12 -I scripts/run_gpu_tests.py --build $build --assembler spirv-as --require-pass
+            py -3.12 -I scripts/run_gpu_tests.py --build $build --assembler spirv-as --require-pass --filter ms_wave_info_s3
+            Each invocation used a fresh work directory. The standalone depth/stencil
+            test ran from the artifact directory with the same GPU filter and layers disabled.
+
+AI-assisted (OpenAI Codex): selected the GPU, ran the synthetic tests and reruns, and
+checked the counts against the harness summaries. build.py and check.py were not run separately.

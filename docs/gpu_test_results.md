@@ -9,6 +9,7 @@ post counts and pass/fail lines there, never game shaders, logs or private paths
 | AMD Radeon RX 9070 GRE (RDNA4, GFX1201), subgroup 32..64 | RADV, Mesa 26.3.1-arch3.5, Vulkan 1.4.363, CachyOS | `05961f0` | 264/264 translated and valid | 203/206 pass, 3 skipped | 218/235 passed, 16 skipped (native and emulated) | `ms_wave_info_s3`, flaky (see below) | [local note](../gpu-test-results/RX9070GRE.txt) |
 | AMD Radeon RX 9070 XT (RDNA4, GFX1201), subgroup 32..64 | AMD 26.11.2 (LLPC), Vulkan 1.4.359, Windows 11 26300.9550 | `5d74c27` | not run | not run | 224/241 passed, 16 skipped, 1 failed (native); 225/241 passed, 0 failed (`LEONIDA_W64_EMULATE=1`) | `ms_wave_info_s3`, every native run, flaky emulated (see below) | [local note](../gpu-test-results/RX9070XT.txt) |
 | AMD Radeon RX 7900 GRE (RDNA3, gfx1100), subgroup 32..64 | AMD proprietary 26.11.2 (LLPC), Vulkan 1.4.359, Windows 11 x64 | `5d74c27` | 247/247 translated and valid | run via run_gpu_tests.py | 225/241 passed, 16 skipped | none | [#166](https://github.com/ItsNotRexed/Leonida/issues/166#issuecomment-7115041436) |
+| NVIDIA GeForce RTX 5090 D v2 (Blackwell), subgroup 32 | NVIDIA 621.24, Vulkan 1.4.357, Windows 11 Pro 22631.6199 | `fee9fe2` | not run separately | not run separately | 196/245 passed, 48 skipped, 1 failed (native); 227/245 passed, 17 skipped, 1 failed (wave64 emulation) | `ms_wave_info_s3` in both modes, including isolated reruns | [local note](../gpu-test-results/RTX5090Dv2.txt) |
 
 ## AMD Radeon RX 9070 GRE — 2026-11-23
 
@@ -96,3 +97,18 @@ until it reports nothing to do before installing it. Loader warnings from instal
 affect the run. This is the first RDNA3 entry: wave64 and mesh shader tests ran natively (all `ms_*` pass).
 
 AI-assisted (Claude): helped set up the tools and write this entry; the build and test run were done on this GPU.
+
+## NVIDIA GeForce RTX 5090 D v2 — 2026-11-24
+
+On Windows 11 Pro with NVIDIA driver 621.24, all 251 synthetic shaders translated and passed
+`spirv-val` in each mode. Enabling `LEONIDA_W64_EMULATE=1` moved 30 compute cases and the
+`ms_w64x_ballot` mesh case from skipped to passed. Of the remaining 17 skips, 16 belong to
+other test runners and `ps_w64x_readlane` needs a 64-wide fragment subgroup.
+
+`ms_wave_info_s3` failed in both full runs. One isolated rerun per mode gave the same result:
+pixel (0,0) read back as (-1,-1,-1,-1), with (0.0078,0.0078,0.5,1.0) expected.
+Separately, `d3d12_depth_resolve_test.exe` exited with Windows status `0xC0000409` on both
+attempts, before printing a summary. See the [test record](../gpu-test-results/RTX5090Dv2.txt)
+for commands, tool versions and the matching CI build.
+
+AI-assisted (OpenAI Codex): ran both suites and isolated reruns on this GPU and prepared the report.
