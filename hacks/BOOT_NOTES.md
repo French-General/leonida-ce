@@ -463,3 +463,16 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   copies now check VirtualQuery first (only committed memory or reserved XMem views). Console format 65
   (A8_UNORM, a 4K render target; core Vulkan has no A8) maps to R8_UNORM (French-General, issue #2). XDisplay is
   reported available and the sandbox-id query only needs room for the string, as in VIctory.
+- Black screen, diagnosed (subagents, with confidence ratings):
+  - Frontend gate (Very likely, measured on Windows): the loading-screen/frontend tick 0x142257700 runs every frame but
+    returns early: flag 0x147453ED4 (bit 0; ED5 next to it) stays 0. Only 0x141C996B0 sets it, called only from the
+    boot state machine (0x1421B745E, 0x1421B8E02, 0x1459965C8). So the movie manager update 0x143A1AEB0 never runs,
+    no movie is requested, BinkOpenWithOptions (IAT 0x146794210) is never called (Bink itself is initialised), and
+    nothing renders into the UI target at 0x100001900. Poking the flags by hand opened the gate once, then the thread
+    blocked in 0x1406F97C0 (critical section [0x149E25800]+0x1E0) and presents stopped: not a viable hack.
+  - PLM gate (Definite: not the cause): the main thread's lifecycle wait (0x1421B8A3E..A56, byte 0x1471B9048 == 2)
+    passes on its first check, with or without a PLM shim. shims/plm_ce.cpp now accepts the app-state/constrained
+    registrations and never calls them (as a console leaves a running title alone); harmless, kept.
+  - Boot node (in progress): 0x145B47FF0 builds a task-graph node (name hash 0x672FD9D1, body functor 0x1421C3B60,
+    stored at obj+0x5A0 of the graph 0x141DECC30 builds) with edges to nodes 0xEA79F4B6, 0xB198EC07, 0x13B28C68,
+    0x5FDC36D5, 0x198352B0, 0xA599B5CB; the body never runs, so the boot state machine never starts.
