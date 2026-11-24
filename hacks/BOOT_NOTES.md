@@ -119,3 +119,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   routine +0x4b40 on the audio object (not an imported CRITICAL_SECTION or SRW lock). So another thread holds
   that object's lock and never releases it, and the audio frame never comes. Next: break at +0x559465c to get
   the object, read its lock word after the stall, and find the owning thread's stack.
+- The audio lock (gdb at 110 s, hacks: owner.gdb pattern): the title's lock word is one u64, owner thread index
+  in the high half (the index is TLS slot 0 block +0x1454), recursion count in the low half, 0xFFFFFFFF00000000
+  free. The audio object's lock reads 0x15000000003: thread 336, held three deep, and no live thread has index
+  336. The owner exited while holding it. Next: which short-lived game thread takes the audio object's lock
+  (index 336, so the title has made several hundred threads by then) and why it ends without unlocking (a thread
+  the runtime ends early, or an exception path).
+- The process has about 1,190 threads at 110 s: the background compute compiles make one thread each, and most
+  wait for one of the 40 slots. To do: a fixed pool of compile workers.
