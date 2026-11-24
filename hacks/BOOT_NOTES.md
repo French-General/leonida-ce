@@ -236,3 +236,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   comes at 131 s. Next: which threads touch the arena in the trapped page (log the thread id and the title
   thread index for the arena's allocations and for the float writes), to see whether two threads share one
   arena or whether the arena is reset while another thread still holds blocks from it.
+- One thread: the arena's allocations in the trapped page (+0xaa0c2b) and the float rows later copied there are
+  both on the same thread (tid 180, title index 384 in that run). So it is not two threads sharing one arena:
+  that thread reuses the arena's memory (a reset to its first block, about 0.28 s after the objects were carved)
+  while another thread still calls through an object it holds there. The allocator chains new blocks when full
+  (+0xaa0dc0); it does not wrap. The writes at +0xaa05ff/+0xaa0734/+0xaa08d9 are list-node setups, not the
+  reset. Next: find the reset (a write of [+8] into [+0x10], or a block free) with LEONIDA_CE_TRAP_ARENA=1 on a
+  run where the floats do appear, and what it waits for first (the other thread's use should end before it).

@@ -932,6 +932,15 @@ thread_local std::uint64_t t_trap_arena_before = 0;
 thread_local char t_trap_arena_line[512];
 std::atomic<int> g_trap_reset_logged{0};
 
+long xs_self_game_index() {
+    const auto slot = *reinterpret_cast<const volatile std::uint32_t*>(0x146e08b2cull);
+    const auto* tls = *reinterpret_cast<std::uint8_t* const* const*>(reinterpret_cast<std::uint8_t*>(NtCurrentTeb()) + 0x58);
+    if (!tls) return -2;
+    const std::uint8_t* block = tls[slot];
+    if (!block) return -2;
+    return *reinterpret_cast<const std::int32_t*>(block + 0x1454);
+}
+
 int xs_trap_floats() {
     if (!g_trap_page || !xs_readable(reinterpret_cast<const void*>(g_trap_page), 4096)) return -1;
     int n = 0;
@@ -1002,8 +1011,9 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
     {
         char* line = t_trap_line;
         constexpr int kLine = sizeof(t_trap_line);
-        int len = std::snprintf(line, kLine, "[trap] t=%lu write %llx by %s+%llx floats %d callers",
-                                GetTickCount(), static_cast<unsigned long long>(addr),
+        int len = std::snprintf(line, kLine, "[trap] t=%lu tid %lx idx %ld write %llx by %s+%llx floats %d callers",
+                                GetTickCount(), GetCurrentThreadId(), xs_self_game_index(),
+                                static_cast<unsigned long long>(addr),
                                 (rip >= 0x140000000ull && rip < 0x147000000ull) ? "G" : "host",
                                 static_cast<unsigned long long>(rip >= 0x140000000ull && rip < 0x147000000ull
                                                                     ? rip - 0x140000000ull : rip),
@@ -1020,7 +1030,8 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
             }
         }
         static std::atomic<int> arena_logged{0};
-        if (rip == 0x140aa0c2bull && !g_trap_arena.load()) {
+        static const bool trap_arena = GetEnvironmentVariableA("LEONIDA_CE_TRAP_ARENA", nullptr, 0) != 0;
+        if (trap_arena && rip == 0x140aa0c2bull && !g_trap_arena.load()) {
             const std::uintptr_t arena = static_cast<std::uintptr_t>(info->ContextRecord->Rcx);
             const std::uintptr_t page = arena & ~std::uintptr_t(4095);
             if (page != g_trap_page && ((arena + 0x18 - 1) & ~std::uintptr_t(4095)) == page) {
