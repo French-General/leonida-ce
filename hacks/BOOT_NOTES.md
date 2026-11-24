@@ -200,3 +200,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - Not the address range either: with title reservations below 2^40 (as on the console) the bad free still comes
   at about 125 s. Ruled out so far for this stop: audio lock (fixed), XMemAlloc hooks, xmem aliasing, page
   mapping batches (implemented), the address range, the runtime's audio allocations and list writes.
+- Both forms of the 120-130 s stop are the same corruption: float data overwrites live objects. The bad-freed
+  block held 1.0f floats; in form (b) the object at rsi (0x14f341440 in one run) is rows of 0x3f800000 (1.0f,
+  patterns like 1,1,1,0), its "vtable" two floats. That address is not in the exe (image ends 0x14b06d000): it
+  is inside the title's 0x183 pool, reserved at 0x14b200000 (0x25400000 bytes) since title reservations stay
+  below 2^40, which also makes pool addresses repeat between runs. Next: if the object's address repeats,
+  write-protect its page under gdb before 120 s (call mprotect in the inferior) and stop on the fault to find
+  the writer of the floats.
