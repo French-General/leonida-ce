@@ -93,3 +93,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Teardown at this point is an error path: something earlier failed. The first anomaly in the run is a write
   past a stream buffer's capacity at about 98 s (soft assert +0x4dcbc9d, game+0x4dcbc55: remaining < size;
   the write is skipped and returns false). Next: what fills that buffer, and why it is too small here.
+- The overflowing buffer (game+0x4dcbc55, about 100 s) is a shared command stream, not a DSP queue: records
+  tagged 0x...04002821 carry float parameters (0.55, 0.2, 1000, 2000). Writers flush a local buffer into it
+  (game+0x4e52a40: lock at owner+8, append via +0x4dcbc40) from +0x5ab13e8 through +0x4e529a0. The stream comes
+  from the table at *0x149ae9950 (+0x4dcbc10): per slot an object with several 0x28-byte streams and a current
+  index at +0xc8, so a consumer is meant to switch streams each frame and drain the old one (the switch is in the
+  large function around +0x4dc3df2/+0x4dc3e11). No thread was in that code in the stack dumps, and the stream fills
+  in about 100 s. A null ALSA device (ALSA_CONFIG_PATH with pcm.!default type null, run setting only) removed the
+  ALSA open errors but did not change this. Next: who calls the switch, and what it waits on.
