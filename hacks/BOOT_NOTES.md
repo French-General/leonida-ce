@@ -127,3 +127,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   the runtime ends early, or an exception path).
 - The process has about 1,190 threads at 110 s: the background compute compiles make one thread each, and most
   wait for one of the 40 slots. To do: a fixed pool of compile workers.
+- Correction: the audio lock was never taken. Under gdb from 1 s, no thread with index 336 ever acquires a lock
+  (break at game+0x4bdf if the new owner is 336), and the audio object (heap, e.g. 0x7bf358747a40) already reads
+  0x0000015000000002 when the audio thread first locks it (its first frame, about 61 s). The word was overwritten
+  with data (2 and 0x150), not locked: memory corruption of the audio object. Suspect first: the runtime's
+  allocations made at audio start (trace: XMemAlloc attributes 0xf0814000, 393216 bytes at 61.79 s; ApuCreateHeap
+  and SHAPE contexts at 61.78 s) overlapping or under-sizing; then the silent xapu/chad status and result writes.
+  Next: log the object's address against those allocations, and break on writes to it (software: single-step is
+  too slow; check each runtime writer's target range instead).
