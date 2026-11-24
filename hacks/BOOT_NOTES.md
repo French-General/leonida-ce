@@ -250,3 +250,6 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   <- +0x503ce73 <- +0x41f3f8: a work queue (+0x503ce45 pops items with +0x515ada0) dispatching each item through
   +0x180f00 (vtable +0x28), whose walk frees nodes. Hypothesis: an item reaches that queue twice (or after its
   owner is gone), so it is processed and freed twice. Next: log items popped at +0x503ce5e and look for repeats.
+- Work queue pops (gdb at +0x503ce63, hacks/pops.gdb): items do come back (6 of 24 distinct items popped twice,
+  queues 0x14ece91a0, 0x14ece9b90, 0x14f1eef80, all on one thread), but recurring items may be normal. To tell,
+  next: also log the title's free (+0x187b0) of those item addresses and look for a pop after a free.
