@@ -177,3 +177,6 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   counts (and why it is 0 here) is still open; the patch only makes the zero case unlock like its sibling.
 - The run still ends at about 121 s: the bad free (+0x187fb, +0x1881f, +0x1884a) then +0x538d0e6. That is a
   separate fault, not the overflow's error path as guessed before.
+- Not the XMemAlloc hooks: routing XMemAlloc/XMemFree through __XMemAllocationHooks__ (as VIctory does) is in,
+  and the bad free still comes at about 123 s. Not command allocator slot 9 either (an "allocation callback"
+  VIctory ignores; the caller at +0x188501 ignores its result).

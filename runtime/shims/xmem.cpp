@@ -67,13 +67,52 @@ void note_attributes(const char* api, uint64_t attributes, size_t size, const vo
 
 void* allocate_block(size_t size) { return _aligned_malloc(size ? size : 1, kAlign); }
 
+// The title's allocation hooks, after Marvisak/VIctory's xmem.rs (GPLv3): a title may export
+// __XMemAllocationHooks__, two routine pointers (allocate, free) that XMemAlloc and XMemFree call, for its own calls
+// and its middleware's; the ...Default exports do not. Grand Theft Auto VI sets them, and frees memory it got from
+// XMemAlloc with its own allocator: a block from the host heap fails that allocator's header check (the "bad free"
+// soft asserts at game+0x187fb, +0x1881f, +0x1884a, then a crash in the teardown that follows).
+// The export is found in the title image's export directory (mapped at its preferred base by the runtime).
+using XMemAllocHook = void*(__stdcall*)(size_t, uint64_t);
+using XMemFreeHook = void(__stdcall*)(void*, uint64_t);
+
+void* const* title_allocation_hooks() {
+    static void* const* const hooks = []() -> void* const* {
+        const auto* base = reinterpret_cast<const unsigned char*>(0x140000000ull);
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(base, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) return nullptr;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!dir.VirtualAddress) return nullptr;
+        const auto* exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + dir.VirtualAddress);
+        const auto* names = reinterpret_cast<const DWORD*>(base + exp->AddressOfNames);
+        const auto* ordinals = reinterpret_cast<const WORD*>(base + exp->AddressOfNameOrdinals);
+        const auto* functions = reinterpret_cast<const DWORD*>(base + exp->AddressOfFunctions);
+        for (DWORD i = 0; i < exp->NumberOfNames; ++i) {
+            if (std::strcmp(reinterpret_cast<const char*>(base + names[i]), "__XMemAllocationHooks__") == 0) {
+                auto* at = reinterpret_cast<void* const*>(base + functions[ordinals[i]]);
+                std::fprintf(stderr, "[rt] xmem: title allocation hooks at %p\n", static_cast<const void*>(at));
+                return at;
+            }
+        }
+        return nullptr;
+    }();
+    return hooks;
+}
+
 void* __stdcall XMemAlloc(size_t size, uint64_t attributes) {
     note_attributes("XMemAlloc", attributes, size, _ReturnAddress());
+    if (void* const* hooks = title_allocation_hooks())
+        if (const auto alloc = reinterpret_cast<XMemAllocHook>(hooks[0])) return alloc(size, attributes);
     return allocate_block(size);
 }
 
 void __stdcall XMemFree(void* p, uint64_t attributes) {
     note_attributes("XMemFree", attributes, kNoSize, _ReturnAddress());
+    if (void* const* hooks = title_allocation_hooks())
+        if (const auto free_hook = reinterpret_cast<XMemFreeHook>(hooks[1])) return free_hook(p, attributes);
     _aligned_free(p);
 }
 
