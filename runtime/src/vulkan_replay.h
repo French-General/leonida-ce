@@ -40,6 +40,7 @@
 #include "vulkan_indirect_dispatch_count.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -2087,7 +2088,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         !vk.draw_indexed || !vk.bind_pipeline || !vk.push_constants)
         return ReplayResult::unsupported;
     const GraphicsPipeline* pipeline = vk.graphics_pipeline(draw.pipeline);
-    if (!pipeline || !pipeline->pipeline) return ReplayResult::unresolved_resource;
+    if (!pipeline || !pipeline->pipeline) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
     if (pipeline->mesh != draw.mesh) return ReplayResult::invalid_draw;
     if (draw.mesh && !vk.draw_mesh_tasks) return ReplayResult::unsupported;
     if (pipeline->bindless_set && !vk.bind_descriptor_sets) return ReplayResult::unsupported;
@@ -2108,7 +2109,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         const TargetView& target = draw.views->render_targets[slot];
         if (!target.resource) continue;
         const ResourceBinding* binding = resolve(target.resource);
-        if (!binding) return ReplayResult::unresolved_resource;
+        if (!binding) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
         auto& a = p.colors[slot];
         a.binding = *binding;
         a.id = target.resource;
@@ -2125,7 +2126,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
     }
     if (draw.depth.resource && pipeline->depth_format != VK_FORMAT_UNDEFINED) {
         const ResourceBinding* binding = resolve(draw.depth.resource);
-        if (!binding) return ReplayResult::unresolved_resource;
+        if (!binding) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
         auto& a = p.depth;
         a.binding = *binding;
         a.id = draw.depth.resource;
@@ -2166,7 +2167,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         const bool bound = draw.views && slot < draw.views->vertex_buffers.size() &&
                            draw.views->vertex_buffers[slot].va;
         if (!bound) {
-            if (!vk.zero_buffer) return ReplayResult::unresolved_resource;
+            if (!vk.zero_buffer) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
             p.vertex_buffers[slot] = vk.zero_buffer;
             p.vertex_offsets[slot] = vk.zero_offset;
             p.vertex_sizes[slot] = vk.zero_size;
@@ -2175,8 +2176,18 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         }
         const VertexBufferView& view = draw.views->vertex_buffers[slot];
         std::uint64_t size = view.size;
-        if (!vk.buffer_at(view.va, size, p.vertex_buffers[slot], p.vertex_offsets[slot]))
-            return ReplayResult::unresolved_resource;
+        if (!vk.buffer_at(view.va, size, p.vertex_buffers[slot], p.vertex_offsets[slot])) {
+            // HACK (Leonida CE boot): the title's vertex data lives in its own memory, which is not a GPU buffer here
+            // yet; read zeros like an unbound slot instead of refusing the whole list.
+            static bool told_ = false;
+            if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: vertex buffer at title VA %llx -> zeros\n", (unsigned long long)view.va); }
+            if (!vk.zero_buffer) return ReplayResult::unresolved_resource;
+            p.vertex_buffers[slot] = vk.zero_buffer;
+            p.vertex_offsets[slot] = vk.zero_offset;
+            p.vertex_sizes[slot] = vk.zero_size;
+            p.vertex_strides[slot] = 0;
+            continue;
+        }
         p.vertex_sizes[slot] = size;
         p.vertex_strides[slot] = (pipeline->zero_step_slots & (1u << slot)) ? 0 : view.stride;
     }
@@ -2185,13 +2196,19 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         else if (draw.index.format == 42) p.index_type = VK_INDEX_TYPE_UINT32;
         else if (draw.index.va) return ReplayResult::unsupported;
         if (!draw.index.va) {  // no index buffer: every index reads 0
-            if (!vk.zero_buffer) return ReplayResult::unresolved_resource;
+            if (!vk.zero_buffer) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
             p.index_buffer = vk.zero_buffer;
             p.index_offset = vk.zero_offset;
         } else {
             std::uint64_t size = draw.index.size;
-            if (!vk.buffer_at(draw.index.va, size, p.index_buffer, p.index_offset))
-                return ReplayResult::unresolved_resource;
+            if (!vk.buffer_at(draw.index.va, size, p.index_buffer, p.index_offset)) {
+                // HACK (Leonida CE boot): index data in title memory, as above: every index reads 0.
+                static bool told_ = false;
+                if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: index buffer at title VA %llx -> zeros\n", (unsigned long long)draw.index.va); }
+                if (!vk.zero_buffer) return ReplayResult::unresolved_resource;
+                p.index_buffer = vk.zero_buffer;
+                p.index_offset = vk.zero_offset;
+            }
         }
     }
     return ReplayResult::success;
@@ -2606,7 +2623,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
         };
 
         if (const auto* transition = std::get_if<TransitionBarrier>(&command)) {
-            if (!bind(transition->resource)) return ReplayResult::unresolved_resource;
+            if (!bind(transition->resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (p.binding.image == VK_NULL_HANDLE) {
                 if (transition->subresource != 0 && transition->subresource != all_subresources)
                     return ReplayResult::invalid_subresource;
@@ -2616,14 +2633,14 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
         } else if (std::holds_alternative<GlobalBarrier>(command) || std::holds_alternative<BufferBarrier>(command)) {
             if (!vk.pipeline_barrier2) return ReplayResult::unsupported;
             if (const auto* buffer_barrier = std::get_if<BufferBarrier>(&command))
-                if (!bind(buffer_barrier->resource)) return ReplayResult::unresolved_resource;
+                if (!bind(buffer_barrier->resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
         } else if (const auto* texture = std::get_if<TextureBarrier>(&command)) {
             if (!vk.pipeline_barrier2) return ReplayResult::unsupported;
-            if (!bind(texture->resource)) return ReplayResult::unresolved_resource;
+            if (!bind(texture->resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (!p.binding.image || !barrier_range(p.binding, texture->range, p.range))
                 return ReplayResult::invalid_subresource;
         } else if (const auto* color_clear = std::get_if<ClearRenderTarget>(&command)) {
-            if (!bind(color_clear->target.resource)) return ReplayResult::unresolved_resource;
+            if (!bind(color_clear->target.resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (!p.binding.image || p.binding.aspects != VK_IMAGE_ASPECT_COLOR_BIT) return ReplayResult::invalid_clear;
             if (!detail::view_range(p.binding, color_clear->target, VK_IMAGE_ASPECT_COLOR_BIT, p.range))
                 return ReplayResult::invalid_subresource;
@@ -2645,7 +2662,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                        r != ReplayResult::success) return r;
             if (!p.skip && p.rects.empty() && !vk.clear_color_image) return ReplayResult::unsupported;
         } else if (const auto* depth_clear = std::get_if<ClearDepthStencil>(&command)) {
-            if (!bind(depth_clear->target.resource)) return ReplayResult::unresolved_resource;
+            if (!bind(depth_clear->target.resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             VkImageAspectFlags aspects = 0;
             if (depth_clear->flags & clear_depth) aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
             if (depth_clear->flags & clear_stencil) aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -2665,7 +2682,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (!p.skip && p.rects.empty() && !vk.clear_depth_stencil_image) return ReplayResult::unsupported;
         } else if (const auto* uav = std::get_if<ClearUnorderedAccess>(&command)) {
             const UavView& view = uav->view;
-            if (!bind(view.resource)) return ReplayResult::unresolved_resource;
+            if (!bind(view.resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (view.buffer) {
                 if (!vk.fill_buffer || !vk.update_buffer || !vk.copy_buffer) return ReplayResult::unsupported;
                 if (predicated) ++out.unpredicated_copies;  // fills and copies are transfer commands
@@ -2725,7 +2742,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (predicated && !std::holds_alternative<CopyBuffer>(command)) ++out.unpredicated_copies;
             const auto [dst_id, src_id] = copy_ids(command);
             const ResourceBinding* source = resolve(src_id);
-            if (!bind(dst_id) || !source) return ReplayResult::unresolved_resource;
+            if (!bind(dst_id) || !source) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             p.source = *source;
             ReplayResult result = ReplayResult::success;
             if (const auto* buffer_copy = std::get_if<CopyBuffer>(&command)) {
@@ -2858,7 +2875,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (!vk.resolve_image) return ReplayResult::unsupported;
             if (predicated) ++out.unpredicated_copies;  // a transfer command, like the copies
             const ResourceBinding* source = resolve(resolve_command->src);
-            if (!bind(resolve_command->dst) || !source) return ReplayResult::unresolved_resource;
+            if (!bind(resolve_command->dst) || !source) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             p.source = *source;
             if (const auto result = detail::prepare_resolve(*resolve_command, p); result != ReplayResult::success)
                 return result;
@@ -2889,7 +2906,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             }
         } else if (const auto* discard = std::get_if<DiscardResource>(&command)) {
             // Buffers and partial (rectangle) discards keep their contents, which "undefined" allows.
-            if (!bind(discard->resource)) return ReplayResult::unresolved_resource;
+            if (!bind(discard->resource)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             const std::uint64_t end = std::uint64_t(discard->first_subresource) + discard->count;
             if (!p.binding.image) {
                 if (!discard->whole && end > 1) return ReplayResult::invalid_subresource;
@@ -2909,7 +2926,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (!vk.update_buffer || !vk.buffer_at) return ReplayResult::unsupported;
             std::uint64_t bytes = 4;
             if (!vk.buffer_at(write->address, bytes, p.write_buffer, p.write_offset) || bytes < 4)
-                return ReplayResult::unresolved_resource;
+                { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (p.write_offset % 4) return ReplayResult::invalid_copy;
             // WriteBufferImmediate resolves by VA and may target a readback buffer in COPY_DEST.
             out.wrote_readback = true;
@@ -2918,14 +2935,14 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (!vk.copy_buffer) return ReplayResult::unsupported;
             if (predicated) ++out.unpredicated_copies;  // a transfer command, like the copies
             const ResourceBinding* source = resolve(atomic->src);
-            if (!bind(atomic->dst) || !source) return ReplayResult::unresolved_resource;
+            if (!bind(atomic->dst) || !source) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             p.source = *source;
             if (!p.binding.buffer || !p.source.buffer || !detail::within(atomic->dst_offset, atomic->bytes, p.binding.size) ||
                 !detail::within(atomic->src_offset, atomic->bytes, p.source.size))
                 return ReplayResult::invalid_copy;
             for (const auto& d : atomic->dependencies) {
                 const ResourceBinding* dependent = resolve(d.resource);
-                if (!dependent) return ReplayResult::unresolved_resource;
+                if (!dependent) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 if (!dependent->image) {
                     const std::uint64_t end = d.end == UINT64_MAX ? dependent->size : d.end;
                     if (d.subresource != 0 || d.begin >= end || end > dependent->size)
@@ -2944,7 +2961,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (!conditional) return ReplayResult::unsupported;
             // Without physical segments the capture dispatch would pollute CSInvocations.
             if (statistics_active && !statistics_helpers) return ReplayResult::unsupported;
-            if (!bind(predication->buffer)) return ReplayResult::unresolved_resource;
+            if (!bind(predication->buffer)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (!p.binding.buffer || !detail::within(predication->offset, 8, p.binding.size) ||
                 predication->offset > UINT64_MAX - p.binding.buffer_offset)
                 return ReplayResult::invalid_predication;
@@ -2956,7 +2973,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             // not suppress them (emit_query suspends conditional rendering around ResolveQueryData).
             if (!queries) return ReplayResult::unsupported;
             QueryPool* heap = vk.query_pool(range.heap);
-            if (!heap) return ReplayResult::unresolved_resource;
+            if (!heap) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (!query_fits_heap(heap->heap_type, range.type)) return ReplayResult::invalid_query;
             if (range.first >= heap->count || range.count > heap->count - range.first)
                 return ReplayResult::invalid_query;
@@ -2979,7 +2996,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             }
             if (const auto* resolve_queries = std::get_if<ResolveQueries>(&command)) {
                 // The destination is a buffer, as D3D12 requires, large enough for every result.
-                if (!bind(resolve_queries->dst)) return ReplayResult::unresolved_resource;
+                if (!bind(resolve_queries->dst)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 const std::uint64_t bytes = std::uint64_t(range.count) * query_result_size(range.type);
                 if (!p.binding.buffer || p.binding.buffer_offset % 8 ||
                     !detail::within(resolve_queries->offset, bytes, p.binding.size) ||
@@ -2997,7 +3014,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             }
             out.queries.push_back({i, heap, statistics_active});
         } else if (const auto* ind = std::get_if<ExecuteIndirect>(&command)) {
-            if (!bind(ind->argument_buffer) || !p.binding.buffer) return ReplayResult::unresolved_resource;
+            if (!bind(ind->argument_buffer) || !p.binding.buffer) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             const VkDeviceSize record_size = detail::indirect_record_size(ind->kind);
             if (!record_size || ind->stride < record_size || ind->stride % sizeof(std::uint32_t))
                 return ReplayResult::invalid_indirect_arguments;
@@ -3006,7 +3023,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                 return ReplayResult::invalid_indirect_arguments;
             if (ind->count_buffer) {
                 const ResourceBinding* cnt = resolve(ind->count_buffer);
-                if (!cnt || !cnt->buffer) return ReplayResult::unresolved_resource;
+                if (!cnt || !cnt->buffer) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 if (!detail::indirect_range(*cnt, ind->count_offset, sizeof(std::uint32_t)))
                     return ReplayResult::invalid_indirect_arguments;
                 p.source = *cnt;
@@ -3032,7 +3049,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             if (ind->kind == IndirectKind::dispatch && ind->pipeline) {  // the pipeline and root arguments it was recorded
                 if (!vk.bind_pipeline || !vk.push_constants || !vk.compute_pipeline) return ReplayResult::unsupported;
                 const ComputePipeline* pipeline = vk.compute_pipeline(ind->pipeline);
-                if (!pipeline || !pipeline->pipeline) return ReplayResult::unresolved_resource;
+                if (!pipeline || !pipeline->pipeline) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 if (pipeline->bindless_set && !vk.bind_descriptor_sets) return ReplayResult::unsupported;
                 p.pipeline = *pipeline;
             }
@@ -3044,10 +3061,10 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                 if (!vk.build_acceleration_structures || !vk.resolve_acceleration_structure)
                     return ReplayResult::unsupported;
                 p.accel_dst = vk.resolve_acceleration_structure(build->dst_va);
-                if (!p.accel_dst) return ReplayResult::unresolved_resource;
+                if (!p.accel_dst) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 if (build->update && build->src_va) {
                     p.accel_src = vk.resolve_acceleration_structure(build->src_va);
-                    if (!p.accel_src) return ReplayResult::unresolved_resource;
+                    if (!p.accel_src) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 }
                 if (build->is_tlas && build->instance_pointers && build->instance_count) {
                     if (!vk.prepare_khr_instances || !vk.host_at || !vk.buffer_at) return ReplayResult::unsupported;
@@ -3061,9 +3078,9 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             std::uint64_t room = ~std::uint64_t(0);
             VkBuffer buffer = VK_NULL_HANDLE;
             VkDeviceSize offset = 0;
-            if (!vk.buffer_at(copy->dst_va, room, buffer, offset)) return ReplayResult::unresolved_resource;
+            if (!vk.buffer_at(copy->dst_va, room, buffer, offset)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             std::uint64_t source = ~std::uint64_t(0);
-            if (!vk.buffer_at(copy->src_va, source, buffer, offset)) return ReplayResult::unresolved_resource;
+            if (!vk.buffer_at(copy->src_va, source, buffer, offset)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             p.xdxr_bytes = std::min(room, source);
         } else if (const auto* info = std::get_if<AccelerationStructurePostbuild>(&command)) {
             // The KHR path never wrote postbuild values; it keeps skipping them rather than failing the list.
@@ -3074,14 +3091,14 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                 std::uint64_t room = 8 * info->sources.size();
                 VkBuffer buffer = VK_NULL_HANDLE;
                 VkDeviceSize offset = 0;
-                if (!vk.buffer_at(info->dest_va, room, buffer, offset)) return ReplayResult::unresolved_resource;
+                if (!vk.buffer_at(info->dest_va, room, buffer, offset)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 if (room < 8 * info->sources.size()) return ReplayResult::invalid_copy;
             }
         } else if (const auto* dispatch = std::get_if<Dispatch>(&command)) {
             if (!vk.bind_pipeline || !vk.push_constants || !vk.dispatch || !vk.compute_pipeline)
                 return ReplayResult::unsupported;
             const ComputePipeline* pipeline = vk.compute_pipeline(dispatch->pipeline);
-            if (!pipeline || !pipeline->pipeline) return ReplayResult::unresolved_resource;
+            if (!pipeline || !pipeline->pipeline) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
             if (pipeline->bindless_set && !vk.bind_descriptor_sets) return ReplayResult::unsupported;
             p.pipeline = *pipeline;
         } else if (const auto* draw = std::get_if<Draw>(&command)) {

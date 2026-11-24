@@ -291,14 +291,88 @@ void* xs_make_probe() {
 struct XsFenceMirror { ID3D12Fence* fence; volatile std::uint64_t value; };
 std::mutex g_fence_mirror_mu;
 std::map<const void*, XsFenceMirror*> g_fence_mirrors;
+
+// HACK (console list slots from Marvisak/VIctory, GPLv3): this title's list layout is two slots later than the
+// 2020-era one from slot 59 on. List 71/72 write a 32/64-bit value (flag 1: the GPU timestamp, 2: the system
+// timestamp) when the list has run; list 148 hands out memory the list owns until its next reset.
+// magic code, don't wanna deal with hours of plumbing with what these conjured devils of the souls of gpt 6 astra did.. jeez
+struct XsDeferredWrite { std::uint64_t address, value; unsigned bytes, what; };  // what: 0 value, 1 GPU ts, 2 system ts
+struct XsListExtras { std::vector<XsDeferredWrite> writes; std::vector<std::unique_ptr<std::uint8_t[]>> uploads; };
+std::mutex g_list_extras_mu;
+std::map<const void*, XsListExtras> g_list_extras;  // keyed by the console list proxy
+struct XsPendingWrites { ID3D12Fence* fence; std::uint64_t value; std::vector<XsDeferredWrite> writes; };
+std::vector<XsPendingWrites> g_pending_writes;      // under g_fence_mirror_mu
+
+void xs_do_write(const XsDeferredWrite& w) {
+    std::uint64_t v = w.value;
+    if (w.what != 0) {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        v = static_cast<std::uint64_t>(now.QuadPart);
+    }
+    if (IsBadWritePtr(reinterpret_cast<void*>(w.address), w.bytes)) return;
+    if (w.bytes == 4) *reinterpret_cast<volatile std::uint32_t*>(w.address) = static_cast<std::uint32_t>(v);
+    else *reinterpret_cast<volatile std::uint64_t*>(w.address) = v;
+}
+
 DWORD WINAPI xs_fence_mirror_thread(void*) {
     for (;;) {
         {
             std::lock_guard lock(g_fence_mirror_mu);
             for (auto& [key, m] : g_fence_mirrors) m->value = m->fence->GetCompletedValue();
+            for (auto it = g_pending_writes.begin(); it != g_pending_writes.end();) {
+                if (it->fence->GetCompletedValue() >= it->value) {
+                    for (const auto& w : it->writes) xs_do_write(w);
+                    it = g_pending_writes.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
         Sleep(1);
     }
+}
+void xs_start_mirror_thread() {
+    static const bool started = [] {
+        CloseHandle(CreateThread(nullptr, 0, &xs_fence_mirror_thread, nullptr, 0, nullptr));
+        return true;
+    }();
+    (void)started;
+}
+
+// After the queue has taken `lists` (console list proxies): their bottom-of-pipe writes happen once the work is done.
+void xs_schedule_list_writes(ID3D12CommandQueue* queue, UINT count, const std::uint64_t* lists) {
+    std::vector<XsDeferredWrite> writes;
+    {
+        std::lock_guard lock(g_list_extras_mu);
+        for (UINT i = 0; i < count; ++i) {
+            auto it = g_list_extras.find(reinterpret_cast<const void*>(lists[i]));
+            if (it == g_list_extras.end()) continue;
+            writes.insert(writes.end(), it->second.writes.begin(), it->second.writes.end());
+        }
+    }
+    if (writes.empty()) return;
+    static std::mutex fences_mu;
+    static std::map<ID3D12CommandQueue*, std::pair<ID3D12Fence*, std::uint64_t>> fences;
+    ID3D12Fence* fence = nullptr;
+    std::uint64_t value = 0;
+    {
+        std::lock_guard lock(fences_mu);
+        auto& slot = fences[queue];
+        if (!slot.first) {
+            ID3D12Device* device = nullptr;
+            if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&device))) || !device) return;
+            device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&slot.first));
+            device->Release();
+            if (!slot.first) return;
+        }
+        fence = slot.first;
+        value = ++slot.second;
+    }
+    queue->Signal(fence, value);
+    std::lock_guard lock(g_fence_mirror_mu);
+    g_pending_writes.push_back({fence, value, std::move(writes)});
+    xs_start_mirror_thread();
 }
 volatile std::uint64_t* xs_fence_value_address(const void* proxy, ID3D12Fence* real) {
     std::lock_guard lock(g_fence_mirror_mu);
@@ -306,15 +380,129 @@ volatile std::uint64_t* xs_fence_value_address(const void* proxy, ID3D12Fence* r
     if (it != g_fence_mirrors.end()) return &it->second->value;
     auto* m = new XsFenceMirror{real, real->GetCompletedValue()};
     g_fence_mirrors.emplace(proxy, m);
-    static const bool started = [] {
-        CloseHandle(CreateThread(nullptr, 0, &xs_fence_mirror_thread, nullptr, 0, nullptr));
-        return true;
-    }();
-    (void)started;
+    xs_start_mirror_thread();
     std::fprintf(stderr, "[hack] fence %p: completed-value address %p (value %llu)\n", proxy, (void*)&m->value,
                  (unsigned long long)m->value);
     std::fflush(stderr);
     return &m->value;
+}
+
+// HACK (model from Marvisak/VIctory, GPLv3: a heap's CPU and GPU start are one address, as on the console):
+// the title writes descriptors through GPU handles, so the heap proxy hands out the CPU start for both, and list
+// calls that take GPU descriptor handles get the real heap's GPU handle back. Without this, an ordinary heap's GPU
+// start (an arena offset) became a descriptor destination of a few hundred bytes.
+// magic code, don't wanna deal with hours of plumbing with what these conjured devils of the souls of gpt 6 astra did.. jeez
+struct XsHeapRange { std::uint64_t cpu, size, gpu; };
+std::mutex g_heap_ranges_mu;
+std::vector<XsHeapRange> g_heap_ranges;
+std::atomic<int> g_heap_range_count{0};
+void xs_register_heap_range(std::uint64_t cpu, std::uint64_t size, std::uint64_t gpu) {
+    std::lock_guard lock(g_heap_ranges_mu);
+    g_heap_ranges.push_back({cpu, size, gpu});
+    g_heap_range_count.store(static_cast<int>(g_heap_ranges.size()), std::memory_order_release);
+}
+std::uint64_t xs_gpu_handle_from_console(std::uint64_t v) {
+    if (g_heap_range_count.load(std::memory_order_acquire) == 0) return v;
+    std::lock_guard lock(g_heap_ranges_mu);
+    for (const auto& r : g_heap_ranges)
+        if (v >= r.cpu && v < r.cpu + r.size) return v - r.cpu + r.gpu;
+    return v;
+}
+
+// HACK: write presented frames to Z:\root\frames\frame_<n>.ppm (no window yet). Plane 0's texture is copied to a
+// readback buffer on the presenting queue and waited for; 8-bit RGBA/BGRA formats only.
+void xs_capture_frame(ID3D12CommandQueue* queue, ID3D12Resource* texture, std::uint64_t frame) {
+    if (!queue || !texture) return;
+    const D3D12_RESOURCE_DESC rd = texture->GetDesc();
+    const bool bgra = rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM || rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
+                      rd.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+    const bool rgba = rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM || rd.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+                      rd.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS;
+    if (rd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || (!bgra && !rgba)) {
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true)) std::fprintf(stderr, "[hack] capture: format %d not captured\n", (int)rd.Format);
+        return;
+    }
+    ID3D12Device* dev = nullptr;
+    if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&dev))) || !dev) return;
+    if (ID3D12Device* real = device_proxy_real_device(dev)) {  // the queue answers with the proxy: use the PC device
+        real->AddRef();
+        dev->Release();
+        dev = real;
+    }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total = 0;
+    dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, &rows, &row_bytes, &total);
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* rb = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    const D3D12_COMMAND_LIST_TYPE type = queue->GetDesc().Type;
+    bool ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                     nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&rb))) &&
+              SUCCEEDED(dev->CreateCommandAllocator(type, __uuidof(ID3D12CommandAllocator), reinterpret_cast<void**>(&alloc))) &&
+              SUCCEEDED(dev->CreateCommandList(0, type, alloc, nullptr, __uuidof(ID3D12GraphicsCommandList),
+                                               reinterpret_cast<void**>(&list))) &&
+              SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&fence)));
+    if (ok) {
+        D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+        dst.pResource = rb;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = fp;
+        src.pResource = texture;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.SubresourceIndex = 0;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        list->Close();
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        queue->Signal(fence, 1);
+        for (int i = 0; i < 5000 && fence->GetCompletedValue() < 1; ++i) Sleep(1);
+        void* mapped = nullptr;
+        if (fence->GetCompletedValue() >= 1 && SUCCEEDED(rb->Map(0, nullptr, &mapped)) && mapped) {
+            CreateDirectoryW(L"Z:\\root\\frames", nullptr);
+            wchar_t name[96];
+            swprintf_s(name, L"Z:\\root\\frames\\frame_%06llu.ppm", (unsigned long long)frame);
+            HANDLE h = CreateFileW(name, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                char header[64];
+                const int hl = std::snprintf(header, sizeof header, "P6\n%u %u\n255\n", (unsigned)rd.Width, rows);
+                DWORD wr = 0;
+                WriteFile(h, header, hl, &wr, nullptr);
+                std::vector<std::uint8_t> line(static_cast<std::size_t>(rd.Width) * 3);
+                for (UINT y = 0; y < rows; ++y) {
+                    const auto* px = static_cast<const std::uint8_t*>(mapped) + fp.Offset + std::size_t(y) * fp.Footprint.RowPitch;
+                    for (UINT64 x = 0; x < rd.Width; ++x) {
+                        line[x * 3 + 0] = px[x * 4 + (bgra ? 2 : 0)];
+                        line[x * 3 + 1] = px[x * 4 + 1];
+                        line[x * 3 + 2] = px[x * 4 + (bgra ? 0 : 2)];
+                    }
+                    WriteFile(h, line.data(), static_cast<DWORD>(line.size()), &wr, nullptr);
+                }
+                CloseHandle(h);
+                std::fprintf(stderr, "[hack] captured frame %llu (%llux%u fmt %d)\n", (unsigned long long)frame,
+                             (unsigned long long)rd.Width, rows, (int)rd.Format);
+                std::fflush(stderr);
+            }
+            rb->Unmap(0, nullptr);
+        }
+    }
+    if (fence) fence->Release();
+    if (list) list->Release();
+    if (alloc) alloc->Release();
+    if (rb) rb->Release();
+    dev->Release();
 }
 
 std::atomic<std::uint64_t> g_hits[kMaxSlots];
@@ -775,11 +963,16 @@ D3D12_CPU_DESCRIPTOR_HANDLE heap_get_cpu_handle(HeapProxy* self) {
     using Fn = D3D12_CPU_DESCRIPTOR_HANDLE(WINAPI*)(ID3D12DescriptorHeap*, D3D12_CPU_DESCRIPTOR_HANDLE*);
     const D3D12_CPU_DESCRIPTOR_HANDLE returned =
         reinterpret_cast<Fn>(self->real_vtable[9])(self->real, &handle);
-    return handle.ptr != kUnset ? handle : returned;
+    const D3D12_CPU_DESCRIPTOR_HANDLE result = handle.ptr != kUnset ? handle : returned;
+    static std::atomic<int> n{0};  // HACK diagnostic
+    if (n++ < 30) { std::fprintf(stderr, "[hack] heap %p CPU start -> %llx (caller %p)\n", (void*)self, (unsigned long long)result.ptr, _ReturnAddress()); std::fflush(stderr); }
+    return result;
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE heap_get_gpu_handle(HeapProxy* self) {
     note_heap_slot(10);
+    // HACK: unified, see above, for every heap (shader-visible or not): VIctory's start() is one address for both
+    return D3D12_GPU_DESCRIPTOR_HANDLE{static_cast<UINT64>(self->real->GetCPUDescriptorHandleForHeapStart().ptr)};
     constexpr UINT64 kUnset = ~static_cast<UINT64>(0);
     D3D12_GPU_DESCRIPTOR_HANDLE handle{};
     handle.ptr = kUnset;
@@ -852,6 +1045,16 @@ HRESULT create_heap_proxy(ID3D12DescriptorHeap* real, DeviceProxy* device, REFII
     proxy->real_vtable = *reinterpret_cast<void***>(real);
     proxy->refs.store(1, std::memory_order_relaxed);
     proxy_add_ref(device);  // the heap keeps its Xbox-ABI device alive for GetDevice
+    {   // HACK: unified handles (see xs_register_heap_range)
+        const D3D12_DESCRIPTOR_HEAP_DESC hd = real->GetDesc();
+        if (hd.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) {
+            const std::uint64_t cpu = real->GetCPUDescriptorHandleForHeapStart().ptr;
+            const std::uint64_t gpu = real->GetGPUDescriptorHandleForHeapStart().ptr;
+            const std::uint64_t size =
+                std::uint64_t(hd.NumDescriptors) * device->real->GetDescriptorHandleIncrementSize(hd.Type);
+            if (cpu && cpu != gpu) xs_register_heap_range(cpu, size, gpu);
+        }
+    }
 
     const HRESULT hr = heap_query_interface(proxy, &riid, out);
     if (FAILED(hr)) {
@@ -1306,6 +1509,39 @@ std::uint64_t WINAPI list_slot(ListProxy* self, std::uint64_t a1, std::uint64_t 
                                                reinterpret_cast<void**>(a2)));
     } else {
         note_list_slot(Slot, a1, a2, a3, a4);
+        // HACK: this title's console list slots (newer layout, see XsListExtras)
+        if constexpr (Slot == 139) {  // ResetX(allocator, pipeline, flags)
+            {
+                std::lock_guard lock(g_list_extras_mu);
+                g_list_extras.erase(self);
+            }
+            if (auto* real_alloc = allocator_proxy_real_allocator(reinterpret_cast<void*>(a1)))
+                a1 = reinterpret_cast<std::uint64_t>(real_alloc);
+            self->pin_cursor_at_limit();
+            return hr_to_u64(self->real->Reset(reinterpret_cast<ID3D12CommandAllocator*>(a1),
+                                               reinterpret_cast<ID3D12PipelineState*>(a2)));
+        } else if constexpr (Slot == 71 || Slot == 72) {  // write32/write64(address, value, flush, flags)
+            if (a1) {
+                const unsigned what = (Slot == 72 && (a4 == 1 || a4 == 2)) ? static_cast<unsigned>(a4) : 0u;
+                std::lock_guard lock(g_list_extras_mu);
+                g_list_extras[self].writes.push_back({a1, a2, Slot == 71 ? 4u : 8u, what});
+            }
+            return 0;
+        } else if constexpr (Slot == 148) {  // AllocateUploadMemory(size, alignment) -> pointer, until the next reset
+            const std::uint64_t align = a2 < 16 ? 16 : a2;
+            if ((align & (align - 1)) != 0 || a1 > (1ull << 31)) return 0;
+            auto block = std::make_unique<std::uint8_t[]>(static_cast<std::size_t>(a1 + align));
+            std::memset(block.get(), 0, static_cast<std::size_t>(a1 + align));
+            const auto start = reinterpret_cast<std::uint64_t>(block.get());
+            const std::uint64_t at = (start + align - 1) & ~(align - 1);
+            std::lock_guard lock(g_list_extras_mu);
+            g_list_extras[self].uploads.push_back(std::move(block));
+            return at;
+        } else if constexpr (Slot == 86) {  // CopyResourceX(dst, src, flags)
+            self->real->CopyResource(reinterpret_cast<ID3D12Resource*>(unwrap_object(a1)),
+                                     reinterpret_cast<ID3D12Resource*>(unwrap_object(a2)));
+            return 0;
+        }
         constexpr unsigned pc = console_to_pc_list_slot(Slot);
         if constexpr (pc == kListNotForwarded) {
             {   // HACK diagnostic: every console-only list slot, once, with its arguments and caller
@@ -1343,6 +1579,8 @@ std::uint64_t WINAPI list_slot(ListProxy* self, std::uint64_t a1, std::uint64_t 
                                                      std::uint64_t, std::uint64_t);
             auto** const real_vtable = *reinterpret_cast<void***>(self->real);
             UnwrappedArray heaps;
+            if constexpr (pc == 31 || pc == 32) a2 = xs_gpu_handle_from_console(a2);  // HACK: unified handles
+            if constexpr (pc == 49 || pc == 50) a1 = xs_gpu_handle_from_console(a1);
             if constexpr (Slot == 10) {
                 a1 = unwrap_object(a1);
                 self->pin_cursor_at_limit();
@@ -1480,6 +1718,15 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                              res && count ? res[0] : nullptr);
                 std::fflush(stderr);
             }
+            {   // HACK: capture frames 0, 1, 2, 4, ... and every 2000th
+                const bool pow2 = (f & (f - 1)) == 0;
+                const auto* plane = reinterpret_cast<const std::uint8_t*>(a2);
+                const unsigned count = plane ? *reinterpret_cast<const unsigned*>(plane + 8) : 0;
+                void* const* res = plane ? *reinterpret_cast<void* const* const*>(plane + 0x10) : nullptr;
+                if ((pow2 || f % 2000 == 0) && count && res && res[0])
+                    xs_capture_frame(static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real)),
+                                     static_cast<ID3D12Resource*>(res[0]), f);
+            }
             return hr_to_u64(S_OK);
         }
         if constexpr (K == ChildKind::queue && Slot == 35) {
@@ -1500,6 +1747,7 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
             auto* const* real_lists = console_lists.data()
                 ? reinterpret_cast<ID3D12CommandList* const*>(console_lists.data()) : lists;
             if (n && real_lists) q->ExecuteCommandLists(n, real_lists);
+            if (n && lists) xs_schedule_list_writes(q, n, reinterpret_cast<const std::uint64_t*>(lists));
             return 0;
         }
         // This title's queue runs two slots ahead of the PC one from Signal on: 16 = Signal(fence, value) (measured:
@@ -1944,7 +2192,12 @@ HRESULT proxy_create_descriptor_heap(DeviceProxy* self, const D3D12_DESCRIPTOR_H
             std::memcpy(&size, bytes + sizeof(D3D12_DESCRIPTOR_HEAP_DESC) + sizeof(address), sizeof(size));
             // Console-extended slot 14 (issue #313): address/size follow the PC desc. Only take this path when a
             // non-zero console VA is present; normal PC 16-byte descs never enter it.
-            if (address != 0 && g_console_heap_factory) {
+            // Only a real placement: a non-zero address whose size is the heap's (count x increment). Without the
+            // size check, the stack words after an ordinary 16-byte description became heap addresses (0xb, stack
+            // pointers). The rule is VIctory's (descriptor.rs: placed = address != 0 && size == size).
+            const std::uint64_t expected =
+                std::uint64_t(desc->NumDescriptors) * self->real->GetDescriptorHandleIncrementSize(desc->Type);
+            if (address != 0 && size == expected && g_console_heap_factory) {
                 console_extended = true;
                 hr = g_console_heap_factory(self->real, desc, static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(address), size,
                                             __uuidof(ID3D12DescriptorHeap), &created);
@@ -2313,6 +2566,27 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
         std::fprintf(stderr, "\n");
         std::fflush(stderr);
         return hr_to_u64(hr);
+    } else if constexpr (Slot >= 17 && Slot <= 24) {
+        // HACK: descriptor writes (CreateConstantBuffer/ShaderResource/UnorderedAccess/RenderTarget/DepthStencil
+        // View, CreateSampler, CopyDescriptors, CopyDescriptorsSimple) whose destination is below 64 KiB: the title
+        // builds some destinations from a base that is 0 here (0xb + i*32; its source is not found yet). Skip them so
+        // the title runs on; those descriptors stay empty.
+        // The destination is the last handle argument: CBV/sampler a2, SRV/RTV/DSV a3, UAV a4,
+        // CopyDescriptorsSimple a2 (destination start).
+        std::uint64_t dest = Slot == 17 || Slot == 22 || Slot == 24 ? a2 : Slot == 19 ? a4 : a3;
+        if constexpr (Slot == 23) dest = 1u << 20;  // CopyDescriptors: arrays, not checked here
+        if (dest < 0x10000) {
+            static std::atomic<int> n{0};
+            if (n++ < 5) {
+                std::fprintf(stderr, "[hack] device slot %u: descriptor destination 0x%llx skipped\n", Slot,
+                             (unsigned long long)dest);
+                std::fflush(stderr);
+            }
+            return 0;
+        }
+        using ForwardFn = std::uint64_t(WINAPI*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                                                 std::uint64_t, std::uint64_t);
+        return reinterpret_cast<ForwardFn>(self->real_vtable[Slot])(self->real, a1, a2, a3, a4, a5, a6);
     } else if constexpr (Slot == 74) {
         // HACK: Xbox slot 74 = (va, page_count, &out) right after the title maps its ~6 GB physical-page GPU pool.
         // Unknown object: hand back a logging probe.
@@ -2321,7 +2595,9 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                      (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)(a2 * 64 / 1024),
                      (unsigned long long)a3);
         std::fflush(stderr);
-        if (out) *out = xs_make_probe();
+        // VIctory (register_page_pool): the result is a handle, the pool's index plus one.
+        static std::atomic<std::uintptr_t> pools{0};
+        if (out) *reinterpret_cast<std::uintptr_t*>(out) = ++pools;
         return 0;
     } else if constexpr (Slot == 61) {
         // HACK: Xbox slot 61 = a sampler-creating call (desc, dest handle) with a console desc layout; ignored.
