@@ -129,6 +129,16 @@ std::uint32_t max_queues_per_family(rt::d3d12::QueueTestSettings settings) {
 }
 
 // The pipelines build stage writes its cache beside gta6rt.exe, independently of the working directory.
+// Leonida CE: a guarded copy from title memory (an XMem view commits on first touch from the page handler).
+bool ce_copy_title(void* dst, std::uint64_t va, std::uint64_t bytes) {
+    __try {
+        std::memcpy(dst, reinterpret_cast<const void*>(va), static_cast<size_t>(bytes));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 std::filesystem::path pipeline_cache_path() {
     std::wstring path(32768, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
@@ -5713,6 +5723,19 @@ public:
         length = 0;
         arena.log = getenv_s(&length, log, "LEONIDA_ARENA_LOG") == 0 && length > 1 && log[0] != '0';
         state_.context->set_heap_base(arena.address);
+        if (arena.mapped && !std::getenv("LEONIDA_CE_NO_RING_SYNC")) {
+            std::uint8_t* const host = arena.mapped;
+            const std::uint64_t arena_bytes = arena.size;
+            state_.context->set_title_sync([host, arena_bytes](std::uint64_t va, std::uint64_t bytes) {
+                if (!bytes || va >= arena_bytes || bytes > arena_bytes - va) return;
+                if (!rt::d3d12_xs::placed_buffer_holds(va, bytes)) return;
+                if (!ce_copy_title(host + va, va, bytes)) return;
+                static std::atomic<int> told{0};
+                if (told++ < 3)
+                    std::fprintf(stderr, "[hack] ring sync: %llu bytes at VA %llx copied from title memory into the arena\n",
+                                 static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(va));
+            });
+        }
         state_.context->set_zero_page(arena.buffer, 0, kArenaReserved);
         return true;
     }

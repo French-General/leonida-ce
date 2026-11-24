@@ -868,6 +868,9 @@ struct ReplayFunctions {
     // cut to what the buffer holds from there: vertex and index views use what fits, WriteBufferImmediate needs all
     // of it.
     std::function<bool(std::uint64_t va, std::uint64_t& size, VkBuffer&, VkDeviceSize&)> buffer_at;
+    // Leonida CE: copies [va, va + bytes) of title memory into the GPU address arena at the same offset when it lies
+    // in a placed buffer (the title's upload ring: constants, descriptors, vertices it writes on the CPU each frame).
+    std::function<void(std::uint64_t va, std::uint64_t bytes)> sync_title_range;
     // Host bytes for a whole console VA range; `not_cpu_written` when it names GPU-writable memory. For small
     // CPU-written inputs, such as the pointer list of an ARRAY_OF_POINTERS TLAS build.
     std::function<HostReadStatus(std::uint64_t va, std::uint64_t bytes, const std::uint8_t*&)> host_at;
@@ -2198,6 +2201,12 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         if (!p.pipeline) return ReplayResult::unsupported;
     }
 
+    // HACK (Leonida CE): the shaders read the title's per-draw data (root arguments point into its upload ring) at
+    // heap_base + VA, but the title writes it in its own memory; copy a window around each such address into the arena.
+    if (vk.sync_title_range) {
+        for (const std::uint32_t word : draw.user_data)
+            if (word >= 0x10000) vk.sync_title_range(word & ~0xFFFull, 0x2000);
+    }
     // An unbound vertex-buffer slot reads zeros, as in D3D12: the zero page with stride 0. Per-instance slots with
     // step rate 0 also take stride 0, so every instance reads element 0.
     for (std::uint32_t slot = 0; slot < 32; ++slot) {
@@ -2218,6 +2227,7 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         }
         const VertexBufferView& view = draw.views->vertex_buffers[slot];
         std::uint64_t size = view.size;
+        if (vk.sync_title_range && view.size) vk.sync_title_range(view.va, view.size);
         if (!vk.buffer_at(view.va, size, p.vertex_buffers[slot], p.vertex_offsets[slot])) {
             // HACK (Leonida CE boot): the title's vertex data lives in its own memory, which is not a GPU buffer here
             // yet; read zeros like an unbound slot instead of refusing the whole list.
@@ -4260,6 +4270,18 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
                                  draw->viewport.min_depth, draw->viewport.max_depth, draw->scissor.left, draw->scissor.top,
                                  draw->scissor.right, draw->scissor.bottom);
                 if (told <= 6) {
+                    if (!draw->user_data.empty() && draw->user_data[0] >= 0x10000) {
+                        std::uint32_t w[32] = {};
+                        if (detail::copy_title_bytes(draw->user_data[0], w, sizeof(w))) {
+                            std::fprintf(stderr, "[smoke]   at %x:", static_cast<unsigned>(draw->user_data[0]));
+                            for (int i = 0; i < 32; ++i) std::fprintf(stderr, "%s%08x", i % 8 ? " " : "  |", w[i]);
+                            std::fprintf(stderr, "\n");
+                        }
+                    }
+                    std::fprintf(stderr, "[smoke]   user data:");
+                    for (std::size_t i = 0; i < draw->user_data.size() && i < 16; ++i)
+                        std::fprintf(stderr, " %08x", static_cast<unsigned>(draw->user_data[i]));
+                    std::fprintf(stderr, "\n");
                     std::fprintf(stderr, "[smoke]   vertex slots %zu:", d.vertex_buffers.size());
                     for (std::size_t i = 0; i < d.vertex_buffers.size(); ++i)
                         std::fprintf(stderr, " [%zu %s stride %llu]", i,

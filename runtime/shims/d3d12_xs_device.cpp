@@ -979,6 +979,21 @@ void xs_tls_sweep(std::uint64_t frame) {
                 n += std::snprintf(hits + n, sizeof(hits) - n, " %u:%llu", slot, static_cast<unsigned long long>(h));
         std::fprintf(stderr, "%s\n", hits);
     }
+    {   // SMOKE: the UI texture's VA from its T# (0x100001900): is there image data in title memory?
+        const std::uint64_t base = 0x100001900ull, span = 3840ull * 2160 * 4;
+        rt::xmem::commit_physical_range(reinterpret_cast<const void*>(base), span);
+        if (xs_readable(reinterpret_cast<const void*>(base), static_cast<UINT_PTR>(span))) {
+            std::uint64_t nonzero = 0, samples = 0;
+            for (std::uint64_t o = 0; o + 4 <= span; o += 4096, ++samples)
+                nonzero += *reinterpret_cast<const std::uint32_t*>(base + o) != 0;
+            const auto* w = reinterpret_cast<const std::uint32_t*>(base + span / 2);
+            std::fprintf(stderr, "[smoke] texture 0x100001900: %llu of %llu samples non-zero; middle %08x %08x %08x %08x\n",
+                         static_cast<unsigned long long>(nonzero), static_cast<unsigned long long>(samples), w[0], w[1],
+                         w[2], w[3]);
+        } else {
+            std::fprintf(stderr, "[smoke] texture 0x100001900: not readable\n");
+        }
+    }
     {   // SMOKE: what is at CPU address 0xb8df10 (the UI vertex view's VA) in this process?
         MEMORY_BASIC_INFORMATION mbi{};
         if (VirtualQuery(reinterpret_cast<const void*>(0xb8df10ull), &mbi, sizeof(mbi))) {
@@ -4828,6 +4843,13 @@ void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint
 
 void set_console_descriptor_heap_factory(ConsoleDescriptorHeapFactory factory) {
     g_console_heap_factory = factory;
+}
+
+bool placed_buffer_holds(std::uint64_t va, std::uint64_t bytes) {
+    std::lock_guard lock(g_placed_mu);
+    for (const auto& p : g_placed)
+        if (p.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && va >= p.va && va - p.va + bytes <= p.size) return true;
+    return false;
 }
 
 bool set_device_adapter_provider(void* device, DxgiAdapterProvider provider) {

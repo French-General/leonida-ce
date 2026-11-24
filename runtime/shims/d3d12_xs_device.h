@@ -92,6 +92,9 @@ bool is_device_proxy(const void* device);
 using DxgiAdapterProvider = HRESULT (*)(ID3D12Device* real, REFIID riid, void** out);
 // `device` is the proxy or its DXGI pointer. False, with a line on stderr, when it is neither: nothing is set then.
 bool set_device_adapter_provider(void* device, DxgiAdapterProvider provider);
+// Leonida CE: whether [va, va + bytes) lies in a placed BUFFER the title created (its GPU copy lives in the arena at
+// the same offset; the title writes the bytes at that VA in its own memory).
+bool placed_buffer_holds(std::uint64_t va, std::uint64_t bytes);
 
 // Creates a descriptor heap whose storage is the title's memory at `console_address` (the console-extended slot 14
 // description, issue #313). The Vulkan layer registers rt::d3d12::create_console_descriptor_heap here; without a

@@ -1249,6 +1249,11 @@ public:
         replay_.heap_base = heap_base;
     }
 
+    void set_title_sync(std::function<void(std::uint64_t, std::uint64_t)> sync) {
+        std::unique_lock lock(resource_mutex_);
+        replay_.sync_title_range = std::move(sync);
+    }
+
     // Zeroed memory for unbound vertex and index buffers to read (ReplayFunctions::zero_buffer).
     void set_zero_page(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) {
         std::unique_lock lock(resource_mutex_);

@@ -429,3 +429,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   refreshes commit XMem views first. The UI-sized textures (2048x2048 fmt 87, 1280x720 fmt 42) still read 0% non-zero.
 - The game window ("Americas") shows on the Windows VM desktop; black is the real output (white was before the first
   present).
+- Black frames, the full chain: the per-frame UI draw's root argument (user data dword 0, e.g. 0x16adea0) points into
+  the title's upload ring; the shaders read it at heap_base + VA, but the title writes it in its own memory. A ring
+  sync (replay -> sync_title_range, only inside placed buffers; LEONIDA_CE_NO_RING_SYNC=1 off) now copies an 8 KiB
+  window around each root-argument address and each vertex view into the arena before the draw. The block then holds
+  GFX10 descriptors: V# 0x00bbde20, T# base 0x100001900 (word0 0x01000019), V# 0x016adc40. The texture at
+  0x100001900 (XMem reservation at 0x100000000, above the 4 GiB arena) is all zeros in title memory too: nothing
+  has drawn into the UI layer yet. So the black is real: the title composites an empty layer each frame; its
+  frontend (boot screens / intro video / menus) has not produced anything. Next: what should fill it, and what the
+  title waits for before it does. (Also: textures above 4 GiB cannot be reached through heap_base + VA at all.)
