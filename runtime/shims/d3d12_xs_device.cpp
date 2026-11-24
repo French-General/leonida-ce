@@ -82,6 +82,7 @@ DXGI_FORMAT xs_pc_format(DXGI_FORMAT f) {
     case 118: return static_cast<DXGI_FORMAT>(45);
     case 119: return static_cast<DXGI_FORMAT>(46);
     case 120: return static_cast<DXGI_FORMAT>(47);
+    case 65: return DXGI_FORMAT_R8_UNORM;  // A8_UNORM: core Vulkan has none (French-General, issue #2); alpha reads 1
     default: return f;
     }
 }
@@ -1012,6 +1013,21 @@ void xs_tls_sweep(std::uint64_t frame) {
         const auto* c = reinterpret_cast<const std::uint32_t*>(g_arena_mapped + 0xb8df10);
         std::fprintf(stderr, "[smoke] arena+0xb8df10: %g %g %g %g %g %g | %08x %08x %08x\n", v[0], v[1], v[2], v[3], v[4],
                      v[5], c[0], c[3], c[6]);
+    }
+    {   // the boot state machine (static analysis): state 0x1498F828C, profile task 0x1478B2818, its inner state
+        // 0x1478B4AC0, active pad 0x146C31B50 (+ cached 0x1478CCE28), profile ready byte 0x1498489C0, pad 0 entry bits
+        auto rd32 = [](std::uint64_t a) -> long long {
+            return xs_readable(reinterpret_cast<const void*>(a), 4) ? *reinterpret_cast<const volatile std::int32_t*>(a)
+                                                                     : -999;
+        };
+        auto rd8 = [](std::uint64_t a) -> int {
+            return xs_readable(reinterpret_cast<const void*>(a), 1) ? *reinterpret_cast<const volatile std::uint8_t*>(a)
+                                                                     : -1;
+        };
+        std::fprintf(stderr, "[boot] frame %llu: state %lld task %lld inner %lld pad %lld cached %lld ready %d pad0 0x%02x\n",
+                     static_cast<unsigned long long>(frame), rd32(0x1498F828Cull), rd32(0x1478B2818ull),
+                     rd32(0x1478B4AC0ull), rd32(0x146C31B50ull), rd32(0x1478CCE28ull), rd8(0x1498489C0ull),
+                     rd8(0x1498482B8ull + 0x144));
     }
     std::fprintf(stderr, "[tls] frame %llu sweep: %zu threads with a block, %d changed, %d shared\n",
                  static_cast<unsigned long long>(frame), now.size(), changed, shared);
@@ -2890,6 +2906,30 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                         do { QueryPerformanceCounter(&now); } while (now.QuadPart < next.QuadPart);
                     }
                     next.QuadPart += period;
+                }
+            }
+            {   // HACK (Leonida CE): the boot's profile load waits for an ACTIVE PAD (dword 0x146C31B50, -1 until a
+                // controller is associated with the signed-in user; set only from the profile manager's event handler
+                // 0x142206150 -> 0x142207680 -> 0x143DCA480). With no controller (VM, Wine) it never is, and the frontend
+                // never shows its first screen. Once sign-in is done (frame 60 on), make pad 0 active: the pad index,
+                // the profile manager's ready byte 0x1498489C0, and bit 0x02 of pad 0's entry (0x1498482B8 + 0x144).
+                // Found by static analysis of the boot state machine (0x141D83960). LEONIDA_CE_NO_PAD_HACK=1: off.
+                static const bool no_pad_hack = [] {
+                    char v[8] = {};
+                    return GetEnvironmentVariableA("LEONIDA_CE_NO_PAD_HACK", v, sizeof(v)) && v[0] == '1';
+                }();
+                auto* const pad = reinterpret_cast<volatile std::int32_t*>(0x146C31B50ull);
+                if (!no_pad_hack && f >= 60 && xs_readable(const_cast<std::int32_t*>(pad), 4) && *pad == -1) {
+                    auto* const ready = reinterpret_cast<volatile std::uint8_t*>(0x1498489C0ull);
+                    auto* const entry = reinterpret_cast<volatile std::uint8_t*>(0x1498482B8ull + 0x144);
+                    if (xs_readable(const_cast<std::uint8_t*>(ready), 1) && xs_readable(const_cast<std::uint8_t*>(entry), 1)) {
+                        *pad = 0;
+                        *ready = 1;
+                        *entry = static_cast<std::uint8_t>(*entry | 0x02);
+                        std::fprintf(stderr, "[hack] no controller: made pad 0 the active pad at present %llu\n",
+                                     static_cast<unsigned long long>(f));
+                        std::fflush(stderr);
+                    }
                 }
             }
             static const bool dump_stacks = [] {

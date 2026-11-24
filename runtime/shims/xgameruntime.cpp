@@ -782,7 +782,9 @@ HRESULT STDMETHODCALLTYPE sys_console_id(void*, size_t size, char* out, size_t* 
 }
 HRESULT STDMETHODCALLTYPE sys_sandbox_id(void*, size_t size, char* out, size_t* used) {
     CE_SVC_TRACE();
-    return copy_id(kSandboxId, sizeof(kSandboxId), kSandboxIdMaxBytes, size, out, used);
+    // As VIctory (put_string): only the string must fit, and *used is written either way.
+    if (used) *used = sizeof(kSandboxId);
+    return copy_id(kSandboxId, sizeof(kSandboxId), sizeof(kSandboxId), size, out, used);
 }
 HRESULT STDMETHODCALLTYPE sys_app_device_id(void*, size_t size, char* out, size_t* used) {
     CE_SVC_TRACE();
@@ -1363,7 +1365,7 @@ const RuntimeFeature kRuntimeFeatures[] = {
     {&kAppCaptureClassId, false},       // 1  XAppCapture
     {&kThreadingClass, false},          // 2  XAsync
     {&kThreadingClass, false},          // 3  XAsyncProvider
-    {&kDisplayClassId, true},           // 4  XDisplay
+    {&kDisplayClassId, false},          // 4  XDisplay (available: VIctory answers true, we serve the display class)
     {&kGameClass, false},               // 5  XGame
     {&kGameInviteClassId, false},       // 6  XGameInvite
     {&kGameSaveClassId, false},         // 7  XGameSave
@@ -1385,9 +1387,12 @@ const RuntimeFeature kRuntimeFeatures[] = {
 static_assert(std::size(kRuntimeFeatures) == 22, "XGameRuntimeFeature has 22 values");
 
 bool STDMETHODCALLTYPE runtime_is_feature_available(void*, uint32_t feature) {
-    if (feature >= std::size(kRuntimeFeatures)) return false;
-    const RuntimeFeature& f = kRuntimeFeatures[feature];
-    return !f.console_only && class_served(*f.class_id);
+    const bool answer = feature < std::size(kRuntimeFeatures) && !kRuntimeFeatures[feature].console_only &&
+                        class_served(*kRuntimeFeatures[feature].class_id);
+    static std::atomic<std::uint32_t> told{0};
+    if (feature < 32 && !(told.fetch_or(1u << feature) & (1u << feature)))
+        std::fprintf(stderr, "[svc] XGameRuntimeIsFeatureAvailable(%u) -> %d\n", feature, int(answer));
+    return answer;
 }
 
 const void* const kGameRuntimeFeatureVtable[] = {

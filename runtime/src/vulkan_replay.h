@@ -958,6 +958,14 @@ namespace detail {
 // a mapped view of physical pages on first touch (the kernel would not), so a merely reserved view reads fine.
 inline bool copy_title_bytes(std::uint64_t va, void* dst, std::size_t n) {
 #ifdef _WIN32
+    // Only memory this process has (committed, or a reserved view the XMem handler commits on touch): a garbage VA
+    // (seen on Windows: 0xfffffffd1ab52500 from an unset vertex view) must not even be touched, the fault was fatal there.
+    if (!n || va < 0x10000 || va >= 0x0000800000000000ull || va + n < va) return false;
+    for (const std::uint64_t at : {va, va + n - 1}) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) || mbi.State == MEM_FREE) return false;
+        if (mbi.State == MEM_RESERVE && mbi.Type != MEM_MAPPED) return false;
+    }
     __try {
         std::memcpy(dst, reinterpret_cast<const void*>(va), n);
         return true;

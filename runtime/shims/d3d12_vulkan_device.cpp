@@ -131,6 +131,12 @@ std::uint32_t max_queues_per_family(rt::d3d12::QueueTestSettings settings) {
 // The pipelines build stage writes its cache beside gta6rt.exe, independently of the working directory.
 // Leonida CE: a guarded copy from title memory (an XMem view commits on first touch from the page handler).
 bool ce_copy_title(void* dst, std::uint64_t va, std::uint64_t bytes) {
+    if (!bytes || va < 0x10000 || va >= 0x0000800000000000ull || va + bytes < va) return false;
+    for (const std::uint64_t at : {va, va + bytes - 1}) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) || mbi.State == MEM_FREE) return false;
+        if (mbi.State == MEM_RESERVE && mbi.Type != MEM_MAPPED) return false;
+    }
     __try {
         std::memcpy(dst, reinterpret_cast<const void*>(va), static_cast<size_t>(bytes));
         return true;

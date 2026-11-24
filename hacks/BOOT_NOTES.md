@@ -449,3 +449,17 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   (user_add_async/result, get_id, get_local_id, duplicate, close) and makes NO further service call. The main thread
   waits each frame on a frame-slot semaphore (0x1475e0e78, normal pacing; DeepSeek analysis). Next: what the boot flow
   waits for after sign-in.
+- Boot state machine (static analysis by a subagent): dispatcher 0x141D83960 (jump table 0x14674C120), called each
+  frame from 0x1421B6CBC; state dword 0x1498F828C via setter 0x141AC7760; state 1 set by 0x1459965B0 -> 0x141C99520.
+  States 3 (sign-in) -> 4 -> 5 (queue a profile-load task) -> 6/13 (spin while task status 0x1478B2818 is 2/3). The
+  profile task (inner state 0x1478B4AC0) waits in 0x142894220 for an ACTIVE PAD: dword 0x146C31B50 <= 3 (initial -1,
+  set only from the profile manager's event handler 0x142206150 when a controller pairs with the user), byte
+  0x1498489C0 != 0, bit 0x02 of [0x1498482B8 + pad*0x150 + 0x144]. With no controller that never happens; a hack now
+  makes pad 0 active from present 60 (LEONIDA_CE_NO_PAD_HACK=1: off). [boot] lines (every 300 presents) log them.
+- But measured: the state dword stays 0 and none of 0x1421B6CBC / 0x1459965B0 / 0x141C99520 / 0x1421B8F00 runs.
+  0x1421B8F00 (tail-jump to the 'state 1' entry) is registered as a named callback (hash 0x672FD9D1, registry at
+  obj+0x5A0, add via 0x141D674F0) by 0x145B47FF0: the boot machine starts only when that entry is activated.
+- Windows: the vertex/ring sync read a garbage vertex VA (0xfffffffd1ab52500) and the fault was fatal there; title
+  copies now check VirtualQuery first (only committed memory or reserved XMem views). Console format 65
+  (A8_UNORM, a 4K render target; core Vulkan has no A8) maps to R8_UNORM (French-General, issue #2). XDisplay is
+  reported available and the sandbox-id query only needs room for the string, as in VIctory.
