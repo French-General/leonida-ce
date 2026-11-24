@@ -850,7 +850,10 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
 // DIAGNOSTIC (Leonida CE boot, LEONIDA_CE_STACKS=1: at presents 300 and 20000): suspend every other thread and unwind
 // its stack with the image's unwind data, printing game_scarlett_master.exe-relative frames (G+rva; others are host
 // addresses, llvm-symbolizer --obj=gta6rt.exe names the runtime's). Shows what each thread waits on.
+thread_local const void* t_last_tls_block = nullptr;  // the block xs_game_thread_index last read
+
 long xs_game_thread_index(HANDLE th) {
+    t_last_tls_block = nullptr;
     using QueryFn = LONG(NTAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
     static const auto query =
         reinterpret_cast<QueryFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
@@ -861,11 +864,56 @@ long xs_game_thread_index(HANDLE th) {
     const auto* tls = *reinterpret_cast<std::uint8_t* const* const*>(static_cast<std::uint8_t*>(info.teb) + 0x58);
     if (!tls || !xs_readable(tls + slot, 8)) return -2;
     const std::uint8_t* block = tls[slot];
+    t_last_tls_block = block;
     if (!block || !xs_readable(block + 0x1454, 4)) return -2;
     return *reinterpret_cast<const std::int32_t*>(block + 0x1454);
 }
 
+// DIAGNOSTIC (Leonida CE boot): LEONIDA_CE_STACKS=1 also sweeps every thread's title TLS block every 300 presents
+// and logs a thread whose block changed since the last sweep, or two threads sharing one (a stale or swapped
+// thread-local block would explain per-thread allocator state going wrong only under Wine).
+void xs_tls_sweep(std::uint64_t frame) {
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lock(mu);
+    static std::map<DWORD, const void*> last;
+    std::map<DWORD, const void*> now;
+    std::map<const void*, DWORD> owners;
+    const DWORD pid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    int changed = 0, shared = 0;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid) continue;
+        HANDLE th = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+        if (!th) continue;
+        xs_game_thread_index(th);
+        const void* block = t_last_tls_block;
+        CloseHandle(th);
+        if (!block) continue;
+        now[te.th32ThreadID] = block;
+        if (auto o = owners.find(block); o != owners.end()) {
+            if (shared++ < 8)
+                std::fprintf(stderr, "[tls] frame %llu SHARED block %p: tid %lx and tid %lx\n",
+                             static_cast<unsigned long long>(frame), block, o->second, te.th32ThreadID);
+        } else {
+            owners[block] = te.th32ThreadID;
+        }
+        if (auto l = last.find(te.th32ThreadID); l != last.end() && l->second != block && changed++ < 8)
+            std::fprintf(stderr, "[tls] frame %llu tid %lx block CHANGED %p -> %p\n", static_cast<unsigned long long>(frame),
+                         te.th32ThreadID, l->second, block);
+    }
+    CloseHandle(snap);
+    std::fprintf(stderr, "[tls] frame %llu sweep: %zu threads with a block, %d changed, %d shared\n",
+                 static_cast<unsigned long long>(frame), now.size(), changed, shared);
+    std::fflush(stderr);
+    last.swap(now);
+}
+
 void xs_dump_thread_stacks() {
+    static int dump_calls = 0;
+    const int dumped_call = ++dump_calls;
     const DWORD self_tid = GetCurrentThreadId(), pid = GetCurrentProcessId();
     const std::uint64_t lo = 0x140000000ull, hi = 0x147000000ull;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -906,7 +954,17 @@ void xs_dump_thread_stacks() {
                 if (ctx.Rip == rip) break;
             }
             if (any_game) {
-                std::fprintf(stderr, "[stacks] tid %lx idx %ld:%s\n", te.th32ThreadID, xs_game_thread_index(th), line);
+                const long game_index = xs_game_thread_index(th);
+                const void* tls_block = t_last_tls_block;
+                static std::vector<std::pair<const void*, DWORD>> seen_blocks;
+                static int seen_dump = -1;
+                if (seen_dump != dumped_call) { seen_blocks.clear(); seen_dump = dumped_call; }
+                for (const auto& [b, owner] : seen_blocks)
+                    if (b && b == tls_block)
+                        std::fprintf(stderr, "[tls] SHARED block %p: tid %lx and tid %lx\n", b, owner, te.th32ThreadID);
+                seen_blocks.emplace_back(tls_block, te.th32ThreadID);
+                std::fprintf(stderr, "[stacks] tid %lx idx %ld tls %p:%s\n", te.th32ThreadID, game_index, tls_block,
+                             line);
                 ++dumped;
             }
         }
@@ -2615,6 +2673,16 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                 char v[8] = {};
                 return GetEnvironmentVariableA("LEONIDA_CE_STACKS", v, sizeof(v)) > 0 && v[0] == '1';
             }();
+            if (dump_stacks && f % 300 == 0) {
+                struct Arg { std::uint64_t f; };
+                HANDLE t = CreateThread(nullptr, 0, [](void* a) -> DWORD {
+                    const std::uint64_t frame = static_cast<Arg*>(a)->f;
+                    delete static_cast<Arg*>(a);
+                    xs_tls_sweep(frame);
+                    return 0;
+                }, new Arg{f}, 0, nullptr);
+                if (t) CloseHandle(t);
+            }
             if (dump_stacks && (f == 300 || f == 4000 || f == 20000)) {
                 HANDLE t = CreateThread(nullptr, 0, [](void*) -> DWORD { xs_dump_thread_stacks(); return 0; }, nullptr, 0, nullptr);
                 if (t) CloseHandle(t);

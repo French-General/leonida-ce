@@ -339,3 +339,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   is attached; a block reused by a new object would still pass, so the hypothesis is weakened, not ruled out.
 - French-General (issue #2) reports Windows-native runs at 1403e90 do NOT hit this stop: they keep presenting.
   So it is likely Wine- or Linux-shim-specific; compare what differs (threading primitives, timers, TLS).
+- Thread-local storage under Wine (try146/try147, LEONIDA_CE_STACKS=1 now also sweeps every thread's title TLS
+  block every 300 presents): 65-70 threads, every one with its own block, no block shared, none changed between
+  sweeps up to the crash. A stale or swapped TLS block (a lead from a DeepSeek audit of pe_loader.cpp) is unlikely.
+  idx -1 in the dumps = a thread with a block but no title thread index (not a missing block, which reads -2).
+- C++ runtime: under Wine the title's 113 MSVCP140 imports (and vcruntime140, concrt140) bind to Wine's builtin
+  reimplementations (PE-Wine in the module list); on Windows they bind to Microsoft's (the one gta6rt itself loads).
+  The package's own msvcp140 is 14.29 and cannot be used: gta6rt (built with MSVC 14.44) crashes in its first
+  std::mutex::lock with it (try149). Next: run with Microsoft's current VC++ 2022 runtime as native DLLs in a copy
+  of the prefix (winetricks vcrun2022), to see whether the 120-140 s stop follows Wine's builtin C++ runtime.
