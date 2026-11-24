@@ -285,41 +285,135 @@ std::vector<void*> g_active_shape_arrays;
 
 // ---- IAcpHal Interface Implementation ----
 
+void* __stdcall ApuMapApuAddress(uint32_t apu);
+
+// The audio coprocessor's command and message queues, after Marvisak/VIctory's audio.rs (GPLv3): every command
+// completes at once and is acknowledged as the hardware would. A command with an id posts COMMAND_COMPLETED
+// (command, id, audio frame), a flowgraph load posts FLOWGRAPH_COMPLETED, message registrations take effect, and a
+// command's notification word (an APU address) is set to 1. The title's audio engine waits on these: dropping every
+// command, as before, left its per-frame command streams undrained until one overflowed (about 100 s in).
+// shortcut: the commands themselves (XMA contexts, SHAPE units) are not carried out.
+#pragma pack(push, 1)
+struct AcpMessage {
+    uint32_t kind;
+    uint32_t dropped;
+    uint32_t usec;
+    uint8_t data[16];
+};
+#pragma pack(pop)
+static_assert(sizeof(AcpMessage) == 28, "kind, dropped, usec, 16 bytes of data");
+
 struct AcpHalImpl {
-    // Slot 0: Connect (called at boot with (0x1000, 0x1000), result checked)
-    virtual HRESULT __stdcall connect(uint32_t, uint32_t) {
+    static constexpr uint32_t kLoadFlowgraph = 1, kRegisterMessages = 2, kUnregisterMessages = 3;
+    static constexpr uint32_t kFlowgraphCompleted = 0x02, kCommandCompleted = 0x10, kDisconnected = 0x80;
+    static constexpr uint64_t kFramesPerSecond = 375;  // 128-sample audio frames at 48 kHz
+
+    std::mutex mu;
+    bool connected = false;
+    uint32_t mask = 0;
+    std::vector<AcpMessage> messages;  // front at index 0; small queues
+    size_t capacity = 0;
+    uint32_t dropped_count = 0;
+    LARGE_INTEGER since{}, freq{};
+
+    AcpHalImpl() {
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&since);
+    }
+    uint64_t usec() const {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        return static_cast<uint64_t>((now.QuadPart - since.QuadPart) * 1000000 / (freq.QuadPart ? freq.QuadPart : 1));
+    }
+    void post(uint32_t kind, const void* data, size_t len) {  // with mu held
+        if (!(mask & kind)) return;
+        if (messages.size() >= capacity) {
+            ++dropped_count;
+            return;
+        }
+        AcpMessage m{};
+        m.kind = kind;
+        m.dropped = dropped_count;
+        dropped_count = 0;
+        m.usec = static_cast<uint32_t>(usec());
+        if (data && len) std::memcpy(m.data, data, len < sizeof(m.data) ? len : sizeof(m.data));
+        messages.push_back(m);
+    }
+
+    // Slot 0: Connect(command queue size, message queue size)
+    virtual HRESULT __stdcall connect(uint32_t commands, uint32_t message_capacity) {
         trace_call("AcpHal::Connect", "");
+        if (!commands) return E_INVALIDARG;
+        std::lock_guard lock(mu);
+        connected = true;
+        capacity = message_capacity;
         return S_OK;
     }
 
-    // Slot 1: Disconnect (called at shutdown)
+    // Slot 1: Disconnect
     virtual HRESULT __stdcall disconnect() {
         trace_call("AcpHal::Disconnect", "");
+        std::lock_guard lock(mu);
+        if (!connected) return E_FAIL;
+        post(kDisconnected, nullptr, 0);
+        connected = false;
         return S_OK;
     }
 
-    // Slot 2: SubmitCommand
-    // Critical: The title calls slot 2 as (2, 0xf0f0f0f0, -1, config, 0) and
-    // a negative result triggers a fatal int3 kernel panic (+0x43ad94e).
-    virtual HRESULT __stdcall submit_command(uint32_t cmd, uint32_t d1, uint32_t d2,
-                                            const void* config, uint32_t d3) {
-        (void)cmd;
-        (void)d1;
-        (void)d2;
-        (void)config;
-        (void)d3;
-        static std::atomic<bool> warned{false};
-        if (!warned.exchange(true, std::memory_order_relaxed)) {
-            std::fprintf(stderr,
-                         "[rt] acphal: command accepted and dropped: no audio DSP hardware on PC\n");
+    // Slot 2: SubmitCommand(command, id, frame, data, notification). The title's first is (2, 0xf0f0f0f0, -1,
+    // config, 0); a negative result triggers a fatal int3 (+0x43ad94e).
+    virtual HRESULT __stdcall submit_command(uint32_t command, uint64_t id, uint32_t /*frame*/, const void* data,
+                                            uint32_t notification) {
+        static std::atomic<uint64_t> seen{0};
+        if (command < 64 && !(seen.fetch_or(1ull << command) & (1ull << command))) {
+            std::fprintf(stderr, "[rt] acphal: first coprocessor command %u (acknowledged, not carried out)\n", command);
+            std::fflush(stderr);
         }
         trace_call("AcpHal::SubmitCommand", "");
+        auto word = [&](size_t at) -> uint32_t {
+            if (!data) return 0;
+            uint32_t v;
+            std::memcpy(&v, static_cast<const uint8_t*>(data) + at * 4, 4);
+            return v;
+        };
+        {
+            std::lock_guard lock(mu);
+            if (command == kRegisterMessages) mask |= word(0);
+            else if (command == kUnregisterMessages) mask &= ~word(0);
+            else if (command == kLoadFlowgraph) {
+                const uint32_t flowgraph = word(1);
+                post(kFlowgraphCompleted, &flowgraph, 4);
+            }
+            if (id != 0) {
+                uint8_t done[16];
+                const uint32_t frame_now = static_cast<uint32_t>(usec() * kFramesPerSecond / 1000000);
+                std::memcpy(done, &command, 4);
+                std::memcpy(done + 4, &id, 8);
+                std::memcpy(done + 12, &frame_now, 4);
+                post(kCommandCompleted, done, sizeof(done));
+            }
+        }
+        if (notification) {
+            if (void* w = ApuMapApuAddress(notification))
+                *static_cast<volatile uint32_t*>(w) = 1;
+        }
         return S_OK;
     }
 
-    // Slots 3 and 4: PopMessage and GetNumMessages (message polling, not called by title)
-    virtual uint32_t __stdcall pop_message() { return 0; }
-    virtual uint32_t __stdcall get_num_messages() { return 0; }
+    // Slot 3: PopMessage(message*) -> whether one was taken
+    virtual bool __stdcall pop_message(AcpMessage* out) {
+        std::lock_guard lock(mu);
+        if (messages.empty()) return false;
+        if (out) std::memcpy(out, &messages.front(), sizeof(AcpMessage));
+        messages.erase(messages.begin());
+        return true;
+    }
+
+    // Slot 4: GetNumMessages
+    virtual uint32_t __stdcall get_num_messages() {
+        std::lock_guard lock(mu);
+        return static_cast<uint32_t>(messages.size());
+    }
 
     // Slot 5: Release
     virtual HRESULT __stdcall release() {
