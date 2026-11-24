@@ -460,7 +460,9 @@ bool map_page(uintptr_t address, uint64_t page, DWORD protect) {
 // Two of the measured windows are reserved PAGE_NOACCESS for the CPU and the GPU alike; pages mapped there are still
 // GPU memory, which the D3D12 layer reads on the CPU.
 DWORD view_protect(const Window& window) {
-    return window.protect == PAGE_NOACCESS ? PAGE_READWRITE : window.protect;
+    // HACK: Wine 9 MapViewOfFile3 rejects PAGE_WRITECOMBINE / PAGE_NOCACHE (error 87); keep the base protection.
+    const DWORD p = window.protect == PAGE_NOACCESS ? PAGE_READWRITE : window.protect;
+    return p & ~static_cast<DWORD>(PAGE_WRITECOMBINE | PAGE_NOCACHE | PAGE_GUARD);
 }
 
 bool aligned_page_address(uintptr_t address) { return (address & (kPhysicalPageSize - 1)) == 0; }
@@ -562,6 +564,8 @@ void* WINAPI XMemMapPhysicalPages(void* address, uint64_t page_count, const uint
     const uintptr_t start = reinterpret_cast<uintptr_t>(address);
     if (!aligned_page_address(start) || page_count > (std::numeric_limits<uintptr_t>::max)() / kPhysicalPageSize ||
         start > (std::numeric_limits<uintptr_t>::max)() - page_count * kPhysicalPageSize) {
+        std::fprintf(stderr, "[hack] XMemMapPhysicalPages(%p, %llu): bad address/count\n", address, (unsigned long long)page_count);
+        std::fflush(stderr);
         SetLastError(ERROR_INVALID_PARAMETER);
         return nullptr;
     }
@@ -578,12 +582,21 @@ void* WINAPI XMemMapPhysicalPages(void* address, uint64_t page_count, const uint
     }
     const Window* const window = find_window(start, page_count * kPhysicalPageSize);
     if (!window) {
+        std::fprintf(stderr, "[hack] XMemMapPhysicalPages(%p, %llu): no window covers it\n", address, (unsigned long long)page_count);
+        std::fflush(stderr);
         SetLastError(ERROR_INVALID_ADDRESS);
         return nullptr;
     }
     const DWORD protect = view_protect(*window);
     for (uint64_t i = 0; i < page_count; ++i) {
-        if (!map_page(start + i * kPhysicalPageSize, page_array[i], protect)) return nullptr;
+        if (!map_page(start + i * kPhysicalPageSize, page_array[i], protect)) {
+            const DWORD e = GetLastError();
+            std::fprintf(stderr, "[hack] XMemMapPhysicalPages(%p, %llu): map_page %llu (page 0x%llx, protect 0x%lx) failed, error %lu\n",
+                         address, (unsigned long long)page_count, (unsigned long long)i, (unsigned long long)page_array[i],
+                         (unsigned long)protect, (unsigned long)e);
+            std::fflush(stderr);
+            return nullptr;
+        }
     }
     return address;
 }

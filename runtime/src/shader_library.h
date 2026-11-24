@@ -740,7 +740,7 @@ public:
         } catch (...) {
             return fail("index.json could not be read");
         }
-        for (const char* folder : {"fspx", "bvh"}) {
+        for (const char* folder : {"fspx", "bvh", "fspx_game"}) {
             try {
                 const auto ignore = [](const std::string&) { return false; };
                 const std::filesystem::path sub = dir / folder;

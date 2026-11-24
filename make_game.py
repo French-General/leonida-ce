@@ -1063,6 +1063,8 @@ def check(game: str, full: bool) -> dict:
     for rel, info in v["files"].items():
         p = os.path.join(game, rel)
         if not os.path.isfile(p):
+            if rel.lower().endswith(".png"):  # local patch: store/splash images are not used by the build
+                print(f"  missing (ignored)  {rel}"); continue
             print(f"  missing  {rel}"); bad += 1
         elif os.path.getsize(p) != info["size"]:
             print(f"  wrong size  {rel}"); bad += 1

@@ -2669,5 +2669,8 @@ void set_hid_backend(const HidBackend* backend) { g_hid = backend ? backend : &k
 
 SHIM_TABLE(gameinput,
     {"gameinput.dll", "GameInputCreate", reinterpret_cast<void*>(&GameInputCreate)},
+    // Local patch: the Xbox Series 1.0.2.1 executable imports this by ordinal (gameinput.dll!#1); its first argument
+    // is the IGameInput** out pointer and the result is dereferenced right after the call (crash at +0x5925903).
+    {"gameinput.dll", "#1", reinterpret_cast<void*>(&GameInputCreate)},
     {"xgameruntime.dll", "GameInputCreate", reinterpret_cast<void*>(&GameInputCreate)},
 );
