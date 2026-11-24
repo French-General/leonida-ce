@@ -149,3 +149,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   read title memory, they do not write it), the title's own heaps (which allocator the object came from and its
   neighbours), and whether the object was ever constructed (a lock word that was never initialised would read
   as whatever the allocator left there).
+- The "audio object" lock is a member: the audio thread locks engine+0x3ced0 (rsi = the audio engine, the same
+  object the manager update reads at +0x3cdf8 and +0x3dd80). Its word differs between runs (0x15000000001,
+  ...02, ...03), so it is being locked by a path other than +0x4bdf (the recursive path, or an inlined lock),
+  not a one-off overwrite. Forcing it free under gdb at the audio thread's first lock (hacks: unlock.gdb pattern)
+  did not help: the stream update still ran once and the run still ended at +0x538d0e6 (117 s). So this lock is
+  not the only thing holding the audio thread. Next: the audio thread's stack after a forced unlock, and the
+  inlined lock sites that write engine+0x3ced0.
