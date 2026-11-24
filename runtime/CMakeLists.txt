@@ -130,6 +130,7 @@ if(WIN32 AND LEONIDA_BUILD_WINDOWS_RUNTIME)
     shims/bcrypt_rng.cpp
     shims/dstorage_x.cpp
     shims/audio_x.cpp
+    shims/sysinfo_ce.cpp
   )
   add_dependencies(gta6rt gta6rt_tls_host)
   target_compile_definitions(gta6rt PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

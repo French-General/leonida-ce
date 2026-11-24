@@ -230,3 +230,5 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   the stop came at 143 s, after the world tiles had started loading. To check next: the CPU count the title sees
   (GetSystemInfo / logical processor info under Wine) and whether its job system sizes worker counts from it, and
   who resets or shares this arena across threads.
+- Not the processor count: the title reads GetLogicalProcessorInformation (and Get/SetThreadGroupAffinity);
+  cut to 16 logical processors (LEONIDA_CE_CPUS=16, shims/sysinfo_ce.cpp) it still stops at 134 s.
