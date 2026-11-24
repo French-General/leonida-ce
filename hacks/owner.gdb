@@ -5,6 +5,8 @@ lo, hi = 0x140001000, 0x147000000
 inf = gdb.selected_inferior()
 out = []
 info = {}
+slot = struct.unpack_from("<I", inf.read_memory(0x146e08b2c, 4), 0)[0]
+out.append("game TLS slot %d" % slot)
 for th in inf.threads():
     th.switch()
     try:
@@ -12,7 +14,7 @@ for th in inf.threads():
         teb = inf.read_memory(gs, 0x60)
         base, limit = struct.unpack_from("<QQ", teb, 8)
         tlsp = struct.unpack_from("<Q", teb, 0x58)[0]
-        blk = struct.unpack_from("<Q", inf.read_memory(tlsp, 8), 0)[0]
+        blk = struct.unpack_from("<Q", inf.read_memory(tlsp + 8 * slot, 8), 0)[0]
         idx = struct.unpack_from("<I", inf.read_memory(blk + 0x1454, 4), 0)[0]
         if not (limit < base and base - limit < (64 << 20)):
             continue
@@ -21,8 +23,8 @@ for th in inf.threads():
         continue
     info[th.ptid[1]] = (idx, limit, mem)
 out.append("threads: %d" % len(info))
-needle = struct.pack("<Q", 0x145594661)
-for lwp, (idx, limit, mem) in info.items():
+for needle in (struct.pack("<Q", 0x145594661), struct.pack("<Q", 0x145267740)):
+  for lwp, (idx, limit, mem) in info.items():
     i = mem.find(needle)
     while i >= 0:
         if i % 8 == 0 and i >= 24:

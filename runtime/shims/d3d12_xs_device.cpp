@@ -843,6 +843,21 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
 // DIAGNOSTIC (Leonida CE boot, LEONIDA_CE_STACKS=1: at presents 300 and 20000): suspend every other thread and unwind
 // its stack with the image's unwind data, printing game_scarlett_master.exe-relative frames (G+rva; others are host
 // addresses, llvm-symbolizer --obj=gta6rt.exe names the runtime's). Shows what each thread waits on.
+long xs_game_thread_index(HANDLE th) {
+    using QueryFn = LONG(NTAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
+    static const auto query =
+        reinterpret_cast<QueryFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+    if (!query) return -2;
+    struct { LONG status; PVOID teb; void* pid; void* tid; ULONG_PTR mask; LONG prio, base; } info{};
+    if (query(th, 0 /* ThreadBasicInformation */, &info, sizeof(info), nullptr) != 0 || !info.teb) return -2;
+    const auto slot = *reinterpret_cast<const volatile std::uint32_t*>(0x146e08b2cull);  // title TLS index
+    const auto* tls = *reinterpret_cast<std::uint8_t* const* const*>(static_cast<std::uint8_t*>(info.teb) + 0x58);
+    if (!tls || !xs_readable(tls + slot, 8)) return -2;
+    const std::uint8_t* block = tls[slot];
+    if (!block || !xs_readable(block + 0x1454, 4)) return -2;
+    return *reinterpret_cast<const std::int32_t*>(block + 0x1454);
+}
+
 void xs_dump_thread_stacks() {
     const DWORD self_tid = GetCurrentThreadId(), pid = GetCurrentProcessId();
     const std::uint64_t lo = 0x140000000ull, hi = 0x147000000ull;
@@ -884,7 +899,7 @@ void xs_dump_thread_stacks() {
                 if (ctx.Rip == rip) break;
             }
             if (any_game) {
-                std::fprintf(stderr, "[stacks] tid %lx:%s\n", te.th32ThreadID, line);
+                std::fprintf(stderr, "[stacks] tid %lx idx %ld:%s\n", te.th32ThreadID, xs_game_thread_index(th), line);
                 ++dumped;
             }
         }
@@ -2207,7 +2222,7 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                 char v[8] = {};
                 return GetEnvironmentVariableA("LEONIDA_CE_STACKS", v, sizeof(v)) > 0 && v[0] == '1';
             }();
-            if (dump_stacks && (f == 300 || f == 20000)) {
+            if (dump_stacks && (f == 300 || f == 4000 || f == 20000)) {
                 HANDLE t = CreateThread(nullptr, 0, [](void*) -> DWORD { xs_dump_thread_stacks(); return 0; }, nullptr, 0, nullptr);
                 if (t) CloseHandle(t);
             }

@@ -156,3 +156,13 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   did not help: the stream update still ran once and the run still ended at +0x538d0e6 (117 s). So this lock is
   not the only thing holding the audio thread. Next: the audio thread's stack after a forced unlock, and the
   inlined lock sites that write engine+0x3ced0.
+- Correction (TLS): the title's thread index is in its own TLS slot, not slot 0. The exe's TLS directory says
+  AddressOfIndex 0x146e08b2c (slot 2 in these runs); the earlier "owner 336 does not exist" read slot 0.
+  With the right slot the audio engine's lock (engine+0x3ced0, word 0x15000000003) belongs to thread index 336,
+  a job worker that is idle at its entry wait (G+221c3c2) by present 300, holding it three deep. No exception
+  on any thread before about 119 s, so it was not skipped by an unwind: the engine is locked across jobs on
+  purpose, and the job that unlocks never runs. Prime suspect: the XMA decoder contexts the title polls (VIctory's
+  audio.rs decodes XMA contexts on a thread and advances their read/write blocks; here nothing advances them),
+  so the first audio frame never completes. Next: port VIctory's XMA context pump, silent (consume input packets,
+  write zero output blocks, advance the pointers), with credit.
+- Stack dumps now print each thread's title index ("tid N idx M"), read through the title's TLS slot.
