@@ -73,6 +73,34 @@ bool xs_readable(const void* p, std::size_t len) {
     return true;
 }
 
+// HACK (Leonida CE boot): console formats with no PC format, after Marvisak/VIctory's resource.rs (GPLv3): 118-120
+// are the console's 16-bit depth with 8-bit stencil (and its typeless views); the 24/8 formats 45-47 stand in.
+DXGI_FORMAT xs_pc_format(DXGI_FORMAT f) {
+    switch (static_cast<unsigned>(f)) {
+    case 118: return static_cast<DXGI_FORMAT>(45);
+    case 119: return static_cast<DXGI_FORMAT>(46);
+    case 120: return static_cast<DXGI_FORMAT>(47);
+    default: return f;
+    }
+}
+
+// HACK (Leonida CE boot): a console resource description made acceptable to PC D3D12. The console allows unordered
+// access on a depth-stencil texture (the title makes depth buffers it also writes from compute, flags 0x80300006);
+// PC D3D12 refuses that pair (E_INVALIDARG), and the title asserted on the null resource and then read through it.
+// The UAV flag is dropped (the texture is made; only UAVs of it are missing), and console-only formats mapped.
+void xs_fix_pc_flags(D3D12_RESOURCE_DESC& desc) {
+    desc.Format = xs_pc_format(desc.Format);
+    const auto f = static_cast<std::uint32_t>(desc.Flags);
+    if ((f & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) && (f & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
+        static std::atomic<int> told{0};
+        if (told++ < 4)
+            std::fprintf(stderr, "[hack] depth-stencil texture %llux%u with unordered access: UAV flag dropped\n",
+                         static_cast<unsigned long long>(desc.Width), desc.Height);
+        desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(f & ~std::uint32_t(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS));
+    }
+}
+
+
 
 // The retail title calls device slots well past ID3D12Device14 (slot 133 at least); every slot past the PC device's
 // vtable goes through the generic thunk and is refused with E_NOTIMPL, so the table must outlast the highest one.
@@ -248,7 +276,9 @@ void xs_pso_want(const std::string& hex) {
 }
 
 // HACK: when the PC layer rejects a console resource description (SizeInBytes = UINT64_MAX), estimate it.
-D3D12_RESOURCE_ALLOCATION_INFO xs_alloc_info(ID3D12Device* real, UINT mask, const D3D12_RESOURCE_DESC& d) {
+D3D12_RESOURCE_ALLOCATION_INFO xs_alloc_info(ID3D12Device* real, UINT mask, const D3D12_RESOURCE_DESC& console) {
+    D3D12_RESOURCE_DESC d = console;
+    xs_fix_pc_flags(d);
     D3D12_RESOURCE_ALLOCATION_INFO info = real->GetResourceAllocationInfo(mask, 1, &d);
     if (info.SizeInBytes != UINT64_MAX && info.SizeInBytes < (1ull << 32)) return info;
     UINT64 bytes = d.Width;
@@ -2745,6 +2775,7 @@ HRESULT proxy_create_resource(DeviceProxy* self, const D3D12_HEAP_PROPERTIES* he
     // The Xbox layout word is 0x101 (tiled) or 0x1 (row-major buffer), and is not a PC layout value. Committed
     // resources take ROW_MAJOR for buffers and UNKNOWN for everything else, so the word is ignored and replaced.
     D3D12_RESOURCE_DESC pc_desc = *xbox_desc;
+    xs_fix_pc_flags(pc_desc);
     const auto xbox_layout = static_cast<std::uint32_t>(pc_desc.Layout);
     pc_desc.Layout = pc_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
                                                                          : D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -2781,21 +2812,6 @@ HRESULT proxy_create_resource(DeviceProxy* self, const D3D12_HEAP_PROPERTIES* he
         hr = hr2;
     }
     return hr;
-}
-
-// HACK (Leonida CE boot): the console allows unordered access on a depth-stencil texture (the title makes depth
-// buffers it also writes from compute, flags 0x80300006); PC D3D12 refuses that pair (E_INVALIDARG), and the title
-// asserts on the null resource and then reads through it. The UAV flag is dropped: the texture is made, and only
-// UAVs of it are missing.
-void xs_fix_pc_flags(D3D12_RESOURCE_DESC& desc) {
-    const auto f = static_cast<std::uint32_t>(desc.Flags);
-    if ((f & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) && (f & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
-        static std::atomic<int> told{0};
-        if (told++ < 4)
-            std::fprintf(stderr, "[hack] depth-stencil texture %llux%u with unordered access: UAV flag dropped\n",
-                         static_cast<unsigned long long>(desc.Width), desc.Height);
-        desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(f & ~std::uint32_t(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS));
-    }
 }
 
 // HACK (Leonida CE boot): on the console a texture's GPU address is its memory, which the CPU reads and writes too
@@ -3084,6 +3100,21 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
         }
         using ForwardFn = std::uint64_t(WINAPI*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
                                                  std::uint64_t, std::uint64_t);
+        // Console-only view formats (xs_pc_format): the view description is copied with the PC format.
+        alignas(8) unsigned char view_copy[64];
+        if constexpr (Slot >= 18 && Slot <= 21) {
+            constexpr std::size_t kViewBytes = Slot == 18 ? sizeof(D3D12_SHADER_RESOURCE_VIEW_DESC)
+                                             : Slot == 19 ? sizeof(D3D12_UNORDERED_ACCESS_VIEW_DESC)
+                                             : Slot == 20 ? sizeof(D3D12_RENDER_TARGET_VIEW_DESC)
+                                                          : sizeof(D3D12_DEPTH_STENCIL_VIEW_DESC);
+            static_assert(kViewBytes <= sizeof(view_copy));
+            const auto* view = reinterpret_cast<const DXGI_FORMAT*>(a2);
+            if (view && xs_pc_format(*view) != *view) {
+                std::memcpy(view_copy, view, kViewBytes);
+                *reinterpret_cast<DXGI_FORMAT*>(view_copy) = xs_pc_format(*view);
+                a2 = reinterpret_cast<std::uint64_t>(view_copy);
+            }
+        }
         const std::uint64_t r = reinterpret_cast<ForwardFn>(self->real_vtable[Slot])(self->real, a1, a2, a3, a4, a5, a6);
         if constexpr (Slot == 18) {  // SRV of a texture the title placed: copy its data in
             XsPlaced placed{};
@@ -3129,6 +3160,7 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
         for (UINT i = 0; i < n; ++i) {
             D3D12_RESOURCE_DESC d = in[i];
             d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(static_cast<unsigned>(d.Flags) & 0xffu);
+            xs_fix_pc_flags(d);
             d.Layout = d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
                                                                       : D3D12_TEXTURE_LAYOUT_UNKNOWN;
             const auto one = xs_alloc_info(dev->real, static_cast<UINT>(a2), d);
