@@ -4733,7 +4733,30 @@ LONG CALLBACK xs_null_definition_handler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+// EXPERIMENT (Leonida CE boot): the startup task graph's node 0xB198EC07 (body 0x14220F4C0) calls 0x1422082D0(2),
+// which never returns: it hangs inside 0x142208CA0 (called at 0x1422085D9), so every node depending on it starves,
+// the boot state machine never starts and the frontend stays off (black screen). LEONIDA_CE_SKIP_B198=1 replaces that
+// call with a 5-byte NOP to test whether the boot then proceeds (what the skipped init sets up is unknown).
+void xs_patch_skip_b198() {
+    char v[8] = {};
+    if (!GetEnvironmentVariableA("LEONIDA_CE_SKIP_B198", v, sizeof(v)) || v[0] != '1') return;
+    auto* at = reinterpret_cast<std::uint8_t*>(0x1422085d9ull);
+    static const std::uint8_t expect[5] = {0xe8, 0xc2, 0x06, 0x00, 0x00};
+    static const std::uint8_t nop5[5] = {0x0f, 0x1f, 0x44, 0x00, 0x00};
+    if (!xs_readable(at, 5) || std::memcmp(at, expect, 5) != 0) {
+        std::fprintf(stderr, "[hack] skip-b198: bytes differ, not applied\n");
+        return;
+    }
+    DWORD old = 0;
+    if (!VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    std::memcpy(at, nop5, 5);
+    VirtualProtect(at, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), at, 5);
+    std::fprintf(stderr, "[hack] skip-b198: call at game+0x22085d9 (to +0x2208ca0) skipped\n");
+}
+
 void xs_install_probes() {
+    xs_patch_skip_b198();
     {
         char k[8] = {};
         if (!(GetEnvironmentVariableA("LEONIDA_CE_KEEP_NULLDEF", k, sizeof(k)) && k[0] == '1'))
