@@ -61,3 +61,19 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 2. Device slot 86, another pipeline-creation variant the title calls thousands of times (refused so far).
 3. Read back `PresentX` plane 0 and write frames to disk, so frames can be checked without a display.
 3. Real implementations for the ignored sampler and view slots (61, 70) and the probe at 74.
+
+## 2026-11-24: where loading stops now (after 2e85f84)
+
+- At about 87 s the title's texture-object creation (game+0x34beb0, then +0x193de10) fails for small 160x90
+  render textures (formats 24 and 26): the title's own GPU memory allocator (game+0x2474690, then +0x221ad20,
+  allocator 2 via +0x4fc99c0, then +0x4fac3c0) returns null for a 0x4b0000-byte, 64 KiB-aligned request.
+  The title then asserts (+0x2219650, +0x1647d03, +0x6eb888) and reads through the null object (+0x6eb759).
+- Only about 450 MiB has been placed through device slot 133 by then, so it is one pool, not memory as a
+  whole. Next: find allocator 2's backing region and why it fills (a leak, or a size the PC side gets wrong).
+- The slot 127 charge to the title allocator (xs_title_d3d_alloc) is never freed; removing it did not move the
+  stop and made a 2 MB budget soft assert (+0x247af2d) appear early, so it stays for now.
+- Breakpoints under gdb: patch the title's soft-assert int3s to nop first (set {unsigned char}ADDR = 0x90),
+  or they stop gdb before yours. The gdb breakpoint on a failure path of a long function, then on each
+  return-false site, found this stop in three runs.
+- Run settings that matter: LEONIDA_ARENA_MB=4095 (the 256 MiB default fills with compute programs),
+  LEONIDA_SKIP_INT3=1 (step over soft asserts), LEONIDA_CE_STACKS=1 (thread stacks at presents 300, 20000).
