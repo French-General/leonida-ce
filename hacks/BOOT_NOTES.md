@@ -274,3 +274,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   then writes [item+0x38]*16 bytes for each of [item+0x3c] items. Next: compare the destination buffer's size with
   what is copied, and find which of the two the runtime feeds (a size or count it answers differently from the
   console: allocation info, texture layout, a query result).
+- The overflowing write, measured with in-process probes (LEONIDA_CE_PROBE=14550e60f,141335bd6): at +0x1335bd6 the
+  object being handled is rsi=0x14f340560; the row copy +0x550e60f then writes 0x1000 bytes (256 rows of 16: a
+  256-entry float4 lookup table the title computes with sqrt/round, clamped at 255; item [r14+0x38]=256,
+  [r14+0x3c]=1) at 0x14f340600 = rsi+0xa0, i.e. inline after a 0xa0-byte object, and over into page 0x14f341000
+  where the objects that later break live. The walk allocates its nodes at exactly 0xa0 bytes (+0x1842c9:
+  allocator 0x14abcc310 vtable +0x70, size 0xa0, flags 0x47). Next: where the 256 comes from ([item+0x38] of an
+  item in the pool) and whether that node should have been allocated larger for it; then which runtime answer
+  feeds either (the title may size the table from a count the console reports smaller).

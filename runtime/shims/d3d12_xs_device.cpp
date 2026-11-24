@@ -4045,6 +4045,89 @@ void set_texture_address_hook(TextureAddressHook hook) { g_texture_address_hook.
 // job worker, the audio thread blocks on it forever, the per-frame command stream is never drained and overflows
 // (about 100 s), and the title crashes on the error path. The branch is sent to the unlocking tail instead
 // (+0x5267c7f: rcx = the object, frame popped, jmp unlock). Found with hacks/engine.gdb; see hacks/BOOT_NOTES.md.
+// DIAGNOSTIC (Leonida CE boot): LEONIDA_CE_PROBE=<hex>,<hex>,... puts an int3 at each title address at device setup
+// and logs the registers there (rcx rdx r8 r9 rbp r13 r14 and [r14+0x38]/[r14+0x3c], the row copy's), up to 60
+// lines per probe; the instruction then runs (original byte back, trap flag, int3 again). Unlike gdb it keeps the
+// title's timing, so paths that only run at full speed can be watched.
+struct XsCodeProbe { std::uintptr_t at; std::uint8_t orig; std::atomic<int> hits{0}; };
+XsCodeProbe g_code_probes[8];
+int g_code_probe_count = 0;
+thread_local XsCodeProbe* t_code_probe_step = nullptr;
+
+void xs_probe_write(std::uintptr_t at, std::uint8_t byte) {
+    DWORD old = 0;
+    VirtualProtect(reinterpret_cast<void*>(at), 1, PAGE_EXECUTE_READWRITE, &old);
+    *reinterpret_cast<volatile std::uint8_t*>(at) = byte;
+    VirtualProtect(reinterpret_cast<void*>(at), 1, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(at), 1);
+}
+
+LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
+    if (!info || !info->ExceptionRecord || !info->ContextRecord) return EXCEPTION_CONTINUE_SEARCH;
+    auto* c = info->ContextRecord;
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_SINGLE_STEP && t_code_probe_step) {
+        xs_probe_write(t_code_probe_step->at, 0xCC);
+        t_code_probe_step = nullptr;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (code != EXCEPTION_BREAKPOINT) return EXCEPTION_CONTINUE_SEARCH;
+    const auto at = reinterpret_cast<std::uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+    for (int i = 0; i < g_code_probe_count; ++i) {
+        XsCodeProbe& pr = g_code_probes[i];
+        if (pr.at != at) continue;
+        if (pr.hits++ < 60) {
+            const auto* hdr = reinterpret_cast<const std::uint64_t*>(c->R15 ? c->R15 - 0x20 : 0);
+            if (xs_readable(hdr, 0x40))
+                std::fprintf(stderr, "[probe] G+%llx r15=%llx rsi=%llx  [r15-20..+18]= %llx %llx %llx %llx | %llx %llx %llx %llx\n",
+                             static_cast<unsigned long long>(at - 0x140000000ull), static_cast<unsigned long long>(c->R15),
+                             static_cast<unsigned long long>(c->Rsi),
+                             static_cast<unsigned long long>(hdr[0]), static_cast<unsigned long long>(hdr[1]),
+                             static_cast<unsigned long long>(hdr[2]), static_cast<unsigned long long>(hdr[3]),
+                             static_cast<unsigned long long>(hdr[4]), static_cast<unsigned long long>(hdr[5]),
+                             static_cast<unsigned long long>(hdr[6]), static_cast<unsigned long long>(hdr[7]));
+            const auto* item = reinterpret_cast<const std::uint32_t*>(c->R14);
+            const bool ok = xs_readable(item ? item + 14 : nullptr, 8);
+            std::fprintf(stderr,
+                         "[probe] G+%llx tid %lx rcx=%llx rdx=%llx r8=%llx r9=%llx rbp=%llx r13=%llx r14=%llx [r14+38]=%d "
+                         "[r14+3c]=%d\n",
+                         static_cast<unsigned long long>(at - 0x140000000ull), GetCurrentThreadId(),
+                         static_cast<unsigned long long>(c->Rcx), static_cast<unsigned long long>(c->Rdx),
+                         static_cast<unsigned long long>(c->R8), static_cast<unsigned long long>(c->R9),
+                         static_cast<unsigned long long>(c->Rbp), static_cast<unsigned long long>(c->R13),
+                         static_cast<unsigned long long>(c->R14), ok ? static_cast<int>(item[14]) : -1,
+                         ok ? static_cast<int>(item[15]) : -1);
+            std::fflush(stderr);
+        }
+        xs_probe_write(at, pr.orig);  // run the real instruction once
+        t_code_probe_step = &pr;
+        c->Rip = at;
+        c->EFlags |= 0x100;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void xs_install_probes() {
+    char v[256] = {};
+    if (!GetEnvironmentVariableA("LEONIDA_CE_PROBE", v, sizeof(v))) return;
+    AddVectoredExceptionHandler(1, &xs_probe_handler);
+    for (char* p = v; *p && g_code_probe_count < 8;) {
+        char* end = nullptr;
+        const std::uintptr_t at = static_cast<std::uintptr_t>(std::strtoull(p, &end, 16));
+        if (end == p) break;
+        if (at >= 0x140001000ull && at < 0x146000000ull && xs_readable(reinterpret_cast<void*>(at), 1)) {
+            XsCodeProbe& pr = g_code_probes[g_code_probe_count++];
+            pr.at = at;
+            pr.orig = *reinterpret_cast<const std::uint8_t*>(at);
+            xs_probe_write(at, 0xCC);
+            std::fprintf(stderr, "[probe] armed G+%llx (byte %02x)\n", static_cast<unsigned long long>(at - 0x140000000ull),
+                         pr.orig);
+        }
+        p = (*end == ',') ? end + 1 : end;
+    }
+}
+
 void xs_patch_audio_lock_leak() {
     auto* at = reinterpret_cast<std::uint8_t*>(0x145267747ull);
     static const std::uint8_t expect[6] = {0x0f, 0x84, 0xae, 0x05, 0x00, 0x00};  // je +0x5ae (to +0x5267cfb)
@@ -4064,6 +4147,7 @@ void xs_patch_audio_lock_leak() {
 void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
                        std::uint64_t ring_size) {
     xs_patch_audio_lock_leak();
+    xs_install_probes();
     g_arena_mapped = mapped;
     g_arena_size = arena_size;
     g_ring_cpu = ring_cpu;
