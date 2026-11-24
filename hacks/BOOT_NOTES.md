@@ -180,3 +180,8 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - Not the XMemAlloc hooks: routing XMemAlloc/XMemFree through __XMemAllocationHooks__ (as VIctory does) is in,
   and the bad free still comes at about 123 s. Not command allocator slot 9 either (an "allocation callback"
   VIctory ignores; the caller at +0x188501 ignores its result).
+- The stop at about 120-130 s has two forms that alternate between runs: (a) the bad free (+0x187fb..) then a
+  null read at +0x538d0e6, (b) a read of address -1 at +0x13360a3 (stack +0x186424, +0x18573b, +0x184f42,
+  +0x1847d8, +0x1837a2). Both run through the +0x18xxxx code next to the title's free (+0x187b0), so they likely
+  share a cause. hacks: dfree.gdb dumps the freeing container (+0x455aeb0: count +0x32, entries of 0x20 at +0x38,
+  pointer at +0x18) to test for a double entry, when the run takes form (a).
