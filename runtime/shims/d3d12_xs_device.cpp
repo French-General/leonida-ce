@@ -276,7 +276,66 @@ void xs_pso_want(const std::string& hex) {
 }
 
 // HACK: when the PC layer rejects a console resource description (SizeInBytes = UINT64_MAX), estimate it.
+// HACK (Leonida CE boot): the bytes and alignment a resource takes in console memory, after Marvisak/VIctory's
+// resource.rs footprint() (GPLv3). The title sizes its GPU allocations from these (its 2.2 GB GPU pool filled
+// with PC sizes: 64 KiB per small texture, and a 16-bytes-a-texel guess for formats the PC layer cannot size), and
+// it keeps them in its texture tables. Textures: their console layout from the texture computer, at the layout's own
+// alignment unless more is asked (layout word 0 is the library's pick: Z for depth, R for render targets, else
+// 4 KiB S). Buffers: their width, 64 KiB aligned. False when the layout is unknown.
+bool xs_console_footprint(const D3D12_RESOURCE_DESC& d, D3D12_RESOURCE_ALLOCATION_INFO& out) {
+    constexpr std::uint64_t k64 = 65536;
+    if (d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+        if (!d.Width) return false;
+        const std::uint64_t align = std::max<std::uint64_t>(d.Alignment, k64);
+        if (align & (align - 1)) return false;
+        out.Alignment = align;
+        out.SizeInBytes = (d.Width + align - 1) & ~(align - 1);
+        return true;
+    }
+    leonida::xg::TextureDesc td;
+    switch (d.Dimension) {
+    case D3D12_RESOURCE_DIMENSION_TEXTURE1D: td.dimension = leonida::xg::Dimension::Tex1d; break;
+    case D3D12_RESOURCE_DIMENSION_TEXTURE2D: td.dimension = leonida::xg::Dimension::Tex2d; break;
+    case D3D12_RESOURCE_DIMENSION_TEXTURE3D: td.dimension = leonida::xg::Dimension::Tex3d; break;
+    default: return false;
+    }
+    const auto layout = static_cast<std::uint32_t>(d.Layout);
+    const auto flags = static_cast<std::uint32_t>(d.Flags);
+    std::uint32_t swizzle = 0;
+    if (layout == 0) {
+        swizzle = td.dimension == leonida::xg::Dimension::Tex1d ? leonida::xg::Swizzle::LINEAR
+                : (flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) ? leonida::xg::Swizzle::SW_64KB_Z_X
+                : (flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) ? leonida::xg::Swizzle::SW_64KB_R_X
+                                                                    : leonida::xg::Swizzle::SW_4KB_S;
+    } else if (layout == 1) {
+        swizzle = leonida::xg::Swizzle::LINEAR;
+    } else if ((layout & ~0xFFu) == 0x100) {
+        swizzle = layout & 0xFF;
+    } else {
+        return false;
+    }
+    if (d.Width > 0xFFFFFFFFull) return false;
+    td.width = static_cast<std::uint32_t>(d.Width);
+    td.height = d.Height;
+    td.depth_or_array = d.DepthOrArraySize;
+    td.mips = d.MipLevels;
+    td.format = static_cast<std::uint32_t>(d.Format);
+    td.samples = std::max<std::uint32_t>(d.SampleDesc.Count, 1);
+    td.swizzle.value = swizzle;
+    leonida::xg::Texture t;
+    if (leonida::xg::Texture::make(td, t) != leonida::xg::Error::Ok || !t.size) return false;
+    const std::uint64_t align = std::max<std::uint64_t>(d.Alignment, t.alignment);
+    if (!align || (align & (align - 1))) return false;
+    out.Alignment = align;
+    out.SizeInBytes = (t.size + align - 1) & ~(align - 1);
+    return true;
+}
+
 D3D12_RESOURCE_ALLOCATION_INFO xs_alloc_info(ID3D12Device* real, UINT mask, const D3D12_RESOURCE_DESC& console) {
+    {
+        D3D12_RESOURCE_ALLOCATION_INFO footprint{};
+        if (xs_console_footprint(console, footprint)) return footprint;
+    }
     D3D12_RESOURCE_DESC d = console;
     xs_fix_pc_flags(d);
     D3D12_RESOURCE_ALLOCATION_INFO info = real->GetResourceAllocationInfo(mask, 1, &d);
