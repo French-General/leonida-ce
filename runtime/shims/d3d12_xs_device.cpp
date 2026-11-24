@@ -417,6 +417,7 @@ std::map<const void*, XsFenceMirror*> g_fence_mirrors;
 // timestamp) when the list has run; list 148 hands out memory the list owns until its next reset.
 // magic code, don't wanna deal with hours of plumbing with what these conjured devils of the souls of gpt 6 astra did.. jeez
 struct XsDeferredWrite { std::uint64_t address, value; unsigned bytes, what; };  // what: 0 value, 1 GPU ts, 2 system ts
+std::atomic<IUnknown*> g_placeholder_pso{nullptr};  // slot 57 stand-in (see the HACK there)
 struct XsListExtras { std::vector<XsDeferredWrite> writes; std::vector<std::unique_ptr<std::uint8_t[]>> uploads; };
 std::mutex g_list_extras_mu;
 std::map<const void*, XsListExtras> g_list_extras;  // keyed by the console list proxy
@@ -3858,6 +3859,11 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                 g.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
                 g.SampleDesc.Count = 1;
                 hr = self->real->CreateGraphicsPipelineState(&g, *riid, out);
+                if (SUCCEEDED(hr) && out && *out && !g_placeholder_pso.load()) {
+                    // keep the first working pipeline as the stand-in for pipelines we cannot build (below)
+                    static_cast<IUnknown*>(*out)->AddRef();
+                    g_placeholder_pso = static_cast<IUnknown*>(*out);
+                }
                 if (SUCCEEDED(hr) && out && *out) {  // HACK diagnostic: pipeline -> shader names
                     std::lock_guard names_lock(g_pso_names_mu);
                     g_pso_names[*out] = vs->name + " + " + (ps ? ps->name : std::string("(no PS)"));
@@ -3868,6 +3874,27 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                                  ps ? ps->name.c_str() : "(no PS)", (unsigned long)hr);
                     std::fflush(stderr);
                 }
+            }
+        }
+        // HACK (Leonida CE): a pipeline we cannot build (no vertex stage in the PSO map: the world's cable
+        // pipelines carry their pixel shader in blob #2 and a merged geometry stage elsewhere) used to fail, and the
+        // title kept a null definition record that crashed it later (+0xb5a5f8, +0x5392b80). Hand back the first
+        // working pipeline instead: those draws come out wrong, but the title goes on. LEONIDA_CE_NO_PLACEHOLDER=1
+        // keeps the failure.
+        static const bool no_placeholder = [] {
+            char v[8] = {};
+            return GetEnvironmentVariableA("LEONIDA_CE_NO_PLACEHOLDER", v, sizeof(v)) && v[0] == '1';
+        }();
+        if (FAILED(hr) && out && !no_placeholder) {
+            if (IUnknown* stand_in = g_placeholder_pso.load()) {
+                const HRESULT qi = stand_in->QueryInterface(*riid, out);
+                static std::atomic<int> told{0};
+                if (told++ < 20) {
+                    std::fprintf(stderr, "[hack] slot 57: no vertex stage for this pipeline; stand-in pipeline -> 0x%08lx\n",
+                                 static_cast<unsigned long>(qi));
+                    std::fflush(stderr);
+                }
+                if (SUCCEEDED(qi)) hr = S_OK;
             }
         }
         static std::atomic<int> ok{0}, bad{0};
@@ -3881,6 +3908,23 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                          (unsigned long long)w[4], (unsigned long long)w[5]);
             if (w[0] > 0x10000) { const auto* q = reinterpret_cast<const std::uint32_t*>(w[0]);
                 std::fprintf(stderr, "[hack]   *w0: %08x %08x %08x %08x %08x %08x %08x %08x\n", q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]); }
+            for (int i = 0; i < 6; ++i) {  // the six (pointer, length) blob pairs after the root signature
+                const auto* ptr = reinterpret_cast<const std::uint8_t*>(w[1 + 2 * i]);
+                const std::uint64_t len = w[2 + 2 * i];
+                char head[40] = "-";
+                if (ptr && len >= 16 && xs_readable(ptr, 16))
+                    std::snprintf(head, sizeof(head), "%02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x", ptr[0], ptr[1],
+                                  ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7], ptr[8], ptr[9], ptr[10], ptr[11]);
+                std::string stage = "-";
+                if (ptr && len >= 64 && xs_readable(ptr, 24)) {
+                    char hex[49];
+                    for (int b = 0; b < 24; ++b) std::snprintf(hex + 2 * b, 3, "%02x", ptr[b]);
+                    const auto it = g_pso_map.find(std::string(hex, 48));
+                    stage = it == g_pso_map.end() ? "not in map" : it->second.stage + " " + it->second.name;
+                }
+                std::fprintf(stderr, "[hack]   blob %d: len 0x%llx head %s map %s\n", i, static_cast<unsigned long long>(len),
+                             head, stage.c_str());
+            }
             std::fprintf(stderr, "[hack] slot 57 CreatePipelineState FAILED 0x%08lx (stream %llu bytes)\n", (unsigned long)hr, (unsigned long long)desc->SizeInBytes);
             std::fflush(stderr);
         }

@@ -398,3 +398,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - List put pointer and limits (+0x18..+0x38) are now all zero as in VIctory's list.rs (every inline packet check
   fails, commands arrive as calls); the old pinning left +0x20/+0x38 at 0 with a non-zero put pointer. No visible
   change in the slots called; LEONIDA_CE_OLD_CURSOR=1 restores it.
+- Late Windows stop (507 s, after compute dispatches start around frame 13800): ten slot 57 pipelines always fail
+  (E_INVALIDARG): the world's cable pipelines (PS_Cable_*, PS_Cable_MirrorReflection_*) carry the pixel shader in blob
+  #2 and blob #4 is empty; their vertex stage (blob #0, 0x1e8 bytes, or #3, 0x830) is not in the PSO map (a merged
+  geometry stage, as VIctory lists unsupported). Failing them left null definitions. Now slot 57 hands back a stand-in
+  pipeline (the first working one) instead (LEONIDA_CE_NO_PLACEHOLDER=1 keeps the failure); failures go to 0.
+  Failing slot 57 calls also log all six blobs (length, head bytes, PSO map entry).
+- pipeline_cache.bin is now written back (every 60 s when it grew; LEONIDA_PIPELINE_CACHE_SAVE=0 turns it off): Wine
+  saved 1.9 GB and the next run loads it. Drafted by the DeepSeek helper, integrated by hand.

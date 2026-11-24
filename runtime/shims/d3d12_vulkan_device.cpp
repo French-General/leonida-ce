@@ -39,6 +39,9 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <thread>
 #include <atomic>
 #include <bit>
 #include <cctype>
@@ -199,6 +202,97 @@ VkPipelineCache create_seeded_pipeline_cache(PFN_vkCreatePipelineCache create_ca
     std::fprintf(stderr, "[rt] d3d12: loaded %zu bytes from pipeline_cache.bin\n", seed.size());
     return cache;
 }
+
+// Drafted by a DeepSeek helper (grunt-work model), reviewed and integrated by hand.
+// Writes pipeline_cache.bin back, at most once a minute, only when the driver's blob grew.
+// Off with LEONIDA_PIPELINE_CACHE_SAVE=0. stop() joins the thread and must run before the cache is destroyed.
+class PipelineCacheWriter {
+public:
+    PipelineCacheWriter() = default;
+    ~PipelineCacheWriter() { stop(); }
+    PipelineCacheWriter(const PipelineCacheWriter&) = delete;
+    PipelineCacheWriter& operator=(const PipelineCacheWriter&) = delete;
+
+    void start(PFN_vkGetPipelineCacheData get_data, VkDevice device, VkPipelineCache cache) {
+        if (!get_data || device == VK_NULL_HANDLE || cache == VK_NULL_HANDLE) return;
+        const char* const setting = std::getenv("LEONIDA_PIPELINE_CACHE_SAVE");
+        if (setting && std::strcmp(setting, "0") == 0) return;
+        path_ = pipeline_cache_path();
+        if (path_.empty()) return;
+        get_ = get_data;
+        device_ = device;
+        cache_ = cache;
+        last_size_ = query_size();  // what is already on disk (the seed) is not written back
+        thread_ = std::thread(&PipelineCacheWriter::run, this);
+    }
+
+    void stop() {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        wake_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+private:
+    std::size_t query_size() const {
+        std::size_t size = 0;
+        return get_(device_, cache_, &size, nullptr) == VK_SUCCESS ? size : 0;
+    }
+
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!stopping_) {
+            if (wake_.wait_for(lock, std::chrono::seconds(60), [this] { return stopping_; })) return;
+            lock.unlock();
+            save_if_grown();
+            lock.lock();
+        }
+    }
+
+    void save_if_grown() {
+        std::size_t size = query_size();
+        if (size <= last_size_) return;
+        std::vector<std::uint8_t> blob(size);
+        if (get_(device_, cache_, &size, blob.data()) != VK_SUCCESS || size == 0) return;  // VK_INCOMPLETE: retry
+        blob.resize(size);
+
+        std::filesystem::path temporary = path_;
+        temporary += L".tmp";
+        const HANDLE file =
+            CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return;
+        const unsigned char* cursor = blob.data();
+        std::size_t remaining = blob.size();
+        bool ok = true;
+        while (remaining) {
+            const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(remaining, 1u << 20));
+            DWORD done = 0;
+            if (!WriteFile(file, cursor, chunk, &done, nullptr) || done == 0) { ok = false; break; }
+            cursor += done;
+            remaining -= done;
+        }
+        if (ok) ok = FlushFileBuffers(file) != 0;
+        CloseHandle(file);
+        if (!ok || !MoveFileExW(temporary.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            DeleteFileW(temporary.c_str());
+            return;
+        }
+        last_size_ = blob.size();
+        std::fprintf(stderr, "[rt] d3d12: saved %zu bytes to pipeline_cache.bin\n", blob.size());
+    }
+
+    PFN_vkGetPipelineCacheData get_ = nullptr;
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkPipelineCache cache_ = VK_NULL_HANDLE;
+    std::filesystem::path path_;
+    std::size_t last_size_ = 0;
+    std::thread thread_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool stopping_ = false;
+};
 
 // A shader whose subgroup size cannot be had runs at the device's: inexact if it crosses the halves of a wave64 (or,
 // for a wave32 shader on a 64-wide default, reads lanes that are not its own). Logged once per stage with the first
@@ -611,16 +705,19 @@ struct DeviceState {
     leonida::cached_pso::Identity pso_identity;  // what GetCachedBlob records and CachedPSO is checked against
     std::once_flag pipeline_cache_once;
     VkPipelineCache pipeline_cache_handle = VK_NULL_HANDLE;
+    PipelineCacheWriter cache_writer;  // stopped in the device destructor before the cache is destroyed
 
     VkPipelineCache pipeline_cache() {
         std::call_once(pipeline_cache_once, [this] {
             const auto& vk = context->vk;
             if (!vk.vkCreatePipelineCache || !vk.vkDestroyPipelineCache) return;
             pipeline_cache_handle = create_seeded_pipeline_cache(vk.vkCreatePipelineCache, info.device, pso_identity);
-            if (pipeline_cache_handle) return;
-            const VkPipelineCacheCreateInfo create{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-            if (vk.vkCreatePipelineCache(info.device, &create, nullptr, &pipeline_cache_handle) != VK_SUCCESS)
-                pipeline_cache_handle = VK_NULL_HANDLE;
+            if (!pipeline_cache_handle) {
+                const VkPipelineCacheCreateInfo create{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+                if (vk.vkCreatePipelineCache(info.device, &create, nullptr, &pipeline_cache_handle) != VK_SUCCESS)
+                    pipeline_cache_handle = VK_NULL_HANDLE;
+            }
+            cache_writer.start(vk.vkGetPipelineCacheData, info.device, pipeline_cache_handle);
         });
         // Without EXTERNALLY_SYNCHRONIZED_BIT the driver synchronizes concurrent pipeline creation using this cache.
         return pipeline_cache_handle;
@@ -5645,6 +5742,7 @@ public:
             vk.vkDestroyBuffer(state_.info.device, state_.arena.buffer, nullptr);
             if (state_.arena.memory) vk.vkFreeMemory(state_.info.device, state_.arena.memory, nullptr);
         }
+        state_.cache_writer.stop();  // joins: no vkGetPipelineCacheData after this point
         if (state_.pipeline_cache_handle)
             state_.context->vk.vkDestroyPipelineCache(state_.info.device, state_.pipeline_cache_handle, nullptr);
         state_.context.reset();
