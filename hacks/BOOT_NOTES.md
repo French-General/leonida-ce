@@ -260,3 +260,8 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   three forms are frees or calls through objects the recursive walk +0x183aaf/+0x18435f has already destroyed.
   Next: find what decides that walk destroys a subtree (its caller +0x503d5f5 and the item flags it reads), or
   try skipping the destroy step there as a hack (as with the audio lock) to see how far the title gets.
+- Not frame pacing: presents at 30 per second (LEONIDA_CE_FPS, default now) and the stop still comes (117 s).
+  The walk's step at +0x1842c9 is an allocation (general allocator 0x14abcc310, vtable +0x70, 0xa0 bytes, flags
+  0x47): when the arena struct was overwritten, that allocator was handing out the arena's memory, so the arena
+  had been freed before. Ruled out for this stop so far: audio lock, XMem hooks, aliasing, page mapping batches,
+  address range, CPU count, DirectStorage ordering, frame pacing, runtime writes into title memory.

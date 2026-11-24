@@ -2538,6 +2538,28 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
             }
             if (f % 30 == 0 && self->device && self->device->real) xs_refresh_placed_textures(self->device->real);
             xs_trap_tick(f);
+            {   // HACK (Leonida CE boot): frame pacing. Presents were uncapped (about 240 per second; the frame events
+                // answer at once), while the title runs at 30 on the console and frees things a set number of frames
+                // later. LEONIDA_CE_FPS (30 by default, 0 for none) spaces presents at least 1/FPS apart.
+                static const double fps = [] {
+                    char v[16] = {};
+                    return GetEnvironmentVariableA("LEONIDA_CE_FPS", v, sizeof(v)) ? std::strtod(v, nullptr) : 30.0;
+                }();
+                if (fps > 0) {
+                    static LARGE_INTEGER freq{}, next{};
+                    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+                    const LONGLONG period = static_cast<LONGLONG>(freq.QuadPart / fps);
+                    LARGE_INTEGER now{};
+                    QueryPerformanceCounter(&now);
+                    if (!next.QuadPart || now.QuadPart - next.QuadPart > period * 4) next = now;
+                    if (now.QuadPart < next.QuadPart) {
+                        const DWORD ms = static_cast<DWORD>((next.QuadPart - now.QuadPart) * 1000 / freq.QuadPart);
+                        if (ms) Sleep(ms);
+                        do { QueryPerformanceCounter(&now); } while (now.QuadPart < next.QuadPart);
+                    }
+                    next.QuadPart += period;
+                }
+            }
             static const bool dump_stacks = [] {
                 char v[8] = {};
                 return GetEnvironmentVariableA("LEONIDA_CE_STACKS", v, sizeof(v)) > 0 && v[0] == '1';
