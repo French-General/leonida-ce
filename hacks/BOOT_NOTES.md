@@ -9,11 +9,12 @@ fallback). They only work with that exact version, which `make_game.py --check` 
 
 ## Where it gets
 
-About 90 s into startup under Wine. The renderer is initialised: the device, queues, the 4K swap-chain resources,
+About a minute into startup under Wine, past the first frame. The renderer is initialised: the device, queues, the 4K swap-chain resources,
 the descriptor heaps at the title's addresses, all startup compute shaders but four, and every graphics
-pipeline the title asks for. DirectStorage streams and inflates `shaders.rpf`. The current stop is a
-fence wait (a token whose fence slot holds a pointer that is not a console fence) right before the first
-`PresentX`.
+pipeline the title asks for. DirectStorage streams and inflates `shaders.rpf`. The title submits GPU work,
+signals and polls its fences, and calls `PresentX` with its first frame. The current stop is a descriptor write
+to a destination of a few hundred bytes (a descriptor-memory base that comes back as 0, likely from one of the
+console-only command-list slots 70-75, 126, 139 or 142 that are not forwarded yet).
 
 ## Stops and what got past them
 
@@ -38,8 +39,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 | Runtime compute shaders | The title's compute pipelines carry FSPX programs from `shaders.rpf` that the offline stage never carved | dumped at run time, translated by `leonida-shaders-pass.sh` into `spirv/fspx_game/` (loaded as a third index folder); 38 of 42 translate |
 | Hang watchdog | A title thread kills the process when something stalls 30 s; Vulkan pipeline creation is much slower than the console's precompiled pipelines | the title's own off switch is set at start |
 | Queue slot 18 | **GetTimestampFrequency** (the console queue runs 2 slots ahead of the PC one past Wait). Forwarding it to PC GetDesc wrote 16 bytes into an 8-byte local and corrupted the caller's saved RBX: this was the "null render context" crash | queue 18/19 mapped to GetTimestampFrequency/GetClockCalibration |
-| Queue slot 32 | **PresentX** `(planeCount, planes, params)`, the newer layout `xbox_present.h` lists | accepted and logged (no window yet) |
-| Queue slot 35 | ExecuteCommandLists with two extra words | routed to ExecuteCommandLists |
+| Queue slots 16, 17 | **Signal(fence, value)** and **Wait**: this queue is two slots ahead of the PC one from Signal on (16-19 = PC 14-17). Forwarding 16 to PC 16 (GetTimestampFrequency) wrote 1,000,000,000 over the fence proxy's vtable pointer and never signalled the fence | routed to Signal/Wait with the fence unwrapped |
+| Fence slot 12 | Returns a pointer to the fence's completed value, which the title polls in memory (the console GPU writes it) | a per-fence UINT64 kept current from GetCompletedValue by one thread |
+| Queue slot 32 | **PresentX** `(planeCount, planes, params)`, the newer layout `xbox_present.h` lists | accepted and logged (no window yet); the title presents its first frame |
+| Queue slot 35 | ExecuteCommandLists with two extra words | routed to ExecuteCommandLists, lists unwrapped as slot 10 |
+| Console slots past the PC vtable | The child proxy refused slots past the PC table **before** the console handlers ran, so queue 32/35 and fence 12 never reached them | the console handlers run first |
 
 ## Loops
 
@@ -53,6 +57,7 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 
 ## Next
 
-1. The fence-wait stop: the token's fence table entry and what queue/device call should have produced it.
-2. Read back `PresentX` plane 0 and write frames to disk, so frames can be checked without a display.
+1. The descriptor-memory base: which console list slot (70-75, 126, 139, 142) hands it out.
+2. Device slot 86, another pipeline-creation variant the title calls thousands of times (refused so far).
+3. Read back `PresentX` plane 0 and write frames to disk, so frames can be checked without a display.
 3. Real implementations for the ignored sampler and view slots (61, 70) and the probe at 74.

@@ -285,6 +285,38 @@ void* xs_make_probe() {
     return p;
 }
 
+// HACK: console fence slot 12 returns a pointer to the fence's completed value, which the title then polls in
+// memory (the console GPU writes it). Each fence asked for gets a UINT64 here, kept current from GetCompletedValue
+// by one thread (about every millisecond). Entries are never freed.
+struct XsFenceMirror { ID3D12Fence* fence; volatile std::uint64_t value; };
+std::mutex g_fence_mirror_mu;
+std::map<const void*, XsFenceMirror*> g_fence_mirrors;
+DWORD WINAPI xs_fence_mirror_thread(void*) {
+    for (;;) {
+        {
+            std::lock_guard lock(g_fence_mirror_mu);
+            for (auto& [key, m] : g_fence_mirrors) m->value = m->fence->GetCompletedValue();
+        }
+        Sleep(1);
+    }
+}
+volatile std::uint64_t* xs_fence_value_address(const void* proxy, ID3D12Fence* real) {
+    std::lock_guard lock(g_fence_mirror_mu);
+    auto it = g_fence_mirrors.find(proxy);
+    if (it != g_fence_mirrors.end()) return &it->second->value;
+    auto* m = new XsFenceMirror{real, real->GetCompletedValue()};
+    g_fence_mirrors.emplace(proxy, m);
+    static const bool started = [] {
+        CloseHandle(CreateThread(nullptr, 0, &xs_fence_mirror_thread, nullptr, 0, nullptr));
+        return true;
+    }();
+    (void)started;
+    std::fprintf(stderr, "[hack] fence %p: completed-value address %p (value %llu)\n", proxy, (void*)&m->value,
+                 (unsigned long long)m->value);
+    std::fflush(stderr);
+    return &m->value;
+}
+
 std::atomic<std::uint64_t> g_hits[kMaxSlots];
 std::atomic<bool> g_first[kMaxSlots];
 std::atomic<bool> g_beyond_warned[kMaxSlots];
@@ -1276,6 +1308,15 @@ std::uint64_t WINAPI list_slot(ListProxy* self, std::uint64_t a1, std::uint64_t 
         note_list_slot(Slot, a1, a2, a3, a4);
         constexpr unsigned pc = console_to_pc_list_slot(Slot);
         if constexpr (pc == kListNotForwarded) {
+            {   // HACK diagnostic: every console-only list slot, once, with its arguments and caller
+                static std::atomic<bool> seen{false};
+                if (!seen.exchange(true, std::memory_order_relaxed)) {
+                    std::fprintf(stderr, "[hack] console list slot %u (not forwarded) from %p: a1=%llx a2=%llx a3=%llx a4=%llx\n",
+                                 Slot, _ReturnAddress(), (unsigned long long)a1, (unsigned long long)a2,
+                                 (unsigned long long)a3, (unsigned long long)a4);
+                    std::fflush(stderr);
+                }
+            }
             if constexpr (Slot == 148) {
                 static std::atomic<bool> logged{false};
                 if (!logged.exchange(true, std::memory_order_relaxed))
@@ -1421,31 +1462,6 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                                              reinterpret_cast<void**>(a2)));
     } else {
         note_child_slot<K>(Slot);
-        if (Slot >= self->slot_count) {
-            bool expected = false;
-            if (ChildStats<K>::beyond_warned[Slot].compare_exchange_strong(expected, true,
-                                                                            std::memory_order_relaxed)) {
-                std::fprintf(stderr,
-                             "[rt] d3d12_xs: %s slot %u is beyond the PC %s vtable (%u slots); returning E_NOTIMPL "
-                             "(args 0x%llx 0x%llx 0x%llx 0x%llx)\n",
-                             child_kind_name<K>(), Slot, child_kind_name<K>(), self->slot_count,
-                             static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
-                             static_cast<unsigned long long>(a3), static_cast<unsigned long long>(a4));
-            }
-            d3d12_trace::record(child_trace_name<K>(Slot), "unsupported");
-            std::fprintf(stderr, "[hack] %s slot %u beyond PC: caller %p a1=%llx a2=%llx a3=%llx a4=%llx\n",
-                         child_kind_name<K>(), Slot, _ReturnAddress(), (unsigned long long)a1, (unsigned long long)a2,
-                         (unsigned long long)a3, (unsigned long long)a4);
-            std::fflush(stderr);
-            return hr_to_u64(E_NOTIMPL);
-        }
-        d3d12_trace::record(child_trace_name<K>(Slot));  // "called": the real object's result is not inspected
-        if constexpr (K == ChildKind::queue && (Slot == kQueueSignal || Slot == kQueueWait)) a1 = unwrap_object(a1);
-        UnwrappedArray unwrapped_lists;
-        if constexpr (K == ChildKind::queue && Slot == 10) {
-            if (!unwrapped_lists.fill(a2, a1)) return hr_to_u64(E_OUTOFMEMORY);
-            if (unwrapped_lists.data()) a2 = unwrapped_lists.data();
-        }
         // HACK: the console queue runs two slots ahead of the PC one past Wait: the title calls slot 18 with one
         // UINT64* (GetTimestampFrequency; PC 16). Forwarding it to PC slot 18 (GetDesc) wrote a 16-byte struct
         // over the caller's frame and corrupted its saved rbx.
@@ -1486,6 +1502,18 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
             if (n && real_lists) q->ExecuteCommandLists(n, real_lists);
             return 0;
         }
+        // This title's queue runs two slots ahead of the PC one from Signal on: 16 = Signal(fence, value) (measured:
+        // a fence proxy and 1, 2, ...), 17 = Wait, 18 = GetTimestampFrequency, 19 = GetClockCalibration. Forwarding 16
+        // to PC 16 (GetTimestampFrequency) wrote the frequency over the fence proxy and never signalled the fence.
+        if constexpr (K == ChildKind::fence && Slot == 12) {
+            auto* fence = static_cast<ID3D12Fence*>(static_cast<IUnknown*>(self->real));
+            return reinterpret_cast<std::uint64_t>(xs_fence_value_address(self, fence));
+        }
+        if constexpr (K == ChildKind::queue && (Slot == 16 || Slot == 17)) {
+            auto* q = static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real));
+            auto* fence = reinterpret_cast<ID3D12Fence*>(unwrap_object(a1));
+            return hr_to_u64(Slot == 16 ? q->Signal(fence, a2) : q->Wait(fence, a2));
+        }
         if constexpr (K == ChildKind::queue && Slot == 18) {
             auto* q = static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real));
             return hr_to_u64(q->GetTimestampFrequency(reinterpret_cast<UINT64*>(a1)));
@@ -1493,6 +1521,31 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
         if constexpr (K == ChildKind::queue && Slot == 19) {
             auto* q = static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real));
             return hr_to_u64(q->GetClockCalibration(reinterpret_cast<UINT64*>(a1), reinterpret_cast<UINT64*>(a2)));
+        }
+        if (Slot >= self->slot_count) {
+            bool expected = false;
+            if (ChildStats<K>::beyond_warned[Slot].compare_exchange_strong(expected, true,
+                                                                            std::memory_order_relaxed)) {
+                std::fprintf(stderr,
+                             "[rt] d3d12_xs: %s slot %u is beyond the PC %s vtable (%u slots); returning E_NOTIMPL "
+                             "(args 0x%llx 0x%llx 0x%llx 0x%llx)\n",
+                             child_kind_name<K>(), Slot, child_kind_name<K>(), self->slot_count,
+                             static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
+                             static_cast<unsigned long long>(a3), static_cast<unsigned long long>(a4));
+            }
+            d3d12_trace::record(child_trace_name<K>(Slot), "unsupported");
+            std::fprintf(stderr, "[hack] %s slot %u beyond PC: caller %p a1=%llx a2=%llx a3=%llx a4=%llx\n",
+                         child_kind_name<K>(), Slot, _ReturnAddress(), (unsigned long long)a1, (unsigned long long)a2,
+                         (unsigned long long)a3, (unsigned long long)a4);
+            std::fflush(stderr);
+            return hr_to_u64(E_NOTIMPL);
+        }
+        d3d12_trace::record(child_trace_name<K>(Slot));  // "called": the real object's result is not inspected
+        if constexpr (K == ChildKind::queue && (Slot == kQueueSignal || Slot == kQueueWait)) a1 = unwrap_object(a1);
+        UnwrappedArray unwrapped_lists;
+        if constexpr (K == ChildKind::queue && Slot == 10) {
+            if (!unwrapped_lists.fill(a2, a1)) return hr_to_u64(E_OUTOFMEMORY);
+            if (unwrapped_lists.data()) a2 = unwrapped_lists.data();
         }
 
         // The PC vtable entry with the real object as `this`; integer/pointer arguments, the hidden struct-return
@@ -1754,7 +1807,10 @@ HRESULT proxy_create_fence(DeviceProxy* self, std::uint64_t initial_value, std::
     void* created = nullptr;
     const HRESULT hr = self->real->CreateFence(initial_value, fence_flags, __uuidof(ID3D12Fence), &created);
     if (FAILED(hr)) return hr;
-    return wrap_child<ChildKind::fence>(static_cast<IUnknown*>(created), self, riid, out);
+    const HRESULT wrapped = wrap_child<ChildKind::fence>(static_cast<IUnknown*>(created), self, riid, out);
+    static std::atomic<int> n{0};  // HACK diagnostic
+    if (n++ < 12) { std::fprintf(stderr, "[hack] fence proxy %p (flags %llu)\n", *out, (unsigned long long)flags); std::fflush(stderr); }
+    return wrapped;
 }
 
 // True when `allocator` is one whose consumers resolve allocator proxies: Leonida's own Vulkan-layer allocator,
@@ -2521,8 +2577,9 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
             std::fflush(stderr);
             return 0x80004001ull;
         }
-        if (Slot >= self->slot_count) {  // HACK diagnostic: who calls past the PC vtable, with what
-            std::fprintf(stderr, "[hack] device slot %u beyond PC: caller %p a1=%llx a2=%llx a3=%llx a4=%llx a5=%llx a6=%llx\n",
+        if (Slot >= self->slot_count) {  // HACK diagnostic: who calls past the PC vtable, with what (first 3 calls)
+            static std::atomic<int> logged{0};
+            if (logged++ < 3) std::fprintf(stderr, "[hack] device slot %u beyond PC: caller %p a1=%llx a2=%llx a3=%llx a4=%llx a5=%llx a6=%llx\n",
                          Slot, _ReturnAddress(), (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3,
                          (unsigned long long)a4, (unsigned long long)a5, (unsigned long long)a6);
             std::fflush(stderr);

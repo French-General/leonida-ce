@@ -46,13 +46,13 @@ Leonida CE has no official Discord (yet).
 
 **Early. Nothing is playable and no frame is shown yet.** The real executable runs under the loader: it gets through
 the stops traced in [docs/retail_boot_chain.md](docs/retail_boot_chain.md) and, with the exploratory stand-ins merged
-from the `boot-hacks` branch, about 90 seconds into startup under Wine, up to just before its first present
+from the `boot-hacks` branch, about a minute into startup under Wine, where it submits GPU work and presents its first frame
 ([notes](hacks/BOOT_NOTES.md)). Each stand-in marks work that still needs a real implementation.
 
 | What | Status |
 |---|---|
 | Story mode, anything playable, a frame on screen | ❌ No |
-| Booting the real executable | ⚠️ Partial. Loads, initialises and runs its startup ([retail boot chain](docs/retail_boot_chain.md), through stop 13). With the stand-ins from `boot-hacks`: DirectStorage streaming with zlib, console descriptor heaps, the 4K swap-chain resources, every graphics pipeline the title creates (console pipeline records matched to the translated corpus), runtime compute shaders, and the console queue's ExecuteCommandLists and PresentX slots; it stops in a fence wait before the first present ([notes](hacks/BOOT_NOTES.md)) |
+| Booting the real executable | ⚠️ Partial. Loads, initialises and runs its startup ([retail boot chain](docs/retail_boot_chain.md), through stop 13). With the stand-ins from `boot-hacks`: DirectStorage streaming with zlib, console descriptor heaps, the 4K swap-chain resources, every graphics pipeline the title creates (console pipeline records matched to the translated corpus), runtime compute shaders, the console queue's Signal, Wait, ExecuteCommandLists and PresentX slots and console fence values; it presents its first frame (no window yet) and then stops at a descriptor write ([notes](hacks/BOOT_NOTES.md)) |
 | Finding and checking your copy (Xbox Series 1.0.2.1) | ✅ Works |
 | Shaders: carve, unpack native RDNA2 code, disassemble | ✅ All 26,503 |
 | Shaders: RDNA2 → SPIR-V translation | ✅ **26,503 / 26,503 translated**: 2,236 VS, 12,101 PS, 2,689 CS, 9,282 mesh, 195 geometry, with a per-shader metadata index for pipeline creation. The LLVM 23.1.5 Linux rerun at `c432cdc` and the LLVM 23.1.3 Windows rerun at `43d0015` both translated all 26,503 ([Linux](https://github.com/ItsNotRexed/Leonida/issues/644#issuecomment-7072972586), [Windows](https://github.com/ItsNotRexed/Leonida/issues/644#issuecomment-7074299915)). Translation and SPIR-V validation are separate steps; validation results are listed below. ⚠️ 23,841 are wave64: exact on 64-wide subgroups (AMD). On 32-wide subgroups (NVIDIA, Intel), compute and mesh shaders are exact with wave64 emulation (`--wave64-emulate`, on by default there); cross-half wave ops in vertex, pixel and geometry shaders are still approximate |
