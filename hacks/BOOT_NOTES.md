@@ -112,3 +112,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   from 20 s the update ran once (gdb thread 17) and never again, so the per-frame job is not submitted again, or
   the scheduler holds it back on those counters. Next: who submits the +0x537f810 job each frame, and what it
   checks (obj+0x78/+0x7c/+0x80) before submitting.
+- Why the consumer stops: the per-frame tick game+0x43ae230 (it runs the stream update inline or queues the
+  +0x537f810 job; the job descriptor is static at 0x149ae9988, busy flag 0x149ae9a04, pending 0x149ae9a08) is
+  called only from the audio thread's main loop at game+0x1e95xxx. That thread (seen in the stack dumps as
+  ... G+a7c3f3 G+4bd6 G+5594661 G+1e95166) is stuck at the first instruction of +0x5594650: the title's own lock
+  routine +0x4b40 on the audio object (not an imported CRITICAL_SECTION or SRW lock). So another thread holds
+  that object's lock and never releases it, and the audio frame never comes. Next: break at +0x559465c to get
+  the object, read its lock word after the stall, and find the owning thread's stack.
