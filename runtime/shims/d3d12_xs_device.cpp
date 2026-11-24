@@ -4144,7 +4144,25 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
             return true;
         }();
         (void)range_read;
-        const bool in_range = c->R8 >= range_lo && c->R8 < range_hi;
+        bool in_range = c->R8 >= range_lo && c->R8 < range_hi;
+        // LEONIDA_CE_PROBE_STALE=1: at the walk's attach entry +0x183190 (rcx = child), log only a child that is
+        // already dead: its first qword is the base vtable 0x146639ac0 (stored by +0x5390160 on destruction) or is
+        // not an address in the title's read-only data (a free-list link or junk).
+        static const bool stale_mode = [] {
+            char v[8] = {};
+            return GetEnvironmentVariableA("LEONIDA_CE_PROBE_STALE", v, sizeof(v)) && v[0] == '1';
+        }();
+        if (stale_mode && at == 0x140183190ull) {
+            const auto* obj = reinterpret_cast<const std::uint64_t*>(c->Rcx);
+            const std::uint64_t vt = xs_readable(obj, 8) ? obj[0] : 0;
+            in_range = vt == 0x146639ac0ull || vt < 0x146000000ull || vt >= 0x147000000ull;
+            if (in_range) {
+                std::fprintf(stderr, "[stale] child %llx first qword %llx at attach (tid %lx)\n",
+                             static_cast<unsigned long long>(c->Rcx), static_cast<unsigned long long>(vt),
+                             GetCurrentThreadId());
+                std::fflush(stderr);
+            }
+        }
         if (in_range && pr.hits++ < 60) {
             {
                 char chain[256];

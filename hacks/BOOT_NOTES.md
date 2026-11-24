@@ -329,3 +329,13 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - Two cores (taskset -c 0-1, LEONIDA_CE_CPUS=2, try143): still crashes, later (159 s, +0x515acf5). Not conclusive.
 - Next: watch the walk's object destruction for the same object destroyed twice (probe +0x5390160 with rcx, log
   repeats per thread), and who holds the second reference.
+- Stale-owner hypothesis (from a DeepSeek first pass over +0x181b00..+0x184400, every address checked): a parent
+  caches a child at [owner+0x28] (+0x182abe, +0x184338) and never clears it when the child is detached by
+  +0x182870 (clears child+0x30, tail-calls vtable +0x18), so a later get-or-create could hand a dead child to the
+  attach function +0x183190 (called from +0x18435a, on every crash stack). The only refcount in the walk is
+  +0x183930 (lock dec [rcx+8], deleting destructor on zero); the only atomic hand-off is +0x1841f0 (xchg [+0x10]).
+- LEONIDA_CE_PROBE=140183190 LEONIDA_CE_PROBE_STALE=1 logs a child whose first qword is the base vtable or not a
+  vtable at attach. try144: 0 hits, crash as usual at 123.7 s (+0x13360a3). So no child is visibly dead when it
+  is attached; a block reused by a new object would still pass, so the hypothesis is weakened, not ruled out.
+- French-General (issue #2) reports Windows-native runs at 1403e90 do NOT hit this stop: they keep presenting.
+  So it is likely Wine- or Linux-shim-specific; compare what differs (threading primitives, timers, TLS).
