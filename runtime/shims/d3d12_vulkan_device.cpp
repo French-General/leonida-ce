@@ -4009,10 +4009,12 @@ public:
                              fspx ? (program.state.empty() ? "FSPX kind-6" : "FSPX kind-6 and kind-0") : "FSSM",
                              leonida::sha256_hex(program.bytes).c_str());
             {   // HACK: dump the container so it can be translated offline (tools/fspx_unpack.py takes .dxbc files)
-                CreateDirectoryW(L"Z:\\root\\leonida-dump", nullptr);
+                // Local Windows path (the upstream script hard-codes the Wine Z: drive of its own machine).
+                CreateDirectoryW(rt::d3d12_xs::ce_data_path(L"leonida-dump").c_str(), nullptr);
                 const std::string hex = leonida::sha256_hex(
                     {static_cast<const std::uint8_t*>(desc.CS.pShaderBytecode), desc.CS.BytecodeLength});
-                const std::wstring name = L"Z:\\root\\leonida-dump\\cs_" + std::wstring(hex.begin(), hex.end()) + L".dxbc";
+                const std::wstring name = rt::d3d12_xs::ce_data_path((L"leonida-dump\\cs_" +
+                                          std::wstring(hex.begin(), hex.end()) + L".dxbc").c_str());
                 HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
                 if (h != INVALID_HANDLE_VALUE) {
                     DWORD wrote = 0;
