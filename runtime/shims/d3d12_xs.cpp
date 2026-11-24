@@ -86,7 +86,46 @@ HRESULT WINAPI serialize_root_signature(const D3D12_VERSIONED_ROOT_SIGNATURE_DES
                          "descriptions without static sampler flags are serialized as 1.1\n");
         return fn(&v11, blob, error);
     }
-    return fn(&cleared, blob, error);
+    HRESULT hr = fn(&cleared, blob, error);
+    // Windows 10's built-in d3d12.dll predates the Shader Model 6.6 flags CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED (0x400)
+    // and SAMPLER_HEAP_DIRECTLY_INDEXED (0x800) and refuses them ("Unsupported bit-flag set"); Wine's serializer
+    // takes them. The title's root signatures use them, and every refusal left it a null definition record (the
+    // Windows stop at +0xb5a5f8 / +0x5392b80). The Vulkan layer binds through its own heap model, so retry without.
+    constexpr unsigned kDirectlyIndexed = 0x400u | 0x800u;
+    const auto flags_of = [](const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& d) {
+        return d.Version == D3D_ROOT_SIGNATURE_VERSION_1_0 ? static_cast<unsigned>(d.Desc_1_0.Flags)
+                                                           : static_cast<unsigned>(d.Desc_1_1.Flags);
+    };
+    if (hr == E_INVALIDARG && (flags_of(cleared) & kDirectlyIndexed)) {
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC plain = cleared;  // Desc_1_1 and Desc_1_2 share the flags' position
+        if (plain.Version == D3D_ROOT_SIGNATURE_VERSION_1_0)
+            plain.Desc_1_0.Flags = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>(plain.Desc_1_0.Flags & ~kDirectlyIndexed);
+        else
+            plain.Desc_1_1.Flags = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>(plain.Desc_1_1.Flags & ~kDirectlyIndexed);
+        if (error && *error) { (*error)->Release(); *error = nullptr; }
+        hr = fn(&plain, blob, error);
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true))
+            std::fprintf(stderr, "[rt] d3d12_xs: the host d3d12.dll refuses the HEAP_DIRECTLY_INDEXED root signature flags; "
+                                 "serializing without them (-> 0x%08lx)\n", static_cast<unsigned long>(hr));
+    }
+    if (FAILED(hr)) {
+        // What the host serializer refused (Microsoft's d3d12.dll explains in the error blob; Wine's is lenient).
+        static std::atomic<int> told{0};
+        if (told++ < 12) {
+            const char* text = (error && *error) ? static_cast<const char*>((*error)->GetBufferPointer()) : "(no message)";
+            std::fprintf(stderr, "[rt] d3d12_xs: D3D12SerializeVersionedRootSignature (version %d, %u params, flags 0x%x) "
+                                 "-> 0x%08lx: %.300s\n",
+                         static_cast<int>(cleared.Version),
+                         cleared.Version == D3D_ROOT_SIGNATURE_VERSION_1_0 ? cleared.Desc_1_0.NumParameters
+                                                                          : cleared.Desc_1_1.NumParameters,
+                         cleared.Version == D3D_ROOT_SIGNATURE_VERSION_1_0 ? static_cast<unsigned>(cleared.Desc_1_0.Flags)
+                                                                          : static_cast<unsigned>(cleared.Desc_1_1.Flags),
+                         static_cast<unsigned long>(hr), text);
+            std::fflush(stderr);
+        }
+    }
+    return hr;
 }
 
 // The package DLLs import the versioned serializer; the legacy entry point is kept because it is trivial to forward

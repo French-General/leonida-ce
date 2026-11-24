@@ -406,3 +406,13 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Failing slot 57 calls also log all six blobs (length, head bytes, PSO map entry).
 - pipeline_cache.bin is now written back (every 60 s when it grew; LEONIDA_PIPELINE_CACHE_SAVE=0 turns it off): Wine
   saved 1.9 GB and the next run loads it. Drafted by the DeepSeek helper, integrated by hand.
+- Windows null definitions, root cause: the record publisher +0x2476e20 returns false when +0xfa09f0 fails; that
+  helper unpacks the root signature from a shader's PRIV chunk, has it serialized by D3D12SerializeVersionedRootSignature
+  (our d3d12_xs.dll shim -> the host d3d12.dll) and creates it (device slot 16). Windows 10's built-in d3d12.dll
+  refuses the Shader Model 6.6 flags CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED (0x400) / SAMPLER_HEAP_DIRECTLY_INDEXED (0x800)
+  ("Unsupported bit-flag set"); Wine's serializer takes them. The shim now retries without them. Windows then runs
+  180 s with no null definition and no crash (frame 4800). Still black: one draw per frame, no dispatches.
+  (Found with failure-only probes on +0x1d65b83 / +0x2476f9f; DeepSeek's analyses of +0x1d65750 and +0x2476e20 were
+  both right.)
+- Compute pipelines that cannot be built (slot 67) now also get a stand-in pipeline, like slot 57.
+- On an unhandled crash the runtime prints "[error] I have fallen, and I can't get up! exception ... at ..." first.

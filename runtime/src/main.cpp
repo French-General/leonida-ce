@@ -18,6 +18,7 @@
 // (--overlay, default <game-dir>/overlay) so the package is never modified (shims/file_system.cpp).
 #include <windows.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -61,7 +62,30 @@ int usage() {
 
 }  // namespace
 
+namespace {
+// Leonida CE: the last word before an unhandled crash (any thread). It only reports; the crash then goes on as before
+// (Wine's debugger / Windows error reporting, and the trace's "exception" record).
+LONG WINAPI ce_last_words(EXCEPTION_POINTERS* info) {
+    const EXCEPTION_RECORD* r = info ? info->ExceptionRecord : nullptr;
+    const auto at = r ? reinterpret_cast<std::uint64_t>(r->ExceptionAddress) : 0;
+    const bool game = at >= 0x140000000ull && at < 0x147000000ull;
+    char where[64];
+    std::snprintf(where, sizeof(where), game ? "game+0x%llx" : "0x%llx",
+                  static_cast<unsigned long long>(game ? at - 0x140000000ull : at));
+    char detail[96] = "";
+    if (r && r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+        std::snprintf(detail, sizeof(detail), ", %s of 0x%llx",
+                      r->ExceptionInformation[0] == 0 ? "read" : r->ExceptionInformation[0] == 1 ? "write" : "execute",
+                      static_cast<unsigned long long>(r->ExceptionInformation[1]));
+    std::fprintf(stderr, "[error] I have fallen, and I can't get up! exception 0x%08lx at %s%s (thread %lx)\n",
+                 r ? static_cast<unsigned long>(r->ExceptionCode) : 0ul, where, detail, GetCurrentThreadId());
+    std::fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+}  // namespace
+
 int wmain(int argc, wchar_t** argv) {
+    SetUnhandledExceptionFilter(&ce_last_words);
     std::filesystem::path image, game_dir, overlay_dir, mods_dir;
     uint32_t archetype_lookup_rva = 0;  // --archetype-lookup RVA[,ARG]: the game's archetype lookup by hash
     int archetype_lookup_arg = 0;

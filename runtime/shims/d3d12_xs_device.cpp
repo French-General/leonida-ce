@@ -3347,7 +3347,31 @@ HRESULT proxy_create_compute_pipeline_from_native_code(DeviceProxy* self, const 
     // first call of a slot is announced, so a miss on a later program would otherwise read as the first call's.
     static std::atomic<std::uint64_t> calls{0};
     const std::uint64_t call = calls.fetch_add(1, std::memory_order_relaxed) + 1;
-    const HRESULT hr = self->real->CreateComputePipelineState(&pc_desc, *riid, out);
+    HRESULT hr = self->real->CreateComputePipelineState(&pc_desc, *riid, out);
+    // HACK (Leonida CE): a compute pipeline we cannot build (no translated shader) leaves the title a null definition
+    // record that it later faults on (+0xb5a5f8 / +0x5392b80 on Windows). As for slot 57, hand back the first compute
+    // pipeline that worked instead; its dispatches do the wrong thing, the title goes on.
+    // LEONIDA_CE_NO_PLACEHOLDER=1 keeps the failure.
+    static std::atomic<IUnknown*> stand_in{nullptr};
+    if (SUCCEEDED(hr) && out && *out && !stand_in.load()) {
+        static_cast<IUnknown*>(*out)->AddRef();
+        stand_in = static_cast<IUnknown*>(*out);
+    }
+    if (FAILED(hr) && out) {
+        static const bool no_placeholder = [] {
+            char v[8] = {};
+            return GetEnvironmentVariableA("LEONIDA_CE_NO_PLACEHOLDER", v, sizeof(v)) && v[0] == '1';
+        }();
+        if (IUnknown* cs = stand_in.load(); cs && !no_placeholder) {
+            if (SUCCEEDED(cs->QueryInterface(*riid, out))) {
+                static std::atomic<int> used{0};
+                if (used++ < 3)
+                    std::fprintf(stderr, "[hack] slot 67 call %llu: no compute shader; stand-in pipeline\n",
+                                 static_cast<unsigned long long>(call));
+                return S_OK;
+            }
+        }
+    }
     if (FAILED(hr))
         std::fprintf(stderr,
                      "[rt] d3d12_xs: slot 67 call %llu failed with 0x%08lx (kind 0 %llu B, kind 1 %llu B, kind 6 %llu B, "
@@ -4331,6 +4355,11 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
         }();
         (void)range_read;
         bool in_range = c->R8 >= range_lo && c->R8 < range_hi;
+        // Failure-only probes (Leonida CE, the Windows null definition records): +0x1d65b83 logs only when the
+        // record publisher +0x2476e20 returned false (al == 0); +0x247758b only when its slot 57 call failed (r14 < 0).
+        if (at == 0x141d65b83ull) in_range = (c->Rax & 0xff) == 0;
+        if (at == 0x14247758bull) in_range = static_cast<std::int32_t>(c->R14) < 0;
+        if (at == 0x142476f9full) in_range = static_cast<std::int32_t>(c->Rbx) < 0;  // +0xfa09f0 failed
         // LEONIDA_CE_PROBE_STALE=1: at the walk's attach entry +0x183190 (rcx = child), log only a child that is
         // already dead: its first qword is the base vtable 0x146639ac0 (stored by +0x5390160 on destruction) or is
         // not an address in the title's read-only data (a free-list link or junk).

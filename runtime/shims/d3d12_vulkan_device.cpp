@@ -6275,12 +6275,23 @@ public:
         // container whose own size (the dword at +24) is not the size passed.
         if (!out) return S_FALSE;
         *out = nullptr;
-        if (!blob || !size || (node_mask & ~1u)) return E_INVALIDARG;
+        static std::atomic<int> refused_logged{0};
+        if (!blob || !size || (node_mask & ~1u)) {
+            if (refused_logged++ < 10)
+                std::fprintf(stderr, "[rt] d3d12: root signature refused: blob %p size %zu node mask 0x%x\n", blob,
+                             static_cast<size_t>(size), node_mask);
+            return E_INVALIDARG;
+        }
         const auto* bytes = static_cast<const std::uint8_t*>(blob);
         if (size >= 28 && std::memcmp(bytes, "DXBC", 4) == 0) {
             std::uint32_t container_size = 0;
             std::memcpy(&container_size, bytes + 24, sizeof(container_size));
-            if (container_size != size) return E_INVALIDARG;
+            if (container_size != size) {
+                if (refused_logged++ < 10)
+                    std::fprintf(stderr, "[rt] d3d12: root signature refused: DXBC container says %u bytes, %zu passed\n",
+                                 container_size, static_cast<size_t>(size));
+                return E_INVALIDARG;
+            }
         }
         // The repository's root-signature model (runtime/src/root_signature.h): parse the RTS0 blob, then pack
         // the parameters into the 32 user-data dwords. pack() refuses what it cannot place (more than 32 dwords:
