@@ -32,7 +32,8 @@
 #include "d3d12_xs_device.h"
 #include "shims.h"
 #include "d3d12_trace.h"
-#include "../src/shader_library.h"  // leonida::fspx_payload_from_parts for slot 67
+#include "../src/shader_library.h"
+#include "../src/resource_detile.h"  // leonida::fspx_payload_from_parts for slot 67
 
 #include <windows.h>
 #include <dxgi1_4.h>
@@ -364,7 +365,9 @@ void xs_schedule_list_writes(ID3D12CommandQueue* queue, UINT count, const std::u
         if (!slot.first) {
             ID3D12Device* device = nullptr;
             if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&device))) || !device) return;
-            device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&slot.first));
+            // The queue answers with the device proxy, whose fences are proxies the real queue cannot signal.
+            ID3D12Device* real = device_proxy_real_device(device);
+            (real ? real : device)->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&slot.first));
             device->Release();
             if (!slot.first) return;
         }
@@ -540,6 +543,182 @@ std::uint64_t xs_gpu_address(std::uint64_t address, std::uint64_t size) {
     if (!copy) return translated;
     std::memcpy(reinterpret_cast<void*>(copy), reinterpret_cast<const void*>(address), static_cast<std::size_t>(size));
     return xs_va_from_cpu(copy);
+}
+
+// HACK (Leonida CE boot; slots from Marvisak/VIctory, GPLv3): resources at title addresses (device slot 133) and
+// views of them (slots 70/71: (resource desc, view desc, handle), the PC view description followed by the title
+// address at +40). The resources are stand-ins not backed by the title's memory yet.
+// magic code, don't wanna deal with hours of plumbing with what these conjured devils of the souls of gpt 6 astra did.. jeez
+struct XsPlaced { std::uint64_t va, size; ID3D12Resource* resource; D3D12_RESOURCE_DESC desc; };
+std::mutex g_placed_mu;
+std::vector<XsPlaced> g_placed;
+void xs_record_placed(std::uint64_t va, std::uint64_t size, ID3D12Resource* resource,
+                      const D3D12_RESOURCE_DESC* console_desc = nullptr) {
+    if (!va || !resource) return;
+    std::lock_guard lock(g_placed_mu);
+    g_placed.push_back({va, size ? size : 1, resource, console_desc ? *console_desc : resource->GetDesc()});
+}
+bool xs_placed_by_resource(const void* resource, XsPlaced& out) {
+    std::lock_guard lock(g_placed_mu);
+    for (auto it = g_placed.rbegin(); it != g_placed.rend(); ++it)
+        if (it->resource == resource) { out = *it; return true; }
+    return false;
+}
+const XsPlaced* xs_find_placed(std::uint64_t va) {
+    std::lock_guard lock(g_placed_mu);
+    for (auto it = g_placed.rbegin(); it != g_placed.rend(); ++it)
+        if (va >= it->va && va < it->va + it->size) return &*it;
+    return nullptr;
+}
+std::uint64_t xs_format_bytes(DXGI_FORMAT f) {
+    switch (f) {
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS: case DXGI_FORMAT_R32G32B32A32_FLOAT: case DXGI_FORMAT_R32G32B32A32_UINT:
+    case DXGI_FORMAT_R32G32B32A32_SINT: return 16;
+    case DXGI_FORMAT_R32G32_TYPELESS: case DXGI_FORMAT_R32G32_FLOAT: case DXGI_FORMAT_R32G32_UINT:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R16G16B16A16_UINT: return 8;
+    case DXGI_FORMAT_R16_FLOAT: case DXGI_FORMAT_R16_UINT: case DXGI_FORMAT_R16_TYPELESS: return 2;
+    case DXGI_FORMAT_R8_UINT: case DXGI_FORMAT_R8_UNORM: case DXGI_FORMAT_R8_TYPELESS: return 1;
+    default: return 4;
+    }
+}
+
+// HACK (Leonida CE boot): textures the title placed in its own memory get mip 0 copied in when a view of them is
+// made (detiled from the console's 64 KiB layout when the layout word says so). Once per resource for now.
+std::atomic<ID3D12CommandQueue*> g_upload_queue{nullptr};  // the title's direct queue, seen at ExecuteCommandLists
+std::mutex g_uploaded_mu;
+std::set<const void*> g_uploaded;
+
+struct XsTexFormat { std::uint32_t element_bytes, block_dim; };
+XsTexFormat xs_tex_format(DXGI_FORMAT f) {
+    switch (f) {
+    case DXGI_FORMAT_BC1_TYPELESS: case DXGI_FORMAT_BC1_UNORM: case DXGI_FORMAT_BC1_UNORM_SRGB:
+    case DXGI_FORMAT_BC4_TYPELESS: case DXGI_FORMAT_BC4_UNORM: case DXGI_FORMAT_BC4_SNORM: return {8, 4};
+    case DXGI_FORMAT_BC2_TYPELESS: case DXGI_FORMAT_BC2_UNORM: case DXGI_FORMAT_BC2_UNORM_SRGB:
+    case DXGI_FORMAT_BC3_TYPELESS: case DXGI_FORMAT_BC3_UNORM: case DXGI_FORMAT_BC3_UNORM_SRGB:
+    case DXGI_FORMAT_BC5_TYPELESS: case DXGI_FORMAT_BC5_UNORM: case DXGI_FORMAT_BC5_SNORM:
+    case DXGI_FORMAT_BC6H_TYPELESS: case DXGI_FORMAT_BC6H_UF16: case DXGI_FORMAT_BC6H_SF16:
+    case DXGI_FORMAT_BC7_TYPELESS: case DXGI_FORMAT_BC7_UNORM: case DXGI_FORMAT_BC7_UNORM_SRGB: return {16, 4};
+    case DXGI_FORMAT_R8_TYPELESS: case DXGI_FORMAT_R8_UNORM: case DXGI_FORMAT_R8_UINT: case DXGI_FORMAT_A8_UNORM: return {1, 1};
+    case DXGI_FORMAT_R8G8_UNORM: case DXGI_FORMAT_R16_FLOAT: case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_B5G6R5_UNORM: return {2, 1};
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R32G32_FLOAT: return {8, 1};
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: return {16, 1};
+    default: return {4, 1};
+    }
+}
+
+void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& console_desc, ID3D12Resource* tex,
+                              std::uint64_t va, bool force = false) {
+    ID3D12CommandQueue* queue = g_upload_queue.load();
+    if (!queue || !tex || console_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    {
+        std::lock_guard lock(g_uploaded_mu);
+        if (!g_uploaded.insert(tex).second && !force) return;
+    }
+    const XsTexFormat tf = xs_tex_format(console_desc.Format);
+    const std::uint32_t w = static_cast<std::uint32_t>(console_desc.Width), h = console_desc.Height;
+    const std::uint32_t bw = (w + tf.block_dim - 1) / tf.block_dim, bh = (h + tf.block_dim - 1) / tf.block_dim;
+    std::vector<std::byte> linear(std::size_t(bw) * bh * tf.element_bytes);
+    const bool tiled = leonida::is_xbox_tiled(static_cast<std::uint32_t>(console_desc.Layout));
+    // The tiled source spans whole 64 KiB tiles; read generously and let detile check the size.
+    const std::size_t src_bytes = tiled ? ((linear.size() + 0xFFFF) & ~std::size_t(0xFFFF)) * 2 + 0x10000 : linear.size();
+    if (IsBadReadPtr(reinterpret_cast<const void*>(va), src_bytes)) return;
+    const std::span<const std::byte> src(reinterpret_cast<const std::byte*>(va), src_bytes);
+    bool ok = tiled ? leonida::detile_surface_64k(src, linear, w, h, tf.element_bytes, tf.block_dim) : true;
+    if (!tiled) std::memcpy(linear.data(), src.data(), linear.size());
+    if (!ok) return;
+
+    D3D12_RESOURCE_DESC rd = tex->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total = 0;
+    dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, &rows, &row_bytes, &total);
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* up = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    const D3D12_COMMAND_LIST_TYPE type = queue->GetDesc().Type;
+    ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                __uuidof(ID3D12Resource), reinterpret_cast<void**>(&up))) &&
+         SUCCEEDED(dev->CreateCommandAllocator(type, __uuidof(ID3D12CommandAllocator), reinterpret_cast<void**>(&alloc))) &&
+         SUCCEEDED(dev->CreateCommandList(0, type, alloc, nullptr, __uuidof(ID3D12GraphicsCommandList),
+                                          reinterpret_cast<void**>(&list))) &&
+         SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&fence)));
+    void* mapped = nullptr;
+    if (ok && SUCCEEDED(up->Map(0, nullptr, &mapped)) && mapped) {
+        const std::size_t src_row = std::size_t(bw) * tf.element_bytes;
+        for (UINT y = 0; y < rows && y < bh; ++y)
+            std::memcpy(static_cast<std::uint8_t*>(mapped) + fp.Offset + std::size_t(y) * fp.Footprint.RowPitch,
+                        linear.data() + std::size_t(y) * src_row, src_row);
+        up->Unmap(0, nullptr);
+        D3D12_TEXTURE_COPY_LOCATION dst{}, srcl{};
+        dst.pResource = tex;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+        srcl.pResource = up;
+        srcl.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        srcl.PlacedFootprint = fp;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &srcl, nullptr);
+        list->Close();
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        queue->Signal(fence, 1);
+        for (int i = 0; i < 2000 && fence->GetCompletedValue() < 1; ++i) Sleep(1);
+        static std::atomic<int> n{0};
+        if (n++ < 10) {
+            std::size_t nz = 0;
+            for (std::size_t i = 0; i < linear.size(); i += 97) nz += linear[i] != std::byte{0};
+            std::fprintf(stderr, "[hack] uploaded placed texture %ux%u fmt %d (%s, layout 0x%x, %.1f%% non-zero) from va %llx\n", w, h,
+                         (int)console_desc.Format, tiled ? "detiled" : "linear", (unsigned)console_desc.Layout,
+                         linear.empty() ? 0.0 : 100.0 * nz / ((linear.size() + 96) / 97), (unsigned long long)va);
+            std::fflush(stderr);
+        }
+    }
+    if (fence) fence->Release();
+    if (list) list->Release();
+    if (alloc) alloc->Release();
+    if (up) up->Release();
+}
+
+// HACK: placed textures whose title memory changed since the last look are copied in again (sampled checksum,
+// one word per 4 KiB). The title fills them after their views are made (streaming, CPU writes).
+std::mutex g_placed_hash_mu;
+std::map<const void*, std::uint64_t> g_placed_hash;
+void xs_refresh_placed_textures(ID3D12Device* dev) {
+    std::vector<XsPlaced> textures;
+    {
+        std::lock_guard lock(g_placed_mu);
+        for (const auto& p : g_placed)
+            if (p.desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) textures.push_back(p);
+    }
+    for (const auto& t : textures) {
+        const std::uint64_t len = t.size;
+        if (!len || IsBadReadPtr(reinterpret_cast<const void*>(t.va), static_cast<UINT_PTR>(len))) continue;
+        std::uint64_t h = 1469598103934665603ull, nonzero = 0;
+        for (std::uint64_t o = 0; o + 8 <= len; o += 4096) {
+            std::uint64_t w = 0;
+            std::memcpy(&w, reinterpret_cast<const void*>(t.va + o), 8);
+            h = (h ^ w) * 1099511628211ull;
+            nonzero |= w;
+        }
+        bool changed = false;
+        {
+            std::lock_guard lock(g_placed_hash_mu);
+            auto& old = g_placed_hash[t.resource];
+            changed = old != h;
+            old = h;
+        }
+        if (changed && nonzero) xs_upload_placed_texture(dev, t.desc, t.resource, t.va, true);
+    }
 }
 
 std::atomic<std::uint64_t> g_hits[kMaxSlots];
@@ -1546,6 +1725,21 @@ std::uint64_t WINAPI list_slot(ListProxy* self, std::uint64_t a1, std::uint64_t 
                                                reinterpret_cast<void**>(a2)));
     } else {
         note_list_slot(Slot, a1, a2, a3, a4);
+        if constexpr (Slot == 25) {  // HACK diagnostic: which pipelines the title sets (first 12 distinct)
+            static std::mutex m;
+            static std::set<std::uint64_t> seen;
+            std::lock_guard g(m);
+            if (seen.size() < 12 && seen.insert(a1).second) {
+                std::string name = "(not from slot 57)";
+                {
+                    std::lock_guard names_lock(g_pso_names_mu);
+                    auto it = g_pso_names.find(reinterpret_cast<const void*>(a1));
+                    if (it != g_pso_names.end()) name = it->second;
+                }
+                std::fprintf(stderr, "[hack] SetPipelineState %llx: %s\n", (unsigned long long)a1, name.c_str());
+                std::fflush(stderr);
+            }
+        }
         // HACK: this title's console list slots (newer layout, see XsListExtras)
         if constexpr (Slot == 139) {  // ResetX(allocator, pipeline, flags)
             {
@@ -1801,6 +1995,7 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                              res && count ? res[0] : nullptr);
                 std::fflush(stderr);
             }
+            if (f % 30 == 0 && self->device && self->device->real) xs_refresh_placed_textures(self->device->real);
             {   // HACK: capture frames 0, 1, 2, 4, ... and every 2000th
                 const bool pow2 = (f & (f - 1)) == 0;
                 const auto* plane = reinterpret_cast<const std::uint8_t*>(a2);
@@ -1829,6 +2024,7 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
             if (!console_lists.fill(a2, a1)) return hr_to_u64(E_OUTOFMEMORY);
             auto* const* real_lists = console_lists.data()
                 ? reinterpret_cast<ID3D12CommandList* const*>(console_lists.data()) : lists;
+            if (!g_upload_queue.load() && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) g_upload_queue = q;
             if (n && real_lists) q->ExecuteCommandLists(n, real_lists);
             if (n && lists) xs_schedule_list_writes(q, n, reinterpret_cast<const std::uint64_t*>(lists));
             return 0;
@@ -1836,6 +2032,18 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
         // This title's queue runs two slots ahead of the PC one from Signal on: 16 = Signal(fence, value) (measured:
         // a fence proxy and 1, 2, ...), 17 = Wait, 18 = GetTimestampFrequency, 19 = GetClockCalibration. Forwarding 16
         // to PC 16 (GetTimestampFrequency) wrote the frequency over the fence proxy and never signalled the fence.
+        if constexpr (K == ChildKind::fence && Slot == 8) {  // HACK diagnostic: who polls which fence, and what it sees
+            auto* fence = static_cast<ID3D12Fence*>(static_cast<IUnknown*>(self->real));
+            const std::uint64_t value = fence->GetCompletedValue();
+            static std::atomic<std::uint64_t> calls{0};
+            const std::uint64_t c = ++calls;
+            if (c == 1000 || c == 100000 || c == 1000000 || c == 5000000) {
+                std::fprintf(stderr, "[hack] GetCompletedValue call %llu: fence %p value %llu caller %p\n",
+                             (unsigned long long)c, (void*)self, (unsigned long long)value, _ReturnAddress());
+                std::fflush(stderr);
+            }
+            return value;
+        }
         if constexpr (K == ChildKind::fence && Slot == 12) {
             auto* fence = static_cast<ID3D12Fence*>(static_cast<IUnknown*>(self->real));
             return reinterpret_cast<std::uint64_t>(xs_fence_value_address(self, fence));
@@ -2692,7 +2900,21 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
         }
         using ForwardFn = std::uint64_t(WINAPI*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
                                                  std::uint64_t, std::uint64_t);
-        return reinterpret_cast<ForwardFn>(self->real_vtable[Slot])(self->real, a1, a2, a3, a4, a5, a6);
+        const std::uint64_t r = reinterpret_cast<ForwardFn>(self->real_vtable[Slot])(self->real, a1, a2, a3, a4, a5, a6);
+        if constexpr (Slot == 18) {  // SRV of a texture the title placed: copy its data in
+            XsPlaced placed{};
+            if (a1 && xs_placed_by_resource(reinterpret_cast<const void*>(a1), placed) &&
+                placed.desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+                xs_upload_placed_texture(self->real, placed.desc, placed.resource, placed.va);
+        }
+        return r;
+    } else if constexpr (Slot == 55) {
+        // HACK: console slot 55 creates a pipeline (riid = ID3D12PipelineState in a4, out in a5), not PC
+        // CreateReservedResource1, which wrote through the wrong argument. Refused until its description is known.
+        if (a5) *reinterpret_cast<void**>(a5) = nullptr;
+        static std::atomic<int> n{0};
+        if (n++ < 3) { std::fprintf(stderr, "[hack] device slot 55 (pipeline?) refused: a1=%llx count=%llu desc=%llx\n", (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3); std::fflush(stderr); }
+        return hr_to_u64(E_NOTIMPL);
     } else if constexpr (Slot == 74) {
         // HACK: Xbox slot 74 = (va, page_count, &out) right after the title maps its ~6 GB physical-page GPU pool.
         // Unknown object: hand back a logging probe.
@@ -2849,7 +3071,65 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
             std::fflush(stderr);
         }
         return hr_to_u64(hr);
-    } else if constexpr (Slot == 70) {
+    } else if constexpr (Slot == 70 || Slot == 71) {
+        // Placed SRV (70) / UAV (71): (resource desc, view desc + title address at +40, handle).
+        auto* rdesc = reinterpret_cast<const D3D12_RESOURCE_DESC*>(a1);
+        const auto* vbytes = reinterpret_cast<const std::uint8_t*>(a2);
+        const std::uint64_t handle = a3;
+        if (!rdesc || !vbytes || handle < 0x10000) return 0;
+        std::uint64_t va = 0;
+        std::memcpy(&va, vbytes + 40, sizeof va);
+        const XsPlaced* placed = va ? xs_find_placed(va) : nullptr;
+        if (!placed && va) {  // not from slot 133: make a stand-in from the description and remember it
+            D3D12_RESOURCE_DESC d = *rdesc;
+            d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(static_cast<unsigned>(d.Flags) & 0xffu);
+            d.Layout = d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
+                                                                      : D3D12_TEXTURE_LAYOUT_UNKNOWN;
+            if (Slot == 71) d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(d.Flags | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            D3D12_HEAP_PROPERTIES hp{};
+            hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+            void* created = nullptr;
+            if (SUCCEEDED(self->real->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COMMON,
+                                                              nullptr, __uuidof(ID3D12Resource), &created)) && created) {
+                const std::uint64_t bytes = d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
+                    ? d.Width : self->real->GetResourceAllocationInfo(0, 1, &d).SizeInBytes;
+                xs_record_placed(va, bytes, static_cast<ID3D12Resource*>(created), rdesc);
+                placed = xs_find_placed(va);
+            }
+        }
+        static std::atomic<int> logged{0};
+        if (logged++ < 8) {
+            std::fprintf(stderr, "[hack] placed %s: va=%llx dim=%d %llux%u fmt=%d -> %s\n", Slot == 70 ? "SRV" : "UAV",
+                         (unsigned long long)va, (int)rdesc->Dimension, (unsigned long long)rdesc->Width, rdesc->Height,
+                         (int)rdesc->Format, placed ? "resource" : "none");
+            std::fflush(stderr);
+        }
+        if (!placed) return 0;
+        const std::uint64_t offset = va - placed->va;
+        if constexpr (Slot == 70) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC v{};
+            std::memcpy(&v, vbytes, sizeof v);
+            if (v.ViewDimension == D3D12_SRV_DIMENSION_BUFFER && offset) {
+                const std::uint64_t stride = v.Buffer.StructureByteStride ? v.Buffer.StructureByteStride
+                                             : (v.Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW) ? 4 : xs_format_bytes(v.Format);
+                v.Buffer.FirstElement += offset / stride;
+            }
+            self->real->CreateShaderResourceView(placed->resource, &v, D3D12_CPU_DESCRIPTOR_HANDLE{static_cast<SIZE_T>(handle)});
+            if (rdesc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+                xs_upload_placed_texture(self->real, *rdesc, placed->resource, placed->va);
+        } else {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC v{};
+            std::memcpy(&v, vbytes, sizeof v);
+            if (v.ViewDimension == D3D12_UAV_DIMENSION_BUFFER && offset) {
+                const std::uint64_t stride = v.Buffer.StructureByteStride ? v.Buffer.StructureByteStride
+                                             : (v.Buffer.Flags & D3D12_BUFFER_UAV_FLAG_RAW) ? 4 : xs_format_bytes(v.Format);
+                v.Buffer.FirstElement += offset / stride;
+            }
+            self->real->CreateUnorderedAccessView(placed->resource, nullptr, &v,
+                                                  D3D12_CPU_DESCRIPTOR_HANDLE{static_cast<SIZE_T>(handle)});
+        }
+        return 0;
+    } else if constexpr (Slot == 1070) {
         // HACK: Xbox slot 70 takes three title structs (not PC CreatePlacedResource1); logged and ignored.
         static std::atomic<int> n{0};
         if (n++ < 3) {
@@ -2887,6 +3167,11 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                                                      nullptr, *riid, out);
             std::fprintf(stderr, "[hack] slot 133 retry without RENDER_TARGET (fmt %d) -> 0x%08lx\n", (int)d.Format,
                          (unsigned long)hr);
+        }
+        if (SUCCEEDED(hr) && *out) {
+            const std::uint64_t bytes = desc_in->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
+                ? desc_in->Width : self->real->GetResourceAllocationInfo(0, 1, &d).SizeInBytes;
+            xs_record_placed(a1, bytes, static_cast<ID3D12Resource*>(*out), desc_in);
         }
         std::fprintf(stderr, "[hack] slot 133 CreatePlacedResourceX(va=%llx, dim=%d, width=%llu, flags=0x%x) -> 0x%08lx\n",
                      (unsigned long long)a1, (int)desc_in->Dimension, (unsigned long long)desc_in->Width,
