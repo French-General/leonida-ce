@@ -912,6 +912,115 @@ void xs_dump_thread_stacks() {
     std::fflush(stderr);
 }
 
+// DIAGNOSTIC (Leonida CE boot): LEONIDA_CE_TRAP_PAGE=<hex address> write-protects that 4 KiB page from about 90 s
+// and logs every write to it (writing instruction and game callers), stepping the write with the trap flag and
+// protecting the page again after it. Every 60 presents the page's 1.0f floats are counted, so floats that appear
+// without a trapped write point at a writer the protection cannot see (the GPU through host-imported pages).
+std::uintptr_t g_trap_page = 0;
+std::atomic<bool> g_trap_armed{false};
+std::atomic<int> g_trap_logged{0};
+thread_local bool t_trap_stepping = false;
+thread_local int t_trap_before = 0;
+thread_local char t_trap_line[512];
+std::atomic<int> g_trap_float_logged{0};
+
+int xs_trap_floats() {
+    if (!g_trap_page || !xs_readable(reinterpret_cast<const void*>(g_trap_page), 4096)) return -1;
+    int n = 0;
+    const auto* w = reinterpret_cast<const volatile std::uint32_t*>(g_trap_page);
+    for (int i = 0; i < 1024; ++i) n += w[i] == 0x3f800000u;
+    return n;
+}
+
+LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
+    if (!g_trap_page || !info || !info->ExceptionRecord || !info->ContextRecord) return EXCEPTION_CONTINUE_SEARCH;
+    const auto* r = info->ExceptionRecord;
+    if (r->ExceptionCode == EXCEPTION_SINGLE_STEP && t_trap_stepping) {
+        t_trap_stepping = false;
+        const int after = xs_trap_floats();
+        if (after > t_trap_before && g_trap_float_logged++ < 100) {
+            std::fprintf(stderr, "%s FLOATS %d->%d\n", t_trap_line, t_trap_before, after);
+            std::fflush(stderr);
+        }
+        DWORD old = 0;
+        VirtualProtect(reinterpret_cast<void*>(g_trap_page), 4096, PAGE_READONLY, &old);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 || r->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const auto addr = static_cast<std::uintptr_t>(r->ExceptionInformation[1]);
+    if (addr < g_trap_page || addr >= g_trap_page + 4096) return EXCEPTION_CONTINUE_SEARCH;
+    const std::uint64_t rip = info->ContextRecord->Rip;
+    t_trap_before = xs_trap_floats();
+    {
+        char* line = t_trap_line;
+        constexpr int kLine = sizeof(t_trap_line);
+        int len = std::snprintf(line, kLine, "[trap] t=%lu write %llx by %s+%llx floats %d callers",
+                                GetTickCount(), static_cast<unsigned long long>(addr),
+                                (rip >= 0x140000000ull && rip < 0x147000000ull) ? "G" : "host",
+                                static_cast<unsigned long long>(rip >= 0x140000000ull && rip < 0x147000000ull
+                                                                    ? rip - 0x140000000ull : rip),
+                                xs_trap_floats());
+        const auto* sp = reinterpret_cast<const std::uint64_t*>(info->ContextRecord->Rsp);
+        int found = 0;
+        for (int i = 0; i < 256 && found < 6 && len < kLine - 24; ++i) {
+            if (!xs_readable(sp + i, 8)) break;
+            const std::uint64_t v = sp[i];
+            if (v >= 0x140001000ull && v < 0x146000000ull) {
+                len += std::snprintf(line + len, kLine - len, " G+%llx",
+                                     static_cast<unsigned long long>(v - 0x140000000ull));
+                ++found;
+            }
+        }
+        if (g_trap_logged++ < 20) {
+            std::fprintf(stderr, "%s\n", line);
+            std::fflush(stderr);
+        }
+    }
+    DWORD old = 0;
+    VirtualProtect(reinterpret_cast<void*>(g_trap_page), 4096, PAGE_READWRITE, &old);
+    t_trap_stepping = true;
+    info->ContextRecord->EFlags |= 0x100;  // trap flag: re-protect after this instruction
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void xs_trap_tick(std::uint64_t /*frame*/) {
+    static const std::uintptr_t page = [] {
+        char v[32] = {};
+        if (!GetEnvironmentVariableA("LEONIDA_CE_TRAP_PAGE", v, sizeof(v))) return std::uintptr_t(0);
+        return static_cast<std::uintptr_t>(std::strtoull(v, nullptr, 16)) & ~std::uintptr_t(4095);
+    }();
+    if (!page) return;
+    static const bool started = [] {
+        // Presents can stall while the title loads, so the trap runs on its own thread.
+        HANDLE t = CreateThread(nullptr, 0, [](void*) -> DWORD {
+            char d[16] = {};
+            Sleep(GetEnvironmentVariableA("LEONIDA_CE_TRAP_DELAY", d, sizeof(d)) ? std::strtoul(d, nullptr, 10) * 1000 : 85000);
+            g_trap_page = page;
+            AddVectoredExceptionHandler(1, &xs_trap_handler);
+            DWORD old = 0;
+            const BOOL ok = VirtualProtect(reinterpret_cast<void*>(page), 4096, PAGE_READONLY, &old);
+            std::fprintf(stderr, "[trap] t=%lu armed page %llx (protect %d, old 0x%lx), floats %d\n", GetTickCount(),
+                         static_cast<unsigned long long>(page), ok, old, xs_trap_floats());
+            std::fflush(stderr);
+            g_trap_armed = true;
+            int last = -2;
+            for (;;) {
+                const int n = xs_trap_floats();
+                if (n != last) {
+                    std::fprintf(stderr, "[trap] t=%lu floats in page: %d\n", GetTickCount(), n);
+                    std::fflush(stderr);
+                    last = n;
+                }
+                Sleep(2000);
+            }
+        }, nullptr, 0, nullptr);
+        if (t) CloseHandle(t);
+        return true;
+    }();
+    (void)started;
+}
+
 // HACK: placed textures whose title memory changed since the last look are copied in again (sampled checksum,
 // one word per 4 KiB). The title fills them after their views are made (streaming, CPU writes).
 std::mutex g_placed_hash_mu;
@@ -2294,6 +2403,7 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                 std::fflush(stderr);
             }
             if (f % 30 == 0 && self->device && self->device->real) xs_refresh_placed_textures(self->device->real);
+            xs_trap_tick(f);
             static const bool dump_stacks = [] {
                 char v[8] = {};
                 return GetEnvironmentVariableA("LEONIDA_CE_STACKS", v, sizeof(v)) > 0 && v[0] == '1';

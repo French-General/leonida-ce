@@ -216,3 +216,9 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Next: the same trap inside the runtime (VirtualProtect at about 90 s plus a vectored handler that logs the
   writer and re-protects; and a periodic float check), which keeps the timing. If floats appear without a
   trapped CPU write, the writer is the GPU path (memory the GPU writes through host-imported pages).
+- In-process trap (LEONIDA_CE_TRAP_PAGE=14f341000, LEONIDA_CE_TRAP_DELAY=30): objects are built in that page at
+  about 70 s (game+0xd3d471/+0xd3d4e3 <- +0xd40ba9 <- +0xd3d398 <- +0xd3cf37 <- +0xf59db5 <- +0x45e3dc4, with the
+  allocator header writes at +0xaa0c2b); at about 110 s a memcpy from game+0x550e60f (a row copier calling memcpy
+  through a callback) fills the same page with float rows, so the allocator gave the block to a second owner
+  while the first still used it. Root is the double free (form a): find the first free of a block that is
+  still referenced. Idea: trap the title's free (+0x187b0) for blocks in this page.
