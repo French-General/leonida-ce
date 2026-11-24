@@ -3305,6 +3305,7 @@ public:
         const VkDevice dev = device_.info.device;
         if (registered_) device_.context->remove_pipeline(id());
         if (pipeline_.pipeline) vk.vkDestroyPipeline(dev, pipeline_.pipeline, nullptr);
+        for (VkPipeline retired : retired_) vk.vkDestroyPipeline(dev, retired, nullptr);
         if (pipeline_.layout) vk.vkDestroyPipelineLayout(dev, pipeline_.layout, nullptr);
         if (module_) vk.vkDestroyShaderModule(dev, module_, nullptr);
         if (graphics_.pipeline) vk.vkDestroyPipeline(dev, graphics_.pipeline, nullptr);
@@ -4074,9 +4075,59 @@ public:
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo required_size{};
         subgroup_size_for(*entry, required_size, pipeline_info.stage);
         pipeline_info.layout = pipeline_.layout;
-        if (vk.vkCreateComputePipelines(dev, device_.pipeline_cache(), 1, &pipeline_info, nullptr, &pipeline_.pipeline) !=
-            VK_SUCCESS)
-            return E_FAIL;
+        // HACK (Leonida CE boot): some translated compute programs (ray-traced shadow traces, strand interpolation)
+        // take the host driver minutes to compile, or longer, and the title creates pipelines on its job workers: a
+        // worker held in the compile never returns its job context, and loading stops once all 32 are out. The
+        // compile runs on its own thread; if it is not done in 100 ms the pipeline is registered with an empty
+        // placeholder program (its dispatches do nothing) and the real one replaces it when the compile finishes.
+        // Programs whose compile the host driver (NVIDIA 5xx) does not finish in minutes, and which hold its other
+        // compiles behind them: ray-traced shadow traces, screen-probe ray activation, hair strand interpolation.
+        // They keep the empty placeholder.
+        static const char* const kNeverCompile[] = {"RTShadowTrace", "ScreenProbes_ActivateRays", "InterpolateStrands",
+                                                    "TraceShadowRays"};
+        for (const char* pattern : kNeverCompile)
+            if (entry->name.find(pattern) != std::string::npos) {
+                pipeline_.pipeline = empty_compute_pipeline(pipeline_.layout);
+                if (!pipeline_.pipeline) return E_FAIL;
+                std::fprintf(stderr, "[hack] compute %s is not compiled (placeholder)\n", entry->name.c_str());
+                goto compiled;
+            }
+        {
+        auto job = std::make_shared<AsyncCompute>();
+        async_job_ = job;
+        job->info = pipeline_info;
+        job->required_size = required_size;
+        if (pipeline_info.stage.pNext == &required_size) job->info.stage.pNext = &job->required_size;
+        job->name = entry->name;
+        job->device = &device_;
+        job->self = this;
+        job->event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        static_cast<ID3D12PipelineState*>(this)->AddRef();  // released by the compile thread
+        HANDLE compile_thread = CreateThread(nullptr, 0, &PipelineState::async_compute_main, new std::shared_ptr<AsyncCompute>(job),
+                                             0, nullptr);
+        if (!compile_thread) {
+            static_cast<ID3D12PipelineState*>(this)->Release();
+            if (vk.vkCreateComputePipelines(dev, device_.pipeline_cache(), 1, &pipeline_info, nullptr,
+                                            &pipeline_.pipeline) != VK_SUCCESS)
+                return E_FAIL;
+        } else {
+            CloseHandle(compile_thread);
+            WaitForSingleObject(job->event, 100);
+            std::lock_guard lock(job->mu);
+            if (job->done) {
+                if (job->result != VK_SUCCESS) return E_FAIL;
+                pipeline_.pipeline = job->pipeline;
+                job->taken = true;
+            } else {
+                pipeline_.pipeline = empty_compute_pipeline(pipeline_.layout);
+                if (!pipeline_.pipeline) return E_FAIL;
+                job->placeholder = true;
+                std::fprintf(stderr, "[hack] compute %s compiles in the background (placeholder for now)\n",
+                             entry->name.c_str());
+            }
+        }
+        }
+    compiled:
 
         // The code base: shaders read constant tables embedded in their own program through s_getpc_b64. The
         // translator's code offsets are into the bytes the key hashes (the FSSM blob, or the kind-6 program).
@@ -4087,9 +4138,94 @@ public:
         code_bytes_ = code.size();
         code_base_ = offset;
         pipeline_.code_base = offset;
-        device_.context->add_pipeline(id(), pipeline_);
-        registered_ = true;
+        if (async_job_) {
+            std::lock_guard lock(async_job_->mu);
+            if (async_job_->done && !async_job_->taken && async_job_->result == VK_SUCCESS) {
+                pipeline_.pipeline = async_job_->pipeline;
+                async_job_->taken = true;
+            }
+            device_.context->add_pipeline(id(), pipeline_);
+            registered_ = true;
+            async_job_->registered = true;
+        } else {
+            device_.context->add_pipeline(id(), pipeline_);
+            registered_ = true;
+        }
         return S_OK;
+    }
+
+    struct AsyncCompute {
+        std::mutex mu;
+        VkComputePipelineCreateInfo info{};
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfo required_size{};
+        std::string name;
+        DeviceState* device = nullptr;
+        PipelineState* self = nullptr;
+        HANDLE event = nullptr;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkResult result = VK_NOT_READY;
+        bool done = false, taken = false, placeholder = false, registered = false;
+        ~AsyncCompute() { if (event) CloseHandle(event); }
+    };
+
+    static DWORD WINAPI async_compute_main(void* param) {
+        std::shared_ptr<AsyncCompute> job = *static_cast<std::shared_ptr<AsyncCompute>*>(param);
+        delete static_cast<std::shared_ptr<AsyncCompute>*>(param);
+        auto& vk = job->device->context->vk;
+        // At most 40 compiles at once.
+        static HANDLE slots = CreateSemaphoreW(nullptr, 40, 40, nullptr);
+        WaitForSingleObject(slots, INFINITE);
+        const DWORD start = GetTickCount();
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        const VkResult result = vk.vkCreateComputePipelines(job->device->info.device, job->device->pipeline_cache(), 1,
+                                                            &job->info, nullptr, &pipeline);
+        const DWORD took = GetTickCount() - start;
+        ReleaseSemaphore(slots, 1, nullptr);
+        {
+            std::lock_guard lock(job->mu);
+            job->pipeline = pipeline;
+            job->result = result;
+            job->done = true;
+            if (job->placeholder) {
+                std::fprintf(stderr, "[hack] background compute %s: %d after %lu ms\n", job->name.c_str(), int(result),
+                             took);
+                if (result == VK_SUCCESS && !job->taken) {
+                    PipelineState* self = job->self;
+                    self->retired_.push_back(self->pipeline_.pipeline);  // the placeholder; lists may still use it
+                    self->pipeline_.pipeline = pipeline;
+                    job->taken = true;
+                    if (job->registered) job->device->context->add_pipeline(self->id(), self->pipeline_);
+                }
+            }
+        }
+        SetEvent(job->event);
+        static_cast<ID3D12PipelineState*>(job->self)->Release();
+        return 0;
+    }
+
+    VkPipeline empty_compute_pipeline(VkPipelineLayout layout) {
+        static constexpr std::uint32_t kEmpty[] = {
+            0x07230203, 0x00010300, 0x00070000, 0x00000005, 0x00000000, 0x00020011, 0x00000001, 0x0003000e, 0x00000000,
+            0x00000001, 0x0005000f, 0x00000005, 0x00000001, 0x6e69616d, 0x00000000, 0x00060010, 0x00000001, 0x00000011,
+            0x00000001, 0x00000001, 0x00000001, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00050036,
+            0x00000002, 0x00000001, 0x00000000, 0x00000003, 0x000200f8, 0x00000004, 0x000100fd, 0x00010038};
+        auto& vk = device_.context->vk;
+        const VkDevice dev = device_.info.device;
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = sizeof(kEmpty);
+        mi.pCode = kEmpty;
+        VkShaderModule module = VK_NULL_HANDLE;
+        if (vk.vkCreateShaderModule(dev, &mi, nullptr, &module) != VK_SUCCESS) return VK_NULL_HANDLE;
+        VkComputePipelineCreateInfo pi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pi.stage.module = module;
+        pi.stage.pName = "main";
+        pi.layout = layout;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        vk.vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline);
+        vk.vkDestroyShaderModule(dev, module, nullptr);
+        return pipeline;
     }
 
 private:
@@ -4217,6 +4353,8 @@ private:
     std::mutex variants_mutex_;
     std::map<std::uint32_t, VkPipeline> variants_;
     VkShaderModule module_ = VK_NULL_HANDLE;
+    std::shared_ptr<AsyncCompute> async_job_;  // HACK (Leonida CE boot): background compute compile
+    std::vector<VkPipeline> retired_;          // placeholders replaced by their real pipeline
     std::vector<VkShaderModule> modules_;
     VkDeviceSize code_base_ = 0;
     VkDeviceSize code_bytes_ = 0;

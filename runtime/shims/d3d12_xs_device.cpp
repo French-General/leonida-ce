@@ -38,6 +38,7 @@
 
 #include <windows.h>
 #include <dxgi1_4.h>
+#include <tlhelp32.h>
 
 #include <atomic>
 #include <cerrno>
@@ -729,6 +730,62 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
     if (list) list->Release();
     if (alloc) alloc->Release();
     if (up) up->Release();
+}
+
+// DIAGNOSTIC (Leonida CE boot, LEONIDA_CE_STACKS=1: at presents 300 and 20000): suspend every other thread and unwind
+// its stack with the image's unwind data, printing game_scarlett_master.exe-relative frames (G+rva; others are host
+// addresses, llvm-symbolizer --obj=gta6rt.exe names the runtime's). Shows what each thread waits on.
+void xs_dump_thread_stacks() {
+    const DWORD self_tid = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    const std::uint64_t lo = 0x140000000ull, hi = 0x147000000ull;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    int dumped = 0;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self_tid) continue;
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                               te.th32ThreadID);
+        if (!th) continue;
+        if (SuspendThread(th) == static_cast<DWORD>(-1)) { CloseHandle(th); continue; }
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_FULL;
+        char line[2048];
+        int len = 0;
+        if (GetThreadContext(th, &ctx)) {
+            bool any_game = false;
+            for (int depth = 0; depth < 40 && ctx.Rip; ++depth) {
+                const std::uint64_t rip = ctx.Rip;
+                const bool game = rip >= lo && rip < hi;
+                any_game |= game;
+                if (len < static_cast<int>(sizeof(line)) - 40)
+                    len += std::snprintf(line + len, sizeof(line) - len, game ? " G+%llx" : " %llx",
+                                         static_cast<unsigned long long>(game ? rip - lo : rip));
+                DWORD64 image_base = 0;
+                PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(rip, &image_base, nullptr);
+                if (!fn) {  // leaf: return address at [rsp]
+                    if (IsBadReadPtr(reinterpret_cast<void*>(ctx.Rsp), 8)) break;
+                    ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
+                    ctx.Rsp += 8;
+                } else {
+                    void* handler_data = nullptr;
+                    DWORD64 establisher = 0;
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, rip, fn, &ctx, &handler_data, &establisher, nullptr);
+                }
+                if (ctx.Rip == rip) break;
+            }
+            if (any_game) {
+                std::fprintf(stderr, "[stacks] tid %lx:%s\n", te.th32ThreadID, line);
+                ++dumped;
+            }
+        }
+        ResumeThread(th);
+        CloseHandle(th);
+    }
+    CloseHandle(snap);
+    std::fprintf(stderr, "[stacks] %d threads with game frames\n", dumped);
+    std::fflush(stderr);
 }
 
 // HACK: placed textures whose title memory changed since the last look are copied in again (sampled checksum,
@@ -2038,6 +2095,14 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                 std::fflush(stderr);
             }
             if (f % 30 == 0 && self->device && self->device->real) xs_refresh_placed_textures(self->device->real);
+            static const bool dump_stacks = [] {
+                char v[8] = {};
+                return GetEnvironmentVariableA("LEONIDA_CE_STACKS", v, sizeof(v)) > 0 && v[0] == '1';
+            }();
+            if (dump_stacks && (f == 300 || f == 20000)) {
+                HANDLE t = CreateThread(nullptr, 0, [](void*) -> DWORD { xs_dump_thread_stacks(); return 0; }, nullptr, 0, nullptr);
+                if (t) CloseHandle(t);
+            }
             {   // HACK: capture frames 0, 1, 2, 4, ... and every 2000th
                 const bool pow2 = (f & (f - 1)) == 0;
                 const auto* plane = reinterpret_cast<const std::uint8_t*>(a2);
