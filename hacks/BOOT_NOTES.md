@@ -77,3 +77,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   return-false site, found this stop in three runs.
 - Run settings that matter: LEONIDA_ARENA_MB=4095 (the 256 MiB default fills with compute programs),
   LEONIDA_SKIP_INT3=1 (step over soft asserts), LEONIDA_CE_STACKS=1 (thread stacks at presents 300, 20000).
+
+## 2026-11-24 (later): after console footprints (9bd2a8d)
+
+- The 2.2 GB GPU pool (title allocator 2, object at 0x1471c2808: base +0x20, size +0x30 = 0x89700000, used
+  +0x58) no longer fills: allocation answers are console footprints now. The title runs to about 124 s and
+  binds its UI pipelines (VertexCxformEAlpha, BatchVertexCxformEAlpha); frames are still all zero.
+- Next stop at about 124 s: soft asserts in the title's free (game+0x1887b0; +0x187fb, +0x1881f, +0x1884a check
+  the block header at -0x10/-0xc/-0x2), then a null read at +0x538d0e6 under a recursive teardown
+  (+0x183aaf / +0x18435f). A block freed there is not from that heap, or its header was overwritten.
