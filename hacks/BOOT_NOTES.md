@@ -352,3 +352,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   copy of the prefix, WINEDLLOVERRIDES msvcp140/vcruntime140/concrt140=n,b; module list shows PE, not PE-Wine) the
   stop is unchanged (try151: +0x538d0e6 at 119.9 s). Note: the package's own 14.29 DLLs next to gta6rt.exe make
   gta6rt itself crash at start (std::mutex), so do not leave them in the output folder.
+- Native Windows (Win10 VM with an RTX 6000 Ada, same build): no 120-140 s crash, but loading stopped after the 12
+  .rpf archives (no ttdb world data, 71 compute pipelines vs 2290 under Wine). Cause: the title's positional read
+  loop +0x314200 (ReadFile with an OVERLAPPED offset, under the I/O lock +0x1478f5e00 taken at +0x314003) got
+  ERROR_NOACCESS (998) reading 0x1027d000 bytes into console memory at 0x5a00e0000, and retries forever on any
+  error but 6/0x26/0x57 (Sleep(1)). XMem commits mapped physical pages on first touch from a vectored handler,
+  which the Windows kernel never triggers; Wine's ReadFile copies in user mode, so it worked there.
+  Fix: shims/readfile_ce.cpp commits the destination (rt::xmem::commit_physical_range) before ReadFile. With it the
+  Windows run opens all 40 files (world data) and builds 1028 compute pipelines, then stops at 98 s at +0xb5a5f8
+  (read of 0x68): the next problem on Windows.
