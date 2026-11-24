@@ -34,6 +34,7 @@
 #include "d3d12_trace.h"
 #include "../src/shader_library.h"
 #include "../src/resource_detile.h"  // leonida::fspx_payload_from_parts for slot 67
+#include "../src/xg_texture.h"
 
 #include <windows.h>
 #include <dxgi1_4.h>
@@ -614,24 +615,42 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
         std::lock_guard lock(g_uploaded_mu);
         if (!g_uploaded.insert(tex).second && !force) return;
     }
-    const XsTexFormat tf = xs_tex_format(console_desc.Format);
-    const std::uint32_t w = static_cast<std::uint32_t>(console_desc.Width), h = console_desc.Height;
-    const std::uint32_t bw = (w + tf.block_dim - 1) / tf.block_dim, bh = (h + tf.block_dim - 1) / tf.block_dim;
-    std::vector<std::byte> linear(std::size_t(bw) * bh * tf.element_bytes);
-    const bool tiled = leonida::is_xbox_tiled(static_cast<std::uint32_t>(console_desc.Layout));
-    // The tiled source spans whole 64 KiB tiles; read generously and let detile check the size.
-    const std::size_t src_bytes = tiled ? ((linear.size() + 0xFFFF) & ~std::size_t(0xFFFF)) * 2 + 0x10000 : linear.size();
-    if (IsBadReadPtr(reinterpret_cast<const void*>(va), src_bytes)) return;
-    const std::span<const std::byte> src(reinterpret_cast<const std::byte*>(va), src_bytes);
-    bool ok = tiled ? leonida::detile_surface_64k(src, linear, w, h, tf.element_bytes, tf.block_dim) : true;
-    if (!tiled) std::memcpy(linear.data(), src.data(), linear.size());
-    if (!ok) return;
+    // The console layout word is 0x100 | swizzle mode (xg_texture.h); anything else is read as linear.
+    const std::uint32_t layout_word = static_cast<std::uint32_t>(console_desc.Layout);
+    leonida::xg::TextureDesc td;
+    td.dimension = leonida::xg::Dimension::Tex2d;
+    td.width = static_cast<std::uint32_t>(console_desc.Width);
+    td.height = console_desc.Height;
+    td.depth_or_array = std::max<std::uint32_t>(console_desc.DepthOrArraySize, 1);
+    td.mips = console_desc.MipLevels;
+    td.format = static_cast<std::uint32_t>(console_desc.Format);
+    td.samples = 1;
+    td.swizzle.value = (layout_word & 0x100) ? (layout_word & 0xFF) : leonida::xg::Swizzle::LINEAR;
+    leonida::xg::Texture xt;
+    if (leonida::xg::Texture::make(td, xt) != leonida::xg::Error::Ok || xt.planes.empty()) return;
+    const leonida::xg::Layout& lay = xt.planes[0].layout;
+    if (!lay.addressable()) {
+        static std::atomic<int> warned{0};
+        if (warned++ < 8)
+            std::fprintf(stderr, "[hack] placed texture %ux%u layout 0x%x: swizzle not addressable, skipped\n", td.width,
+                         td.height, layout_word);
+        return;
+    }
+    const std::size_t src_bytes = static_cast<std::size_t>(lay.size);
+    if (!src_bytes || IsBadReadPtr(reinterpret_cast<const void*>(va), src_bytes)) return;
+    const auto* src = reinterpret_cast<const std::uint8_t*>(va);
 
     D3D12_RESOURCE_DESC rd = tex->GetDesc();
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
-    UINT rows = 0;
-    UINT64 row_bytes = 0, total = 0;
-    dev->GetCopyableFootprints(&rd, 0, 1, 0, &fp, &rows, &row_bytes, &total);
+    const UINT mips = std::min<UINT>(rd.MipLevels ? rd.MipLevels : 1, static_cast<UINT>(lay.mips.size()));
+    const UINT slices = std::min<UINT>(rd.DepthOrArraySize ? rd.DepthOrArraySize : 1, lay.slices ? lay.slices : 1);
+    const UINT pc_mips = rd.MipLevels ? rd.MipLevels : 1;
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> fps(std::size_t(pc_mips) * slices);
+    std::vector<UINT> rows(fps.size());
+    std::vector<UINT64> row_bytes(fps.size());
+    UINT64 total = 0;
+    dev->GetCopyableFootprints(&rd, 0, static_cast<UINT>(fps.size()), 0, fps.data(), rows.data(), row_bytes.data(), &total);
+    if (!total) return;
+
     D3D12_HEAP_PROPERTIES hp{};
     hp.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC bd{};
@@ -647,41 +666,64 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
     ID3D12GraphicsCommandList* list = nullptr;
     ID3D12Fence* fence = nullptr;
     const D3D12_COMMAND_LIST_TYPE type = queue->GetDesc().Type;
-    ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                                __uuidof(ID3D12Resource), reinterpret_cast<void**>(&up))) &&
-         SUCCEEDED(dev->CreateCommandAllocator(type, __uuidof(ID3D12CommandAllocator), reinterpret_cast<void**>(&alloc))) &&
-         SUCCEEDED(dev->CreateCommandList(0, type, alloc, nullptr, __uuidof(ID3D12GraphicsCommandList),
-                                          reinterpret_cast<void**>(&list))) &&
-         SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&fence)));
+    bool ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                     nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&up))) &&
+              SUCCEEDED(dev->CreateCommandAllocator(type, __uuidof(ID3D12CommandAllocator), reinterpret_cast<void**>(&alloc))) &&
+              SUCCEEDED(dev->CreateCommandList(0, type, alloc, nullptr, __uuidof(ID3D12GraphicsCommandList),
+                                               reinterpret_cast<void**>(&list))) &&
+              SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&fence)));
     void* mapped = nullptr;
     if (ok && SUCCEEDED(up->Map(0, nullptr, &mapped)) && mapped) {
-        const std::size_t src_row = std::size_t(bw) * tf.element_bytes;
-        for (UINT y = 0; y < rows && y < bh; ++y)
-            std::memcpy(static_cast<std::uint8_t*>(mapped) + fp.Offset + std::size_t(y) * fp.Footprint.RowPitch,
-                        linear.data() + std::size_t(y) * src_row, src_row);
+        auto* dst_base = static_cast<std::uint8_t*>(mapped);
+        std::size_t nz = 0, sampled = 0;
+        UINT copied = 0, failed = 0;
+        for (UINT s = 0; s < slices; ++s)
+            for (UINT m = 0; m < mips; ++m) {
+                const UINT sub = m + s * pc_mips;
+                const auto& fp = fps[sub];
+                const std::size_t row_pitch = fp.Footprint.RowPitch;
+                const std::size_t depth_pitch = row_pitch * rows[sub];
+                const std::size_t room = static_cast<std::size_t>(total - fp.Offset);
+                if (lay.detile(src, src_bytes, m, s, dst_base + fp.Offset, room, row_pitch, depth_pitch) !=
+                    leonida::xg::Error::Ok) {
+                    ++failed;
+                    continue;
+                }
+                ++copied;
+                if (m == 0 && s == 0)
+                    for (std::size_t i = 0; i < depth_pitch; i += 97, ++sampled) nz += dst_base[fp.Offset + i] != 0;
+            }
         up->Unmap(0, nullptr);
-        D3D12_TEXTURE_COPY_LOCATION dst{}, srcl{};
-        dst.pResource = tex;
-        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dst.SubresourceIndex = 0;
-        srcl.pResource = up;
-        srcl.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        srcl.PlacedFootprint = fp;
-        list->CopyTextureRegion(&dst, 0, 0, 0, &srcl, nullptr);
+        for (UINT s = 0; s < slices; ++s)
+            for (UINT m = 0; m < mips; ++m) {
+                const UINT sub = m + s * pc_mips;
+                D3D12_TEXTURE_COPY_LOCATION dst{}, srcl{};
+                dst.pResource = tex;
+                dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                dst.SubresourceIndex = sub;
+                srcl.pResource = up;
+                srcl.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                srcl.PlacedFootprint = fps[sub];
+                list->CopyTextureRegion(&dst, 0, 0, 0, &srcl, nullptr);
+            }
         list->Close();
         ID3D12CommandList* lists[] = {list};
         queue->ExecuteCommandLists(1, lists);
         queue->Signal(fence, 1);
         for (int i = 0; i < 2000 && fence->GetCompletedValue() < 1; ++i) Sleep(1);
         static std::atomic<int> n{0};
-        if (n++ < 10) {
-            std::size_t nz = 0;
-            for (std::size_t i = 0; i < linear.size(); i += 97) nz += linear[i] != std::byte{0};
-            std::fprintf(stderr, "[hack] uploaded placed texture %ux%u fmt %d (%s, layout 0x%x, %.1f%% non-zero) from va %llx\n", w, h,
-                         (int)console_desc.Format, tiled ? "detiled" : "linear", (unsigned)console_desc.Layout,
-                         linear.empty() ? 0.0 : 100.0 * nz / ((linear.size() + 96) / 97), (unsigned long long)va);
+        const bool has_data = nz != 0;
+        static std::atomic<int> with_data{0};
+        if (has_data) ++with_data;
+        if (n++ < 12 || (has_data && with_data.load() <= 40)) {
+            std::fprintf(stderr,
+                         "[hack] uploaded placed texture %ux%u fmt %d (layout 0x%x, %u mips x %u slices, %u failed, "
+                         "%.1f%% non-zero) from va %llx\n",
+                         td.width, td.height, (int)console_desc.Format, layout_word, mips, slices, failed,
+                         sampled ? 100.0 * nz / sampled : 0.0, (unsigned long long)va);
             std::fflush(stderr);
         }
+        (void)copied;
     }
     if (fence) fence->Release();
     if (list) list->Release();
