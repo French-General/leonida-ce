@@ -5,6 +5,7 @@
 // This shim creates the APU heap from process memory and manages allocations within it.
 // The SHAPE context arrays are allocated on the process heap; the ACP interface
 // accepts and acknowledges commands to allow audio bring-up to proceed cleanly.
+// Enabled XMA contexts are pumped silently on a thread of ours (see "The XMA decoder, silent").
 //
 // Signatures from the public GDK reference (devdocs.xbox.com):
 //   AcpHal, APU reference, SHAPE_CONTEXTS, APU_ADDRESS.
@@ -16,6 +17,8 @@
 
 #include <atomic>
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -23,8 +26,11 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <memory>
 #include <set>
+#include <shared_mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "shims.h"
@@ -287,12 +293,373 @@ std::vector<void*> g_active_shape_arrays;
 
 void* __stdcall ApuMapApuAddress(uint32_t apu);
 
+// ---- The XMA decoder, silent: ported from Marvisak/VIctory audio.rs (GPLv3) ----
+//
+// An XMA context (16 words in the shared context array) names up to two input buffers of 2 KiB packets, a ring
+// of 256-byte output blocks the hardware fills with 16-bit PCM, and the read offset the title advances by command.
+// Words and bit fields, as titles write them (VIctory's reading; the GDK-derived SHAPE_XMA_CONTEXT above differs
+// from word 1 on and is not used here):
+// 0: input 0 size in packets (0-11), loop count (12-19, 255 forever), valid inputs (20-21), output size in blocks
+//    (22-26), write block (27-31, hardware);
+// 1: input 1 size (0-11), loop end subframe (12-13), loop start subframes to skip (17-19), subframes to skip at the
+//    start (24-26), sample rate (27-28), stereo (29), output writable (31);
+// 2: read position in bits (0-25), error status (26-30), error (31);
+// 3: loop start in bits (0-25); 4: loop end in bits (0-25), current input (31); 5, 6: input addresses; 7: output
+//    address; 8: overlap buffer; 9: read block (0-4).
+// Titles read back only the write block, "writable" and the read block, and take whatever lies between read and
+// write. GTA VI uses only XMA contexts.
+//
+// shortcut (silent): no audio is decoded. The bitstream's framing (packet headers, frame length fields) is walked
+// as VIctory's does, so the read position, the valid/consumed inputs, loops and the "input invalid" status change
+// exactly as there; each frame counts as its 512 samples per channel, written to the ring as zeros, so the output
+// advances at the rate a decoder's would.
+namespace xma {
+
+constexpr uint32_t kEnableXma = 5, kEnableXmas = 6, kDisableXma = 7, kDisableXmas = 8, kAdvanceXmaRead = 18;
+constexpr size_t kPacketBytes = 2048, kPacketBits = kPacketBytes * 8, kHeaderBits = 32;
+constexpr size_t kFrameSamples = 512, kSubframeSamples = 128;  // per channel
+constexpr uint32_t kLengthBits = 15;
+constexpr size_t kBlockBytes = 256, kSamplesPerBlock = kBlockBytes / 2;
+constexpr uint32_t kInputInvalid = 4;  // error status: the input ran out
+constexpr size_t kNone = SIZE_MAX;
+
+// -- Framing (victory-formats xma.rs: packet, Cursor, read_frame, next_frame) --
+
+struct Packet {
+    uint32_t frames, first_frame_bit, skip;
+};
+
+bool packet(const uint8_t* data, size_t len, size_t index, Packet* out) {
+    if (index > len / kPacketBytes) return false;
+    const size_t start = index * kPacketBytes;
+    if (start + 4 > len) return false;
+    const uint32_t h = (uint32_t(data[start]) << 24) | (uint32_t(data[start + 1]) << 16) |
+                       (uint32_t(data[start + 2]) << 8) | uint32_t(data[start + 3]);
+    *out = {h >> 26, (h >> 11) & 0x7fff, h & 0xff};
+    return true;
+}
+
+// Bit positions in a buffer of packets, skipping each packet's header and the packets of other streams.
+struct Cursor {
+    const uint8_t* data;
+    size_t len;
+    size_t pos;
+
+    bool bit(uint32_t* out) {
+        if (pos % kPacketBits == 0) {
+            const size_t previous = pos / kPacketBits;
+            if (previous > 0) {
+                Packet p;
+                if (!packet(data, len, previous - 1, &p)) return false;
+                pos = (previous + p.skip) * kPacketBits;
+            }
+            pos += kHeaderBits;
+        }
+        if (pos / 8 >= len) return false;
+        *out = (data[pos / 8] >> (7 - pos % 8)) & 1;
+        ++pos;
+        return true;
+    }
+
+    bool bits(uint32_t n, uint32_t* out) {
+        uint32_t v = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t b;
+            if (!bit(&b)) return false;
+            v = v << 1 | b;
+        }
+        *out = v;
+        return true;
+    }
+};
+
+struct Frame {
+    size_t start;  // bit offset where it starts
+    size_t next;   // where the next frame starts, kNone when the buffer has no further frame
+};
+
+// Where the frame after the one at start..end begins: right after it, unless it was the last frame to begin in its
+// packet and the rest of that packet is padding.
+size_t next_frame(const uint8_t* data, size_t len, size_t start, size_t end) {
+    const size_t index = start / kPacketBits;
+    Packet header;
+    if (!packet(data, len, index, &header)) return kNone;
+    size_t at = index * kPacketBits + kHeaderBits + header.first_frame_bit;
+    uint32_t number = 0;
+    while (at < start) {
+        Cursor cursor{data, len, at};
+        uint32_t bits;
+        if (!cursor.bits(kLengthBits, &bits) || bits <= kLengthBits) return kNone;
+        at += bits;
+        ++number;
+    }
+    const bool last = number + 1 >= header.frames;
+    if (end % kPacketBits == 0 || (last && end / kPacketBits == index)) {
+        // The next frame begins in the next packet of this stream.
+        Packet p;
+        if (!packet(data, len, (end - 1) / kPacketBits, &p)) return kNone;
+        const size_t next = (end - 1) / kPacketBits + 1 + p.skip;
+        if (!packet(data, len, next, &p)) return kNone;
+        end = next * kPacketBits + kHeaderBits + p.first_frame_bit;
+    }
+    return end / 8 < len ? end : kNone;
+}
+
+// The frame starting at bit `start`; false when there is none (the input is used up).
+bool read_frame(const uint8_t* data, size_t len, size_t start, Frame* out) {
+    Cursor cursor{data, len, start};
+    uint32_t bits;
+    if (!cursor.bits(kLengthBits, &bits) || bits <= kLengthBits || bits == 0x7fff) return false;
+    cursor = Cursor{data, len, start};
+    for (uint32_t i = 0; i < bits; ++i) {
+        uint32_t b;
+        if (!cursor.bit(&b)) return false;
+    }
+    *out = {start, next_frame(data, len, start, cursor.pos)};
+    return true;
+}
+
+// -- Contexts and voices --
+
+// A context's words in title memory, which the title reads and writes concurrently, like the hardware's.
+struct Context {
+    volatile uint32_t* w;
+
+    uint32_t get(int word) const { return w[word]; }
+    void set(int word, uint32_t value) const { w[word] = value; }
+    uint32_t field(int word, uint32_t shift, uint32_t bits) const {
+        return (get(word) >> shift) & ((1u << bits) - 1);
+    }
+    void set_field(int word, uint32_t shift, uint32_t bits, uint32_t value) const {
+        const uint32_t mask = ((1u << bits) - 1) << shift;
+        set(word, (get(word) & ~mask) | ((value << shift) & mask));
+    }
+    size_t channels() const { return 1 + field(1, 29, 1); }
+};
+
+struct Voice {
+    bool enabled = false;
+    size_t pcm = 0;   // silent samples (all channels) decoded but not yet written to the ring
+    size_t skip = 0;  // samples per channel still to drop (start or loop subframe skips)
+    bool ended = false;
+};
+
+// Written (under the unique lock) only when the context arrays are allocated or released. Each voice has its own
+// lock, so a command for one voice never waits for others (the title sends them from its mixer thread).
+// Lock order: this, then g_apu_mutex (taken by ApuMapApuAddress).
+struct State {
+    std::shared_mutex mu;
+    uint8_t* array = nullptr;
+    uint32_t count = 0;
+    std::unique_ptr<std::mutex[]> locks;
+    std::unique_ptr<Voice[]> voices;
+};
+
+State& state() {
+    static State s;
+    return s;
+}
+
+bool context(State& s, uint32_t index, Context* out) {
+    if (index >= s.count || !s.array) return false;
+    *out = Context{reinterpret_cast<volatile uint32_t*>(s.array + size_t(index) * 64)};
+    return true;
+}
+
+// `len` bytes of title memory at an APU address, if they are all inside one APU heap (VIctory's heap_bytes).
+uint8_t* apu_bytes(uint32_t apu, size_t len) {
+    if (len == 0 || uint64_t(apu) + len - 1 > UINT32_MAX) return nullptr;
+    auto* first = static_cast<uint8_t*>(ApuMapApuAddress(apu));
+    auto* last = static_cast<uint8_t*>(ApuMapApuAddress(apu + uint32_t(len - 1)));
+    return first && last == first + (len - 1) ? first : nullptr;
+}
+
+// Decodes (silently) the next frame of the current input into voice.pcm; false when there is nothing left.
+bool decode(Context c, Voice& v) {
+    if (v.ended) return false;
+    const size_t channels = c.channels();
+    uint32_t current = c.field(4, 31, 1);
+    const uint32_t valid = c.field(0, 20, 2);
+    if (!(valid & (1u << current))) {
+        if (!(valid & (1u << (1 - current)))) {
+            // Out of input: (VIctory flushes the decoder's overlap tail here; silence has none), then nothing.
+            v.ended = true;
+            c.set_field(2, 26, 5, kInputInvalid);
+            c.set_field(2, 31, 1, 1);
+            return v.pcm != 0;
+        }
+        current = 1 - current;
+        c.set_field(4, 31, 1, current);
+        c.set_field(2, 0, 26, 0);
+    }
+    const uint32_t address = current == 0 ? c.get(5) : c.get(6);
+    const uint32_t packets = current == 0 ? c.field(0, 0, 12) : c.field(1, 0, 12);
+    const size_t len = size_t(packets) * kPacketBytes;
+    const uint8_t* data = apu_bytes(address & ~0x7ffu, len);
+    if (!data) {
+        c.set_field(0, 20 + current, 1, 0);
+        return true;
+    }
+    size_t at = c.field(2, 0, 26);
+    if (at < 32) {
+        Packet p;
+        at = 32 + (packet(data, len, 0, &p) ? p.first_frame_bit : 0);
+    }
+    Frame frame;
+    if (!read_frame(data, len, at, &frame)) {
+        // This input is used up.
+        c.set_field(0, 20 + current, 1, 0);
+        return true;
+    }
+    size_t pcm = kFrameSamples * channels;
+    size_t next = frame.next == kNone ? 0 : frame.next;
+    const uint32_t loops = c.field(0, 12, 8);
+    const size_t loop_end = c.field(4, 0, 26);
+    const bool ends_loop =
+        loop_end != 0 && (frame.start == loop_end ||
+                          (frame.start < loop_end && (frame.next == kNone || loop_end < frame.next)));
+    if (loops > 0 && ends_loop) {
+        const size_t keep = (size_t(c.field(1, 12, 2)) + 1) * kSubframeSamples * channels;
+        if (pcm > keep) pcm = keep;
+        next = c.field(3, 0, 26);
+        v.skip = size_t(c.field(1, 17, 3)) * kSubframeSamples;
+        if (loops != 255) c.set_field(0, 12, 8, loops - 1);
+    }
+    size_t skip = v.skip * channels;
+    if (skip > pcm) skip = pcm;
+    v.skip -= skip / channels;
+    v.pcm += pcm - skip;
+    if (next == 0) c.set_field(0, 20 + current, 1, 0);
+    c.set_field(2, 0, 26, static_cast<uint32_t>(next));
+    return true;
+}
+
+// Fills a context's output ring as far as it has room.
+void pump(Context c, Voice& v) {
+    const uint32_t size = c.field(0, 22, 5);
+    if (size == 0) return;
+    while (c.field(1, 31, 1) == 1) {
+        if (v.pcm < kSamplesPerBlock && !decode(c, v)) return;
+        const uint32_t write = c.field(0, 27, 5);
+        uint8_t* out = apu_bytes(c.get(7) + write * uint32_t(kBlockBytes), kBlockBytes);
+        if (!out) return;
+        std::memset(out, 0, kBlockBytes);
+        v.pcm -= v.pcm < kSamplesPerBlock ? v.pcm : kSamplesPerBlock;
+        const uint32_t next = (write + 1) % size;
+        c.set_field(0, 27, 5, next);
+        if (next == c.field(9, 0, 5)) {
+            // Full: nothing more until the title advances its read block.
+            c.set_field(1, 31, 1, 0);
+        }
+    }
+}
+
+void pump_all() {
+    State& s = state();
+    std::shared_lock lock(s.mu);
+    for (uint32_t i = 0; i < s.count; ++i) {
+        Context c;
+        if (!context(s, i, &c)) continue;
+        std::lock_guard voice_lock(s.locks[i]);
+        if (s.voices[i].enabled) pump(c, s.voices[i]);
+    }
+}
+
+std::mutex g_wake_mu;
+std::condition_variable g_wake_cv;
+bool g_wake = false;
+
+// Starts the pump thread on the first enabled voice, and has it fill rings now: a voice just enabled or read from.
+// Otherwise it pumps every 2 ms (a 256-byte output block lasts 2.7 ms at 48 kHz mono), as VIctory's does.
+void wake_decoder() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        std::thread([] {
+            for (;;) {
+                pump_all();
+                std::unique_lock lock(g_wake_mu);
+                g_wake_cv.wait_for(lock, std::chrono::milliseconds(2), [] { return g_wake; });
+                g_wake = false;
+            }
+        }).detach();
+    });
+    {
+        std::lock_guard lock(g_wake_mu);
+        g_wake = true;
+    }
+    g_wake_cv.notify_one();
+}
+
+void enable(State& s, uint32_t index) {
+    Context c;
+    if (!context(s, index, &c)) return;
+    {
+        std::lock_guard lock(s.locks[index]);
+        c.set_field(2, 26, 6, 0);
+        s.voices[index] = Voice{true, 0, size_t(c.field(1, 24, 3)) * kSubframeSamples, false};
+    }
+    wake_decoder();
+}
+
+void disable(State& s, uint32_t index) {
+    Context c;
+    if (!context(s, index, &c)) return;
+    std::lock_guard lock(s.locks[index]);
+    s.voices[index] = Voice{};
+}
+
+// Moves the title's read block on, which frees output space.
+void advance_read(State& s, uint32_t index, uint32_t blocks) {
+    Context c;
+    if (!context(s, index, &c)) return;
+    {
+        // The pump writes the same words.
+        std::lock_guard lock(s.locks[index]);
+        uint32_t size = c.field(0, 22, 5);
+        if (size == 0) size = 1;
+        c.set_field(9, 0, 5, (c.field(9, 0, 5) + blocks) % size);
+        if (blocks > 0) c.set_field(1, 31, 1, 1);
+    }
+    wake_decoder();
+}
+
+// Runs an XMA command; false for one this does not know.
+bool run(uint32_t command, const void* data) {
+    auto word = [&](size_t at, uint32_t fallback) -> uint32_t {
+        if (!data) return fallback;
+        uint32_t v;
+        std::memcpy(&v, static_cast<const uint8_t*>(data) + at * 4, 4);
+        return v;
+    };
+    State& s = state();
+    std::shared_lock lock(s.mu);
+    switch (command) {
+    case kEnableXma: enable(s, word(0, UINT32_MAX)); break;
+    case kDisableXma: disable(s, word(0, UINT32_MAX)); break;
+    case kEnableXmas:
+    case kDisableXmas:
+        for (uint32_t i = 0; i < s.count; ++i) {
+            if (word(i / 32, 0) & (1u << (i % 32))) {
+                if (command == kEnableXmas) enable(s, i);
+                else disable(s, i);
+            }
+        }
+        break;
+    case kAdvanceXmaRead: advance_read(s, word(0, UINT32_MAX), word(1, 0)); break;
+    default: return false;
+    }
+    return true;
+}
+
+}  // namespace xma
+
 // The audio coprocessor's command and message queues, after Marvisak/VIctory's audio.rs (GPLv3): every command
 // completes at once and is acknowledged as the hardware would. A command with an id posts COMMAND_COMPLETED
 // (command, id, audio frame), a flowgraph load posts FLOWGRAPH_COMPLETED, message registrations take effect, and a
 // command's notification word (an APU address) is set to 1. The title's audio engine waits on these: dropping every
 // command, as before, left its per-frame command streams undrained until one overflowed (about 100 s in).
-// shortcut: the commands themselves (XMA contexts, SHAPE units) are not carried out.
+// XMA context commands (5-8, 18) are carried out by xma::run, as VIctory's xma_command.
+// shortcut: context updates and the other SHAPE units' commands are acknowledged but not carried out.
 #pragma pack(push, 1)
 struct AcpMessage {
     uint32_t kind;
@@ -366,7 +733,7 @@ struct AcpHalImpl {
                                             uint32_t notification) {
         static std::atomic<uint64_t> seen{0};
         if (command < 64 && !(seen.fetch_or(1ull << command) & (1ull << command))) {
-            std::fprintf(stderr, "[rt] acphal: first coprocessor command %u (acknowledged, not carried out)\n", command);
+            std::fprintf(stderr, "[rt] acphal: first coprocessor command %u\n", command);
             std::fflush(stderr);
         }
         trace_call("AcpHal::SubmitCommand", "");
@@ -383,6 +750,8 @@ struct AcpHalImpl {
             else if (command == kLoadFlowgraph) {
                 const uint32_t flowgraph = word(1);
                 post(kFlowgraphCompleted, &flowgraph, 4);
+            } else {
+                xma::run(command, data);
             }
             if (id != 0) {
                 uint8_t done[16];
@@ -437,6 +806,8 @@ HRESULT __stdcall AcpHalCreate(void** ppAcpHal) {
 HRESULT __stdcall AcpHalAllocateShapeContexts(SHAPE_CONTEXTS* ctx) {
     if (!ctx) return E_POINTER;
 
+    xma::State& xs = xma::state();
+    std::unique_lock xma_lock(xs.mu);  // before g_apu_mutex (see xma::State)
     std::lock_guard lock(g_apu_mutex);
 
     auto alloc_array = [](uint32_t count, size_t elem_size) -> void* {
@@ -468,6 +839,12 @@ HRESULT __stdcall AcpHalAllocateShapeContexts(SHAPE_CONTEXTS* ctx) {
     ctx->apuXmaContextArray = {ctx->xmaContextArray ? kApuBaseAddress + 0x4000 : 0};
     ctx->apuPcmContextArray = {ctx->pcmContextArray ? kApuBaseAddress + 0x5000 : 0};
 
+    // The XMA pump's view of the context array (VIctory sets it here too).
+    xs.array = reinterpret_cast<uint8_t*>(ctx->xmaContextArray);
+    xs.count = ctx->xmaContextArray ? ctx->numXmaContexts : 0;
+    xs.locks = std::make_unique<std::mutex[]>(xs.count);
+    xs.voices = std::make_unique<xma::Voice[]>(xs.count);
+
     trace_call("AcpHalAllocateShapeContexts",
                ",\"src\":" + std::to_string(ctx->numSrcContexts) +
                ",\"xma\":" + std::to_string(ctx->numXmaContexts) +
@@ -478,7 +855,13 @@ HRESULT __stdcall AcpHalAllocateShapeContexts(SHAPE_CONTEXTS* ctx) {
 // ---- AcpHalReleaseShapeContexts ----
 
 HRESULT __stdcall AcpHalReleaseShapeContexts(SHAPE_CONTEXTS* ctx = nullptr) {
+    xma::State& xs = xma::state();
+    std::unique_lock xma_lock(xs.mu);  // before g_apu_mutex (see xma::State)
     std::lock_guard lock(g_apu_mutex);
+    xs.array = nullptr;
+    xs.count = 0;
+    xs.voices.reset();
+    xs.locks.reset();
 
     // Free all recorded context allocations
     for (void* p : g_active_shape_arrays) {

@@ -166,3 +166,8 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   so the first audio frame never completes. Next: port VIctory's XMA context pump, silent (consume input packets,
   write zero output blocks, advance the pointers), with credit.
 - Stack dumps now print each thread's title index ("tid N idx M"), read through the title's TLS slot.
+- Not XMA either: with the silent XMA pump in place (acphal, after VIctory) the title still sends only
+  coprocessor command 2 before the stop, so no context is ever enabled; the audio thread stays on the same lock.
+- The engine lock's word has 2 or 3 in its low half, but the lock routine +0x4b40 always writes 1 there (its
+  recursion count lives at +0x10), so another routine (a recursive or inlined variant) takes this lock; that is
+  why the breakpoint at +0x4bdf never saw owner 336. Next: find the lock routines that add to the low half.
