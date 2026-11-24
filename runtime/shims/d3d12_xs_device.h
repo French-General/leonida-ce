@@ -75,6 +75,14 @@ bool is_device_proxy(const void* device);
 using DxgiAdapterProvider = HRESULT (*)(ID3D12Device* real, REFIID riid, void** out);
 // `device` is the proxy or its DXGI pointer. False, with a line on stderr, when it is neither: nothing is set then.
 bool set_device_adapter_provider(void* device, DxgiAdapterProvider provider);
+
+// Creates a descriptor heap whose storage is the title's memory at `console_address` (the console-extended slot 14
+// description, issue #313). The Vulkan layer registers rt::d3d12::create_console_descriptor_heap here; without a
+// factory the proxy creates an ordinary heap. Targets that build the proxy alone need no Vulkan code for this.
+using ConsoleDescriptorHeapFactory = HRESULT (*)(ID3D12Device* device, const D3D12_DESCRIPTOR_HEAP_DESC* desc,
+                                                 D3D12_GPU_VIRTUAL_ADDRESS console_address,
+                                                 std::uint64_t console_size, REFIID riid, void** out);
+void set_console_descriptor_heap_factory(ConsoleDescriptorHeapFactory factory);
 // The device proxy an IDXGIDevice pointer handed out by one belongs to, or null.
 void* device_proxy_from_dxgi_device(void* dxgi_device);
 // The device proxy itself, given the proxy or its DXGI pointer; null for anything else.

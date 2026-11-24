@@ -24,6 +24,7 @@ struct Ref {
         return &p;
     }
     T* get() const { return p; }
+    T* operator->() const { return p; }
 };
 
 bool check_console_addressed_heap(ID3D12Device* device) {
@@ -65,7 +66,9 @@ bool check_console_addressed_heap(ID3D12Device* device) {
 
 bool check_xs_proxy_slot14(ID3D12Device* real_device) {
     void* proxy_raw = nullptr;
-    if (FAILED(rt::d3d12_xs::create_device_proxy(real_device, IID_PPV_ARGS(&proxy_raw))) || !proxy_raw) {
+    real_device->AddRef();  // create_device_proxy takes one reference on success; the caller keeps its own
+    if (FAILED(rt::d3d12_xs::create_device_proxy(real_device, __uuidof(ID3D12Device), &proxy_raw)) || !proxy_raw) {
+        real_device->Release();
         std::fprintf(stderr, "create_device_proxy failed\n");
         return false;
     }
@@ -90,7 +93,11 @@ bool check_xs_proxy_slot14(ID3D12Device* real_device) {
                      static_cast<unsigned long>(hr));
         return false;
     }
-    const auto cpu = heap->GetCPUDescriptorHandleForHeapStart();
+    // The heap proxy answers slot 9 with the Xbox ABI (the handle in RAX, as the title reads it), not the PC
+    // hidden-return-pointer convention a C++ call here would use.
+    using XboxGetCpuStart = SIZE_T(WINAPI*)(void*);
+    const D3D12_CPU_DESCRIPTOR_HANDLE cpu{
+        reinterpret_cast<XboxGetCpuStart>((*reinterpret_cast<void***>(heap.get()))[9])(heap.get())};
     if (cpu.ptr != static_cast<SIZE_T>(console.address)) {
         std::fprintf(stderr, "proxy CPU heap start mismatch: got 0x%llx want 0x%llx\n",
                      static_cast<unsigned long long>(cpu.ptr),

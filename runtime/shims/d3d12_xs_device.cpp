@@ -1579,6 +1579,8 @@ static bool readable_range(const void* ptr, std::size_t bytes) {
     return true;
 }
 
+ConsoleDescriptorHeapFactory g_console_heap_factory = nullptr;  // set by the Vulkan layer
+
 HRESULT proxy_create_descriptor_heap(DeviceProxy* self, const D3D12_DESCRIPTOR_HEAP_DESC* desc, const IID* riid,
                                      void** out) {
     note_slot(14);
@@ -1601,11 +1603,10 @@ HRESULT proxy_create_descriptor_heap(DeviceProxy* self, const D3D12_DESCRIPTOR_H
             std::memcpy(&size, bytes + sizeof(D3D12_DESCRIPTOR_HEAP_DESC) + sizeof(address), sizeof(size));
             // Console-extended slot 14 (issue #313): address/size follow the PC desc. Only take this path when a
             // non-zero console VA is present; normal PC 16-byte descs never enter it.
-            if (address != 0) {
+            if (address != 0 && g_console_heap_factory) {
                 console_extended = true;
-                hr = rt::d3d12::create_console_descriptor_heap(
-                    self->real, desc, static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(address), size,
-                    __uuidof(ID3D12DescriptorHeap), &created);
+                hr = g_console_heap_factory(self->real, desc, static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(address), size,
+                                            __uuidof(ID3D12DescriptorHeap), &created);
             }
         }
     }
@@ -2005,6 +2006,10 @@ void* device_proxy_from_dxgi_device(void* dxgi_device) {
 void* device_proxy_primary(void* device) {
     if (is_device_proxy(device)) return device;
     return device_proxy_from_dxgi_device(device);
+}
+
+void set_console_descriptor_heap_factory(ConsoleDescriptorHeapFactory factory) {
+    g_console_heap_factory = factory;
 }
 
 bool set_device_adapter_provider(void* device, DxgiAdapterProvider provider) {
