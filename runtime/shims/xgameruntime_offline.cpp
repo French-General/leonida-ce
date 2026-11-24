@@ -610,32 +610,47 @@ HRESULT STDMETHODCALLTYPE speech_enumerate_voices(void*, void* callback, void*) 
     return callback ? S_OK : E_INVALIDARG;
 }
 
-// 9: HRESULT XSpeechSynthesizerCreate(XSpeechSynthesizerHandle* handle): no synthesizer offline.
-HRESULT STDMETHODCALLTYPE speech_create(void* self, void** handle) {
-    if (handle) *handle = nullptr;
-    return offline_failure<kAccessibilityName, 9>(self);
+// Speech synthesis is silent, after Marvisak/VIctory's speech.rs (GPLv3): the synthesizer and its streams are fixed
+// handles, and every stream is a WAVE file of no samples (16 kHz mono 16-bit PCM, empty data chunk). The title's
+// narration then plays nothing and goes on. Refusing the synthesizer offline left the first-boot screens with no
+// narrator at all.
+constexpr unsigned char kSilentWave[44] = {
+    'R', 'I', 'F', 'F', 0x24, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 0x10, 0, 0, 0, 0x01, 0, 0x01, 0,
+    0x80, 0x3e, 0, 0, 0, 0x7d, 0, 0, 0x02, 0, 0x10, 0, 'd', 'a', 't', 'a', 0, 0, 0, 0};
+unsigned char g_speech_synthesizer = 0;
+unsigned char g_speech_stream = 0;
+
+// 9: HRESULT XSpeechSynthesizerCreate(XSpeechSynthesizerHandle* handle)
+HRESULT STDMETHODCALLTYPE speech_create(void*, void** handle) {
+    if (!handle) return E_POINTER;
+    *handle = &g_speech_synthesizer;
+    return S_OK;
 }
 
-// 10-12, 14: a synthesizer or stream handle is the first argument, and none was ever handed out: E_INVALIDARG.
-HRESULT STDMETHODCALLTYPE speech_bad_handle(void*) { return E_INVALIDARG; }
+// 10-12, 14: close a synthesizer, set its voice, close a stream: the handles are fixed, nothing to do.
+HRESULT STDMETHODCALLTYPE speech_bad_handle(void*) { return S_OK; }
 
 // 13, 21: HRESULT XSpeechSynthesizerCreateStreamFromText/Ssml(synthesizer, const char* text,
 //                                                             XSpeechSynthesizerStreamHandle* stream)
 HRESULT STDMETHODCALLTYPE speech_create_stream(void*, void*, const char*, void** stream) {
-    if (stream) *stream = nullptr;
-    return E_INVALIDARG;
+    if (!stream) return E_POINTER;
+    *stream = &g_speech_stream;
+    return S_OK;
 }
 
 // 15: HRESULT XSpeechSynthesizerGetStreamDataSize(stream, size_t* size)
 HRESULT STDMETHODCALLTYPE speech_stream_size(void*, void*, size_t* size) {
-    if (size) *size = 0;
-    return E_INVALIDARG;
+    if (!size) return E_POINTER;
+    *size = sizeof(kSilentWave);
+    return S_OK;
 }
 
 // 16: HRESULT XSpeechSynthesizerGetStreamData(stream, size_t size, void* buffer, size_t* used)
-HRESULT STDMETHODCALLTYPE speech_stream_data(void*, void*, size_t, void*, size_t* used) {
-    if (used) *used = 0;
-    return E_INVALIDARG;
+HRESULT STDMETHODCALLTYPE speech_stream_data(void*, void*, size_t size, void* buffer, size_t* used) {
+    if (!buffer || size < sizeof(kSilentWave)) return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+    std::memcpy(buffer, kSilentWave, sizeof(kSilentWave));
+    if (used) *used = sizeof(kSilentWave);
+    return S_OK;
 }
 
 // The slots with no offline counterpart whose arguments the layout doesn't give: the caption properties (3) and
