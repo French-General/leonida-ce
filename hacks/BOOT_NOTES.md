@@ -185,3 +185,9 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   +0x1847d8, +0x1837a2). Both run through the +0x18xxxx code next to the title's free (+0x187b0), so they likely
   share a cause. hacks: dfree.gdb dumps the freeing container (+0x455aeb0: count +0x32, entries of 0x20 at +0x38,
   pointer at +0x18) to test for a double entry, when the run takes form (a).
+- The bad-freed block sits at a fixed offset: 0x72e67db40590 in one run, 0x7b582db40590 in another (same low
+  28 bits, ...db40590), so it lives at a fixed place inside one large reservation, not at a random heap address.
+  The -1 read form (+0x13360a3) is a virtual call through the object at rsi (call *0xb0(vtable)) whose vtable is
+  not a canonical address: a freed or overwritten object, consistent with the double free. hacks: uaf.gdb.
+  Next: which reservation holds ...db40590 (the title's XMemVirtualAlloc regions and pools vs the runtime's
+  VirtualAllocs, e.g. console texture memory), from /proc/<pid>/maps against the trace.
