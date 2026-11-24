@@ -1040,6 +1040,37 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
         if (rip == 0x140aa0c2bull && !g_watch_arena.load()) {
             g_watch_owner = GetCurrentThreadId();
             g_watch_arena = static_cast<std::uintptr_t>(info->ContextRecord->Rcx);
+            CONTEXT ctx = *info->ContextRecord;
+            char line[2048];
+            int len = std::snprintf(line, sizeof(line), "[owner] arena %llx; frames (rip@rsp):",
+                                    static_cast<unsigned long long>(ctx.Rcx));
+            const std::uint64_t arena = ctx.Rcx;
+            for (int depth = 0; depth < 40 && ctx.Rip && len < static_cast<int>(sizeof(line)) - 64; ++depth) {
+                const std::uint64_t frip = ctx.Rip;
+                const std::uint64_t frsp = ctx.Rsp;
+                const bool game = frip >= 0x140000000ull && frip < 0x147000000ull;
+                len += std::snprintf(line + len, sizeof(line) - len, game ? " G+%llx@%llx" : " %llx@%llx",
+                                     static_cast<unsigned long long>(game ? frip - 0x140000000ull : frip),
+                                     static_cast<unsigned long long>(frsp));
+                DWORD64 image_base = 0;
+                PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(frip, &image_base, nullptr);
+                if (!fn) {
+                    if (!xs_readable(reinterpret_cast<void*>(ctx.Rsp), 8)) break;
+                    ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
+                    ctx.Rsp += 8;
+                } else {
+                    void* handler_data = nullptr;
+                    DWORD64 establisher = 0;
+                    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, frip, fn, &ctx, &handler_data, &establisher,
+                                     nullptr);
+                }
+                // the arena lies in the frame [frsp, ctx.Rsp) of the function at frip
+                if (arena >= frsp && arena < ctx.Rsp)
+                    len += std::snprintf(line + len, sizeof(line) - len, " <ARENA IN THIS FRAME>");
+                if (ctx.Rip == frip) break;
+            }
+            std::fprintf(stderr, "%s\n", line);
+            std::fflush(stderr);
         }
         static std::atomic<int> arena_logged{0};
         static const bool trap_arena = GetEnvironmentVariableA("LEONIDA_CE_TRAP_ARENA", nullptr, 0) != 0;
@@ -1084,6 +1115,7 @@ void xs_dump_one_thread(DWORD tid, const char* why) {
     char line[1024];
     int len = std::snprintf(line, sizeof(line), "[watch] %s: tid %lx stack", why, tid);
     if (GetThreadContext(th, &ctx)) {
+        len += std::snprintf(line + len, sizeof(line) - len, " (rsp %llx)", static_cast<unsigned long long>(ctx.Rsp));
         for (int depth = 0; depth < 24 && ctx.Rip && len < static_cast<int>(sizeof(line)) - 40; ++depth) {
             const std::uint64_t rip = ctx.Rip;
             const bool game = rip >= 0x140000000ull && rip < 0x147000000ull;
@@ -4149,6 +4181,14 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
                              static_cast<unsigned long long>(c->R10), target, static_cast<unsigned long long>(c->R12),
                              static_cast<unsigned long long>(c->Rbx), static_cast<unsigned long long>(c->Rdi));
             }
+            {
+                // a virtual call site: rax is the vtable, print the slot [rax+0x70] it is about to call
+                const auto* vt = reinterpret_cast<const std::uint64_t*>(c->Rax);
+                const bool vok = xs_readable(vt ? vt + 14 : nullptr, 8);
+                std::fprintf(stderr, "[probe] G+%llx rax=%llx [rax+70]=%llx\n",
+                             static_cast<unsigned long long>(at - 0x140000000ull), static_cast<unsigned long long>(c->Rax),
+                             vok ? static_cast<unsigned long long>(vt[14]) : 0ull);
+            }
             const auto* item = reinterpret_cast<const std::uint32_t*>(c->R14);
             const bool ok = xs_readable(item ? item + 14 : nullptr, 8);
             std::fprintf(stderr,
@@ -4234,10 +4274,83 @@ void xs_patch_lut_fill() {
     }
 }
 
+// HACK (Leonida CE boot): the 120-140 s stop. The recursive walk +0x183aaf/+0x18435f allocates its 0xa0/0xe0-byte
+// nodes with allocator slot +0x70 (+0x538d040: "allocate in the pool that owns this hint pointer"), passing an older
+// node as the hint. Those older nodes were built inside a job whose scratch arena lives in the job's stack frame
+// (+0x45e1170 builds it with +0xcf86d0, destroys it with +0x2101350) and is gone by the time the walk runs, so the
+// pool lookup reads freed memory (+0x538d0e6, +0x538d68e, +0x515acf5). Call slot +0x50 (plain allocate: rcx = pool,
+// rdx = size) at both sites instead: the nodes land in the default pool, no hint is looked up.
+// Opt-in with LEONIDA_CE_NO_HINT=1: it moves the crash but does not stop it (try141).
+void xs_patch_walk_alloc_hint() {
+    char v[8] = {};
+    if (!GetEnvironmentVariableA("LEONIDA_CE_NO_HINT", v, sizeof(v)) || v[0] != '1') return;
+    struct Site {
+        std::uintptr_t size_at;  // mov $size, %r8d (6 bytes) -> mov $size, %edx; nop
+        std::uintptr_t hint_at;  // mov %reg, %rdx (3 bytes) -> nop
+        std::uintptr_t call_at;  // callq *0x70(%rax) -> callq *0x50(%rax)
+        std::uint8_t size;
+        std::uint8_t hint_modrm;
+    };
+    static const Site sites[] = {{0x140182b05ull, 0x140182b0bull, 0x140182b18ull, 0xa0, 0xfa},
+                                 {0x140182bc6ull, 0x140182bccull, 0x140182bd9ull, 0xe0, 0xf2}};
+    for (const Site& site : sites) {
+        auto* sz = reinterpret_cast<std::uint8_t*>(site.size_at);
+        auto* hn = reinterpret_cast<std::uint8_t*>(site.hint_at);
+        auto* cl = reinterpret_cast<std::uint8_t*>(site.call_at);
+        const std::uint8_t want_sz[6] = {0x41, 0xb8, site.size, 0x00, 0x00, 0x00};
+        const std::uint8_t want_hn[3] = {0x48, 0x89, site.hint_modrm};
+        const std::uint8_t want_cl[3] = {0xff, 0x50, 0x70};
+        if (!xs_readable(sz, 6) || !xs_readable(cl, 3) || std::memcmp(sz, want_sz, 6) != 0 ||
+            std::memcmp(hn, want_hn, 3) != 0 || std::memcmp(cl, want_cl, 3) != 0) {
+            std::fprintf(stderr, "[hack] walk alloc patch: bytes differ at game+%llx, not applied\n",
+                         static_cast<unsigned long long>(site.size_at - 0x140000000ull));
+            continue;
+        }
+        DWORD old_protect = 0;
+        if (!VirtualProtect(sz, site.call_at + 3 - site.size_at, PAGE_EXECUTE_READWRITE, &old_protect)) continue;
+        const std::uint8_t new_sz[6] = {0xba, site.size, 0x00, 0x00, 0x00, 0x90};  // mov $size, %edx; nop
+        const std::uint8_t nop3[3] = {0x0f, 0x1f, 0x00};
+        std::memcpy(sz, new_sz, 6);
+        std::memcpy(hn, nop3, 3);
+        cl[2] = 0x50;
+        VirtualProtect(sz, site.call_at + 3 - site.size_at, old_protect, &old_protect);
+        FlushInstructionCache(GetCurrentProcess(), sz, site.call_at + 3 - site.size_at);
+        std::fprintf(stderr, "[hack] walk alloc patch applied at game+%llx (size 0x%x, no hint)\n",
+                     static_cast<unsigned long long>(site.size_at - 0x140000000ull), site.size);
+    }
+}
+
+// HACK (Leonida CE boot): the job context +0xcf86d0 / ~+0x2101350 keeps a scratch arena at +0x120 whose chunks are
+// freed by +0x15a0630 when the context is destroyed, but nodes the walk +0x183aaf keeps using were built in those
+// chunks, and the walk later writes floats into memory the pool has already reused (the 120-140 s stop). Skip that
+// release in the destructor (call at +0x21013dd): the chunks leak, the nodes stay valid.
+// Opt-in with LEONIDA_CE_LEAK_SCRATCH=1: it does not stop the crash either (try142).
+void xs_patch_scratch_release() {
+    char v[8] = {};
+    if (!GetEnvironmentVariableA("LEONIDA_CE_LEAK_SCRATCH", v, sizeof(v)) || v[0] != '1') return;
+    auto* at = reinterpret_cast<std::uint8_t*>(0x1421013ddull);
+    const std::int32_t rel = static_cast<std::int32_t>(0x1415a0630ll - 0x1421013e2ll);
+    std::uint8_t want[5] = {0xe8, 0, 0, 0, 0};
+    std::memcpy(want + 1, &rel, 4);
+    if (!xs_readable(at, 5) || std::memcmp(at, want, 5) != 0) {
+        std::fprintf(stderr, "[hack] scratch release patch: bytes differ, not applied\n");
+        return;
+    }
+    DWORD old_protect = 0;
+    if (!VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old_protect)) return;
+    static const std::uint8_t nop5[5] = {0x0f, 0x1f, 0x44, 0x00, 0x00};
+    std::memcpy(at, nop5, 5);
+    VirtualProtect(at, 5, old_protect, &old_protect);
+    FlushInstructionCache(GetCurrentProcess(), at, 5);
+    std::fprintf(stderr, "[hack] scratch release patch applied (game+0x21013dd)\n");
+}
+
 void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
                        std::uint64_t ring_size) {
     xs_patch_audio_lock_leak();
     xs_patch_lut_fill();
+    xs_patch_walk_alloc_hint();
+    xs_patch_scratch_release();
     xs_install_probes();
     g_arena_mapped = mapped;
     g_arena_size = arena_size;

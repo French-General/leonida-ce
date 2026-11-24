@@ -314,3 +314,18 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Working hypothesis: the arena lives in a stack frame that has already returned (use after return), so any deeper
   call overwrites it; timing decides what gets called there. Next: find the function that builds that arena on its
   stack and whether it returns before the cleanup walk +0x182bdc uses it.
+- try139 (owner unwind at the first arena write): the arena object is the scratch arena at +0x120 of a job context
+  that +0x45e1170 builds on its stack ([rsp+0x28], constructor +0xcf86d0, destructor +0x2101350, which frees the
+  arena's chunks with +0x15a0630). Later the same thread's stack is above that frame and the arena is reset.
+- The walk's node allocations (+0x182b18 size 0xa0, +0x182bd9 size 0xe0) use allocator slot +0x70 = +0x538d040,
+  "allocate in the pool that owns this hint pointer" (slots: +0x50 = +0x538d930 plain allocate(pool, size),
+  +0x60 free, +0x70 allocate-near). The hint is an older node; the pool lookup of a stale hint is +0x538d0e6.
+- LEONIDA_CE_NO_HINT=1 (call slot +0x50 at both sites): crash moves to a plain allocation finding 1.0f in the free
+  list (+0x515b22d, try141). LEONIDA_CE_LEAK_SCRATCH=1 (skip the destructor's chunk release): crash at 122 s,
+  +0x538d738 writing through a free-list link that holds 0x146639ac0 (try142).
+- 0x146639ac0 is the base vtable that +0x5390160 stores; the walk's destructors (+0x18226b, +0x182480, +0x1841d8
+  ...) free the object's arrays, store that base vtable, then free the object. A base vtable in a freed block's
+  link = an object destroyed after (or twice after) its block was freed: a double delete in the walk.
+- Two cores (taskset -c 0-1, LEONIDA_CE_CPUS=2, try143): still crashes, later (159 s, +0x515acf5). Not conclusive.
+- Next: watch the walk's object destruction for the same object destroyed twice (probe +0x5390160 with rcx, log
+  repeats per thread), and who holds the second reference.
