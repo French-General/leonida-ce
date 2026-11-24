@@ -4082,7 +4082,37 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
     for (int i = 0; i < g_code_probe_count; ++i) {
         XsCodeProbe& pr = g_code_probes[i];
         if (pr.at != at) continue;
-        if (pr.hits++ < 60) {
+        static std::uint64_t range_lo = 0, range_hi = ~0ull;
+        static const bool range_read = [] {
+            char v[64] = {};
+            if (GetEnvironmentVariableA("LEONIDA_CE_PROBE_RANGE", v, sizeof(v))) {
+                char* end = nullptr;
+                range_lo = std::strtoull(v, &end, 16);
+                if (end && *end == '-') range_hi = std::strtoull(end + 1, nullptr, 16);
+            }
+            return true;
+        }();
+        (void)range_read;
+        const bool in_range = c->R8 >= range_lo && c->R8 < range_hi;
+        if (in_range && pr.hits++ < 60) {
+            {
+                char chain[256];
+                int n = 0;
+                const auto* sp = reinterpret_cast<const std::uint64_t*>(c->Rsp);
+                int found = 0;
+                for (int i = 0; i < 256 && found < 8 && n < static_cast<int>(sizeof(chain)) - 24; ++i) {
+                    if (!xs_readable(sp + i, 8)) break;
+                    const std::uint64_t v = sp[i];
+                    if (v >= 0x140001000ull && v < 0x146000000ull) {
+                        n += std::snprintf(chain + n, sizeof(chain) - n, " G+%llx",
+                                           static_cast<unsigned long long>(v - 0x140000000ull));
+                        ++found;
+                    }
+                }
+                chain[n] = 0;
+                std::fprintf(stderr, "[probe] G+%llx callers%s\n", static_cast<unsigned long long>(at - 0x140000000ull),
+                             chain);
+            }
             const auto* hdr = reinterpret_cast<const std::uint64_t*>(c->R15 ? c->R15 - 0x20 : 0);
             if (xs_readable(hdr, 0x40))
                 std::fprintf(stderr, "[probe] G+%llx r15=%llx rsi=%llx  [r15-20..+18]= %llx %llx %llx %llx | %llx %llx %llx %llx\n",

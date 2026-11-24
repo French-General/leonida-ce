@@ -289,3 +289,21 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   4 KiB (LEONIDA_CE_PAD=4096) did not help. So the table's 4 KiB lands right after a 0xa0-byte node, in memory
   the arena also gave to other objects. Next: what size the title requests for that block (probe the arena
   allocator entry +0xaa0bf0: rdx = size, for the allocation that returns the node), against 0xa0 + 0x1000.
+- Probing the arena's end-marker write (+0xaa0c2b) for allocations in pages 0x14f338000-0x14f342000
+  (LEONIDA_CE_PROBE_RANGE): rdx there is 0 or 8 (an alignment, not the size), and the first 60 hits were small
+  allocations (headers, list nodes) from several call chains (+0xcf91cf, +0x538d2b0, +0x109da9d, +0x11d0b4c ...),
+  not yet the block that later receives the 256-entry table. To do: probe the arena allocator entry for the size
+  argument with a range filter on the returned block, or log the allocation that returns the table's node.
+
+## Summary of the 120-140 s stop (for whoever picks this up)
+- What happens: on one worker thread (title index ~384), the recursive walk +0x183aaf/+0x18435f builds nodes from
+  a bump arena; the fill function +0x550e2d0 maps a 256x1 R32G32B32A32 lookup texture and writes its 4 KiB
+  (+0x550e60f -> memcpy) right after a 0xa0-byte node; that overruns into the following nodes, the arena object
+  and heap headers. Every crash form (bad free +0x187fb.., virtual call through floats +0x13360a3, null in the
+  block lookup +0x515acf5, +0x538d0e6) follows from it. Slowing the title (gdb, page traps) avoids it, and runs
+  then go on to load world data (ttdb terrain/map tiles).
+- Ruled out (each tested): audio lock (fixed, 62ad4fd), XMem hooks, physical-page aliasing, page-mapping batches
+  (implemented), address range (below 2^40 now), CPU count (LEONIDA_CE_CPUS), DirectStorage ordering (async now),
+  frame pacing (30 fps now), runtime writes into title memory, texture footprint/layout sizes (LEONIDA_CE_PAD).
+- Tools: LEONIDA_CE_STACKS, LEONIDA_CE_TRAP_PAGE/_DELAY/_ARENA (page write trap + arena watcher),
+  LEONIDA_CE_PROBE (+_RANGE) in-process code probes; hacks/*.gdb.
