@@ -30,6 +30,7 @@
 // for a trace that disagrees. The frame-event calls answer from a per-device token counter: there is no vblank source
 // behind the device before a presenter exists, so WaitFrameEventX returns at once with a fresh non-zero token.
 #include "d3d12_xs_device.h"
+#include "xmem.h"
 #include "shims.h"
 #include "d3d12_trace.h"
 #include "page_alias.h"
@@ -534,7 +535,64 @@ std::uint64_t xs_gpu_handle_from_console(std::uint64_t v) {
 
 // HACK: write presented frames to Z:\root\frames\frame_<n>.ppm (no window yet). Plane 0's texture is copied to a
 // readback buffer on the presenting queue and waited for; 8-bit RGBA/BGRA formats only.
-void xs_capture_frame(ID3D12CommandQueue* queue, ID3D12Resource* texture, std::uint64_t frame) {
+// HACK (Leonida CE): the title renders on the passed-through GPU while the desktop runs on another adapter (a VM),
+// so its swapchain never reaches the screen and the window stays white. LEONIDA_CE_PREVIEW=N reads the presented
+// image back every N presents and paints it into the title's window with GDI (StretchDIBits), so it can be seen.
+HWND xs_preview_window() {
+    static HWND cached = nullptr;
+    if (cached && IsWindow(cached)) return cached;
+    struct Find { DWORD pid; HWND best; LONG area; } find{GetCurrentProcessId(), nullptr, 0};
+    EnumWindows([](HWND h, LPARAM l) -> BOOL {
+        auto* f = reinterpret_cast<Find*>(l);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        if (pid != f->pid || !IsWindowVisible(h)) return TRUE;
+        RECT r{};
+        GetClientRect(h, &r);
+        const LONG area = (r.right - r.left) * (r.bottom - r.top);
+        if (area > f->area) { f->area = area; f->best = h; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&find));
+    cached = find.best;
+    return cached;
+}
+
+void xs_paint_preview(const std::uint8_t* pixels, std::uint64_t width, UINT rows, UINT64 row_pitch, bool bgra) {
+    HWND wnd = xs_preview_window();
+    if (!wnd) return;
+    // GDI wants BGRA rows of width*4 bytes; scale down by 2 first (a 4K frame is 33 MB) and swap channels if needed.
+    const std::uint64_t w = width / 2, h = rows / 2;
+    static std::vector<std::uint8_t> out;
+    out.resize(static_cast<std::size_t>(w * h * 4));
+    for (std::uint64_t y = 0; y < h; ++y) {
+        const std::uint8_t* src = pixels + (y * 2) * row_pitch;
+        std::uint8_t* dst = out.data() + y * w * 4;
+        for (std::uint64_t x = 0; x < w; ++x) {
+            const std::uint8_t* px = src + x * 8;
+            dst[x * 4 + 0] = px[bgra ? 0 : 2];
+            dst[x * 4 + 1] = px[1];
+            dst[x * 4 + 2] = px[bgra ? 2 : 0];
+            dst[x * 4 + 3] = 255;
+        }
+    }
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = static_cast<LONG>(w);
+    bi.bmiHeader.biHeight = -static_cast<LONG>(h);  // top-down
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    RECT r{};
+    GetClientRect(wnd, &r);
+    if (HDC dc = GetDC(wnd)) {
+        SetStretchBltMode(dc, HALFTONE);
+        StretchDIBits(dc, 0, 0, r.right - r.left, r.bottom - r.top, 0, 0, static_cast<int>(w), static_cast<int>(h),
+                      out.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        ReleaseDC(wnd, dc);
+    }
+}
+
+void xs_capture_frame(ID3D12CommandQueue* queue, ID3D12Resource* texture, std::uint64_t frame, bool preview_only = false) {
     if (!queue || !texture) return;
     const D3D12_RESOURCE_DESC rd = texture->GetDesc();
     const bool bgra = rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM || rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
@@ -593,7 +651,13 @@ void xs_capture_frame(ID3D12CommandQueue* queue, ID3D12Resource* texture, std::u
         queue->Signal(fence, 1);
         for (int i = 0; i < 5000 && fence->GetCompletedValue() < 1; ++i) Sleep(1);
         void* mapped = nullptr;
-        if (fence->GetCompletedValue() >= 1 && SUCCEEDED(rb->Map(0, nullptr, &mapped)) && mapped) {
+        if (preview_only && fence->GetCompletedValue() >= 1 && SUCCEEDED(rb->Map(0, nullptr, &mapped)) && mapped) {
+            xs_paint_preview(static_cast<const std::uint8_t*>(mapped) + fp.Offset, rd.Width, rows, fp.Footprint.RowPitch,
+                             bgra);
+            rb->Unmap(0, nullptr);
+            mapped = nullptr;
+        } else if (!preview_only && fence->GetCompletedValue() >= 1 && SUCCEEDED(rb->Map(0, nullptr, &mapped)) &&
+                   mapped) {
             CreateDirectoryW(ce_data_path(L"frames").c_str(), nullptr);
             wchar_t name[96];
             swprintf_s(name, L"%s\\frame_%06llu.ppm", ce_data_path(L"frames").c_str(), (unsigned long long)frame);
@@ -754,6 +818,7 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
         return;
     }
     const std::size_t src_bytes = static_cast<std::size_t>(lay.size);
+    rt::xmem::commit_physical_range(reinterpret_cast<const void*>(va), src_bytes);  // XMem views commit on touch
     if (!src_bytes || !xs_readable(reinterpret_cast<const void*>(va), src_bytes)) return;
     const auto* src = reinterpret_cast<const std::uint8_t*>(va);
 
@@ -913,6 +978,25 @@ void xs_tls_sweep(std::uint64_t frame) {
             if (const std::uint64_t h = list_slot_hits(slot))
                 n += std::snprintf(hits + n, sizeof(hits) - n, " %u:%llu", slot, static_cast<unsigned long long>(h));
         std::fprintf(stderr, "%s\n", hits);
+    }
+    {   // SMOKE: what is at CPU address 0xb8df10 (the UI vertex view's VA) in this process?
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<const void*>(0xb8df10ull), &mbi, sizeof(mbi))) {
+            std::fprintf(stderr, "[smoke] cpu 0xb8df10: base %p alloc base %p region %llx state %lx protect %lx type %lx",
+                         mbi.BaseAddress, mbi.AllocationBase, static_cast<unsigned long long>(mbi.RegionSize), mbi.State,
+                         mbi.Protect, mbi.Type);
+            if (mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+                const auto* v = reinterpret_cast<const float*>(0xb8df10ull);
+                std::fprintf(stderr, " | %g %g %g %g %g %g", v[0], v[1], v[2], v[3], v[4], v[5]);
+            }
+            std::fprintf(stderr, "\n");
+        }
+    }
+    if (g_arena_mapped && g_arena_size > 0xb8df10 + 72) {  // SMOKE: is the UI vertex data in the arena at its VA?
+        const auto* v = reinterpret_cast<const float*>(g_arena_mapped + 0xb8df10);
+        const auto* c = reinterpret_cast<const std::uint32_t*>(g_arena_mapped + 0xb8df10);
+        std::fprintf(stderr, "[smoke] arena+0xb8df10: %g %g %g %g %g %g | %08x %08x %08x\n", v[0], v[1], v[2], v[3], v[4],
+                     v[5], c[0], c[3], c[6]);
     }
     std::fprintf(stderr, "[tls] frame %llu sweep: %zu threads with a block, %d changed, %d shared\n",
                  static_cast<unsigned long long>(frame), now.size(), changed, shared);
@@ -1288,6 +1372,7 @@ void xs_refresh_placed_textures(ID3D12Device* dev) {
     }
     for (const auto& t : textures) {
         const std::uint64_t len = t.size;
+        if (len) rt::xmem::commit_physical_range(reinterpret_cast<const void*>(t.va), len);  // XMem views commit on touch
         if (!len || !xs_readable(reinterpret_cast<const void*>(t.va), static_cast<UINT_PTR>(len))) continue;
         std::uint64_t h = 1469598103934665603ull, nonzero = 0;
         for (std::uint64_t o = 0; o + 8 <= len; o += 4096) {
@@ -1305,6 +1390,105 @@ void xs_refresh_placed_textures(ID3D12Device* dev) {
         }
         if (changed && nonzero) xs_upload_placed_texture(dev, t.desc, t.resource, t.va, true);
     }
+}
+
+
+// HACK (Leonida CE): placed BUFFERS in title memory were never refreshed (only placed textures are, every 30
+// presents), so data the title writes there on the CPU each frame -- its UI vertices -- never reached the GPU copy:
+// the UI draw read zeros, collapsed to a point, and every frame stayed black. Before each submission, copy every
+// placed buffer up to 8 MiB whose title bytes changed (full hash) into its GPU resource. LEONIDA_CE_NO_BUFFER_SYNC=1
+// turns it off.
+void xs_refresh_placed_buffers(ID3D12CommandQueue* queue) {
+    static const bool off = [] {
+        char v[8] = {};
+        return GetEnvironmentVariableA("LEONIDA_CE_NO_BUFFER_SYNC", v, sizeof(v)) && v[0] == '1';
+    }();
+    if (off || !queue) return;
+    std::vector<XsPlaced> buffers;
+    {
+        std::lock_guard lock(g_placed_mu);
+        for (const auto& p : g_placed)
+            if (p.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && p.size && p.size <= (8ull << 20))
+                buffers.push_back(p);
+    }
+    if (buffers.empty()) return;
+    std::vector<const XsPlaced*> changed;
+    std::uint64_t total = 0;
+    for (const auto& b : buffers) {
+        rt::xmem::commit_physical_range(reinterpret_cast<const void*>(b.va), b.size);
+        if (!xs_readable(reinterpret_cast<const void*>(b.va), static_cast<UINT_PTR>(b.size))) continue;
+        std::uint64_t h = 1469598103934665603ull;
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(b.va);
+        std::uint64_t o = 0;
+        for (; o + 8 <= b.size; o += 8) {
+            std::uint64_t w;
+            std::memcpy(&w, bytes + o, 8);
+            h = (h ^ w) * 1099511628211ull;
+        }
+        for (; o < b.size; ++o) h = (h ^ bytes[o]) * 1099511628211ull;
+        std::lock_guard lock(g_placed_hash_mu);
+        auto& old = g_placed_hash[b.resource];
+        if (old != h) {
+            old = h;
+            changed.push_back(&b);
+            total += b.size;
+        }
+    }
+    if (changed.empty()) return;
+    ID3D12Device* dev = nullptr;
+    if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&dev))) || !dev) return;
+    if (ID3D12Device* real = device_proxy_real_device(dev)) {
+        real->AddRef();
+        dev->Release();
+        dev = real;
+    }
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* staging = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    const D3D12_COMMAND_LIST_TYPE type = queue->GetDesc().Type;
+    bool ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                     nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&staging))) &&
+              SUCCEEDED(dev->CreateCommandAllocator(type, __uuidof(ID3D12CommandAllocator), reinterpret_cast<void**>(&alloc))) &&
+              SUCCEEDED(dev->CreateCommandList(0, type, alloc, nullptr, __uuidof(ID3D12GraphicsCommandList),
+                                               reinterpret_cast<void**>(&list))) &&
+              SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&fence)));
+    void* mapped = nullptr;
+    if (ok && SUCCEEDED(staging->Map(0, nullptr, &mapped)) && mapped) {
+        std::uint64_t at = 0;
+        for (const XsPlaced* b : changed) {
+            std::memcpy(static_cast<std::uint8_t*>(mapped) + at, reinterpret_cast<const void*>(b->va), b->size);
+            list->CopyBufferRegion(b->resource, 0, staging, at, b->size);
+            at += b->size;
+        }
+        staging->Unmap(0, nullptr);
+        list->Close();
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        queue->Signal(fence, 1);
+        for (int i = 0; i < 2000 && fence->GetCompletedValue() < 1; ++i) Sleep(0);
+        static std::atomic<int> told{0};
+        if (told++ < 5) {
+            std::fprintf(stderr, "[hack] synced %zu placed buffer(s), %llu bytes, from title memory\n", changed.size(),
+                         static_cast<unsigned long long>(total));
+            std::fflush(stderr);
+        }
+    }
+    if (fence) fence->Release();
+    if (list) list->Release();
+    if (alloc) alloc->Release();
+    if (staging) staging->Release();
+    dev->Release();
 }
 
 std::atomic<std::uint64_t> g_hits[kMaxSlots];
@@ -2719,6 +2903,14 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                 if ((pow2 || f % 2000 == 0) && count && res && res[0])
                     xs_capture_frame(static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real)),
                                      static_cast<ID3D12Resource*>(res[0]), f);
+                static const unsigned preview_every = [] {
+                    char v[16] = {};
+                    return GetEnvironmentVariableA("LEONIDA_CE_PREVIEW", v, sizeof(v))
+                               ? static_cast<unsigned>(std::strtoul(v, nullptr, 10)) : 0u;
+                }();
+                if (preview_every && f % preview_every == 0 && count && res && res[0])
+                    xs_capture_frame(static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real)),
+                                     static_cast<ID3D12Resource*>(res[0]), f, true);
             }
             return hr_to_u64(S_OK);
         }
@@ -2740,6 +2932,7 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
             auto* const* real_lists = console_lists.data()
                 ? reinterpret_cast<ID3D12CommandList* const*>(console_lists.data()) : lists;
             if (!g_upload_queue.load() && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) g_upload_queue = q;
+            if (n && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) xs_refresh_placed_buffers(q);
             if (n && real_lists) q->ExecuteCommandLists(n, real_lists);
             if (n && lists) xs_schedule_list_writes(q, n, reinterpret_cast<const std::uint64_t*>(lists));
             return 0;

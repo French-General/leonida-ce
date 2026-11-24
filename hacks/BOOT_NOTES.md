@@ -416,3 +416,16 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   both right.)
 - Compute pipelines that cannot be built (slot 67) now also get a stand-in pipeline, like slot 57.
 - On an unhandled crash the runtime prints "[error] I have fallen, and I can't get up! exception ... at ..." first.
+- Black frames, fast checks (LEONIDA_CE_SMOKE=1 paints a magenta corner after every draw and logs draw shapes):
+  present/capture work and the title's per-frame draw lands on the presented target (magenta shows). The draw is the
+  UI renderer (sga_dr_vs_pos_color_tex + default_ps_tex): 3 vertices, topology 17 (the console RECTLIST; we draw it
+  as one triangle, VIctory expands it: primitive.rs; a C++ port is drafted), full-screen viewport.
+- Its vertex view (VA 0xb8df10.., 4080 bytes, stride 24) lies in a 174 MB placed upload ring at 0xb10000 whose GPU
+  copy is a stand-in nothing refreshed: the draw read zeros. 0xb8df10 is a reserved XMem view (MEM_MAPPED, commits on
+  touch). The replay now reads each vertex view from title memory (guarded copy) and writes it with vkCmdUpdateBuffer
+  before the draw (LEONIDA_CE_NO_VERTEX_SYNC=1 off). The data is one vertex (colour 0xffffffff, rest zero): the
+  shader builds the rect itself, so the black now comes from what default_ps_tex samples.
+- Placed buffers up to 8 MiB are synced from title memory before each submission when they change; texture and buffer
+  refreshes commit XMem views first. The UI-sized textures (2048x2048 fmt 87, 1280x720 fmt 42) still read 0% non-zero.
+- The game window ("Americas") shows on the Windows VM desktop; black is the real output (white was before the first
+  present).

@@ -51,6 +51,9 @@
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <cstdlib>
+#include <cstring>
+#include <atomic>
 #include <vector>
 
 namespace leonida {
@@ -948,6 +951,40 @@ struct ReplayFunctions {
 };
 
 namespace detail {
+// Copies [va, va + n) from title memory; false if it faults. A read in user mode lets the XMem page handler commit
+// a mapped view of physical pages on first touch (the kernel would not), so a merely reserved view reads fine.
+inline bool copy_title_bytes(std::uint64_t va, void* dst, std::size_t n) {
+#ifdef _WIN32
+    __try {
+        std::memcpy(dst, reinterpret_cast<const void*>(va), n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#else
+    (void)va; (void)dst; (void)n;
+    return false;
+#endif
+}
+
+// Whether [va, va + size) is committed, readable memory of this process (title memory is CPU-addressed by its VA).
+inline bool title_readable(std::uint64_t va, std::uint64_t size) {
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION mbi{};
+    std::uint64_t at = va;
+    while (at < va + size) {
+        if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            return false;
+        at = reinterpret_cast<std::uint64_t>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+    return true;
+#else
+    (void)va; (void)size;
+    return false;
+#endif
+}
+
 
 struct QueryResolveRun {
     VkQueryPool pool = VK_NULL_HANDLE;    // null: zero fill for queries that were never ended
@@ -1052,6 +1089,8 @@ struct PreparedDraw {
     Attachment depth;
     std::vector<VkBuffer> vertex_buffers;
     std::vector<VkDeviceSize> vertex_offsets, vertex_sizes, vertex_strides;
+    // Title-memory vertex bytes to write into vertex_buffers[slot] before the draw (Leonida CE, see prepare).
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> vertex_uploads;
     VkBuffer index_buffer = VK_NULL_HANDLE;
     VkDeviceSize index_offset = 0;
     VkIndexType index_type = VK_INDEX_TYPE_UINT16;
@@ -1068,6 +1107,7 @@ struct PreparedDraw {
         vertex_offsets.clear();
         vertex_sizes.clear();
         vertex_strides.clear();
+        vertex_uploads.clear();
         index_buffer = VK_NULL_HANDLE;
         index_offset = 0;
         index_type = VK_INDEX_TYPE_UINT16;
@@ -2192,6 +2232,60 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         }
         p.vertex_sizes[slot] = size;
         p.vertex_strides[slot] = (pipeline->zero_step_slots & (1u << slot)) ? 0 : view.stride;
+        // HACK (Leonida CE): the title writes dynamic vertices (its UI, every frame) into a large placed buffer in its
+        // own memory (a 174 MB ring) whose GPU copy nothing refreshes, so draws read stale zeros and the frame stays
+        // black. Copy exactly this view's bytes from title memory into the GPU copy when it is CPU-mapped.
+        // LEONIDA_CE_NO_VERTEX_SYNC=1 turns it off.
+        {
+            static const bool off = [] {
+                const char* v = std::getenv("LEONIDA_CE_NO_VERTEX_SYNC");
+                return v && v[0] == '1';
+            }();
+            const std::uint8_t* host = nullptr;
+            const HostReadStatus hs = vk.host_at ? vk.host_at(view.va, size, host) : HostReadStatus::absent;
+            const bool readable = detail::title_readable(view.va, size);
+            {
+                static std::atomic<int> diag{0};
+                if (diag++ < 3)
+                    std::fprintf(stderr, "[smoke] vertex sync check va %llx: host_at %d host %p title readable %d\n",
+                                 static_cast<unsigned long long>(view.va), int(hs), static_cast<const void*>(host),
+                                 int(readable));
+            }
+            if (!off && size && size <= 65536 && !(size & 3) && !(p.vertex_offsets[slot] & 3) &&
+                !(hs == HostReadStatus::ok && host && readable)) {
+                // The GPU copy is not CPU-mapped (a stand-in for a placed buffer): upload this view's bytes before the
+                // draw instead (vkCmdUpdateBuffer, at most 64 KiB).
+                std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+                if (detail::copy_title_bytes(view.va, bytes.data(), bytes.size())) {
+                    static std::atomic<int> told_up{0};
+                    if (told_up++ < 3) {
+                        float f[6];
+                        std::memcpy(f, bytes.data(), sizeof(f));
+                        std::size_t nz = 0;
+                        for (auto b : bytes) nz += b != 0;
+                        std::fprintf(stderr, "[hack] vertex view va %llx: %llu bytes from title memory, uploaded before the draw "
+                                             "(%zu non-zero; first vertex %g %g %g %g %g %g)\n",
+                                     static_cast<unsigned long long>(view.va), static_cast<unsigned long long>(size), nz, f[0],
+                                     f[1], f[2], f[3], f[4], f[5]);
+                    }
+                    p.vertex_uploads.emplace_back(slot, std::move(bytes));
+                }
+            }
+            if (!off && size && hs == HostReadStatus::ok && host && readable) {
+                std::memcpy(const_cast<std::uint8_t*>(host), reinterpret_cast<const void*>(view.va), size);
+                static std::atomic<int> synced{0};
+                if (synced++ < 3)
+                    std::fprintf(stderr, "[hack] vertex view va %llx: %llu bytes copied from title memory\n",
+                                 static_cast<unsigned long long>(view.va), static_cast<unsigned long long>(size));
+            }
+        }
+        if (p.vertex_buffers[slot] == vk.zero_buffer && false) {  // SMOKE/diagnostic: a bound view that resolved to zeros
+            static std::atomic<int> told{0};
+            if (told++ < 4)
+                std::fprintf(stderr, "[smoke] vertex view va %llx size %llu stride %u resolved to the ZERO buffer (offset %llu)\n",
+                             static_cast<unsigned long long>(view.va), static_cast<unsigned long long>(view.size),
+                             static_cast<unsigned>(view.stride), static_cast<unsigned long long>(p.vertex_offsets[slot]));
+        }
     }
     if (draw.indexed) {
         if (draw.index.format == 57) p.index_type = VK_INDEX_TYPE_UINT16;
@@ -4081,6 +4175,16 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
                 depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                 depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             }
+            if (!d.vertex_uploads.empty() && vk.update_buffer && vk.pipeline_barrier) {
+                for (const auto& [slot, bytes] : d.vertex_uploads)
+                    vk.update_buffer(command_buffer, d.vertex_buffers[slot], d.vertex_offsets[slot],
+                                     static_cast<VkDeviceSize>(bytes.size()), bytes.data());
+                VkMemoryBarrier upload{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                upload.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                upload.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+                vk.pipeline_barrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1,
+                                    &upload, 0, nullptr, 0, nullptr);
+            }
             VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
             rendering.renderArea = {{0, 0}, d.area};
             rendering.layerCount = d.layers;  // array views: SV_RenderTargetArrayIndex picks the layer
@@ -4138,6 +4242,39 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
                                 draw->first_instance);
             } else {
                 vk.draw(command_buffer, draw->count, draw->instances, draw->first, draw->first_instance);
+            }
+            // SMOKE TEST (Leonida CE): LEONIDA_CE_SMOKE=1 paints a 64x64 magenta square into the top-left of colour
+            // target 0 after every draw. Magenta in the presented frame = this target reaches the screen (so black
+            // comes from the draw's inputs); none = the draw lands somewhere that is never presented.
+            static const bool smoke = [] {
+                const char* v = std::getenv("LEONIDA_CE_SMOKE");
+                return v && v[0] == '1';
+            }();
+            if (smoke) {  // the draw's shape, for the first few draws
+                static std::atomic<int> told{0};
+                if (told++ < 6)
+                    std::fprintf(stderr, "[smoke] draw count %u instances %u first %u indexed %d topology %d viewport %.0f,%.0f "
+                                         "%.0fx%.0f depth %.2f..%.2f scissor %d,%d..%d,%d\n",
+                                 draw->count, draw->instances, draw->first, int(draw->indexed), int(draw->topology),
+                                 draw->viewport.x, draw->viewport.y, draw->viewport.width, draw->viewport.height,
+                                 draw->viewport.min_depth, draw->viewport.max_depth, draw->scissor.left, draw->scissor.top,
+                                 draw->scissor.right, draw->scissor.bottom);
+                if (told <= 6) {
+                    std::fprintf(stderr, "[smoke]   vertex slots %zu:", d.vertex_buffers.size());
+                    for (std::size_t i = 0; i < d.vertex_buffers.size(); ++i)
+                        std::fprintf(stderr, " [%zu %s stride %llu]", i,
+                                     !d.vertex_buffers[i] ? "none" : d.vertex_buffers[i] == vk.zero_buffer ? "ZERO" : "buffer",
+                                     static_cast<unsigned long long>(d.vertex_strides[i]));
+                    std::fprintf(stderr, "\n");
+                }
+            }
+            if (smoke && vk.clear_attachments) {
+                VkClearAttachment magenta{VK_IMAGE_ASPECT_COLOR_BIT, 0, {}};
+                magenta.clearValue.color.float32[0] = 1.0f;
+                magenta.clearValue.color.float32[2] = 1.0f;
+                magenta.clearValue.color.float32[3] = 1.0f;
+                const VkClearRect corner{{{0, 0}, {64, 64}}, 0, 1};
+                vk.clear_attachments(command_buffer, 1, &magenta, 1, &corner);
             }
             vk.end_rendering(command_buffer);
         }
