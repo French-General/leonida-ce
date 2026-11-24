@@ -191,3 +191,9 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   not a canonical address: a freed or overwritten object, consistent with the double free. hacks: uaf.gdb.
   Next: which reservation holds ...db40590 (the title's XMemVirtualAlloc regions and pools vs the runtime's
   VirtualAllocs, e.g. console texture memory), from /proc/<pid>/maps against the trace.
+- Not physical-page aliasing in xmem.cpp: a code review and a full-scale Wine test (111,136 pages in the 6.5 GB
+  and 710 MB windows, offsets past 4 GiB, a 24 GiB placeholder) found pages distinct and shared mappings correct.
+- Queue slot 31 is CopyPageMappingsBatchX (VIctory slot 29 + 2) and is now implemented; its calls succeed. The
+  bad free still comes (at 131 s in that run). Open, from the same review: VIctory keeps XMemVirtualAlloc
+  reservations without an address field below 2^40 (the console keeps title memory there); CE places them near
+  0x7xxx_xxxx_xxxx. If the title packs pointers into fewer bits, that would corrupt memory. Next candidate.

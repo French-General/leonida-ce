@@ -36,6 +36,7 @@
 #include "shims.h"
 #include "startup_trace.h"
 #include "xmem.h"
+#include "page_alias.h"
 
 namespace {
 
@@ -503,6 +504,30 @@ bool unmap_page(uintptr_t address) {
     return true;
 }
 
+// With g_phys_mutex held. Maps the 64 KiB at `offset` in `section` (recorded as page `page`) at the 64 KiB-aligned
+// `address`, which unmap_page has already returned to a placeholder (or which still is part of a larger one).
+bool map_backing(uintptr_t address, uint64_t page, const std::shared_ptr<Section>& section, uint64_t offset,
+                 DWORD protect) {
+    void* const target = reinterpret_cast<void*>(address);
+    if (!isolate_placeholder(target, kPhysicalPageSize)) return false;
+    const FaultLockExclusive lock;
+    void* view = placeholder_api().map_view3(section->handle, GetCurrentProcess(), target, offset, kPhysicalPageSize,
+                                             MEM_REPLACE_PLACEHOLDER, protect, nullptr, 0);
+    constexpr DWORD kCaching = PAGE_WRITECOMBINE | PAGE_NOCACHE;
+    if (!view && (protect & kCaching) && GetLastError() == ERROR_INVALID_PARAMETER) {
+        // Wine 9's MapViewOfFile3 refuses PAGE_WRITECOMBINE and PAGE_NOCACHE (error 87); Windows takes them. The
+        // caching hint changes nothing the title can observe through the CPU, so map with the base protection.
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed))
+            std::fprintf(stderr, "[rt] xmem: the host refused a write-combined view; mapping without the caching bits\n");
+        view = placeholder_api().map_view3(section->handle, GetCurrentProcess(), target, offset, kPhysicalPageSize,
+                                           MEM_REPLACE_PLACEHOLDER, protect & ~kCaching, nullptr, 0);
+    }
+    if (!view) return false;
+    g_mapped[address] = MappedPage{page, section, offset};
+    return true;
+}
+
 // With g_phys_mutex held. Maps physical page `page` (0: unmap) at the 64 KiB-aligned `address`, replacing what was
 // mapped there. The caller has found the window.
 bool map_page(uintptr_t address, uint64_t page, DWORD protect) {
@@ -513,25 +538,7 @@ bool map_page(uintptr_t address, uint64_t page, DWORD protect) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return false;
     }
-    void* const target = reinterpret_cast<void*>(address);
-    if (!isolate_placeholder(target, kPhysicalPageSize)) return false;
-    const FaultLockExclusive lock;
-    void* view = placeholder_api().map_view3(it->second.section->handle, GetCurrentProcess(), target,
-                                             it->second.offset, kPhysicalPageSize, MEM_REPLACE_PLACEHOLDER,
-                                             protect, nullptr, 0);
-    constexpr DWORD kCaching = PAGE_WRITECOMBINE | PAGE_NOCACHE;
-    if (!view && (protect & kCaching) && GetLastError() == ERROR_INVALID_PARAMETER) {
-        // Wine 9's MapViewOfFile3 refuses PAGE_WRITECOMBINE and PAGE_NOCACHE (error 87); Windows takes them. The
-        // caching hint changes nothing the title can observe through the CPU, so map with the base protection.
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true, std::memory_order_relaxed))
-            std::fprintf(stderr, "[rt] xmem: the host refused a write-combined view; mapping without the caching bits\n");
-        view = placeholder_api().map_view3(it->second.section->handle, GetCurrentProcess(), target, it->second.offset,
-                                           kPhysicalPageSize, MEM_REPLACE_PLACEHOLDER, protect & ~kCaching, nullptr, 0);
-    }
-    if (!view) return false;
-    g_mapped[address] = MappedPage{page, it->second.section, it->second.offset};
-    return true;
+    return map_backing(address, page, it->second.section, it->second.offset, protect);
 }
 
 enum class PageCommit { not_ours, committed_before, committed_now, failed };
@@ -634,6 +641,8 @@ void note_physical_attributes(uint64_t attributes, uint64_t count, const void* c
 // memory as it is touched, zero-filled. Pages keep their contents while unmapped or mapped elsewhere, and one page can
 // be mapped at several addresses. ASSUMPTION: the attribute word (memory type, perhaps the page size) is not decoded;
 // every page is 64 KiB, which all four callers' arithmetic agrees with.
+void register_map_alias();
+
 BOOL WINAPI XMemAllocatePhysicalPages(uint64_t attributes, uint64_t* page_count, uint64_t* page_array) {
     note_physical_attributes(attributes, page_count ? *page_count : 0, _ReturnAddress());
     if (!page_count || (*page_count && !page_array)) {
@@ -643,6 +652,7 @@ BOOL WINAPI XMemAllocatePhysicalPages(uint64_t attributes, uint64_t* page_count,
     const uint64_t count = *page_count;
     if (count == 0) return TRUE;
 
+    register_map_alias();
     const std::lock_guard lock(g_phys_mutex);
     if (count > g_free_slots.size() + (kPageSlotLimit - g_next_slot)) {
         *page_count = 0;
@@ -785,6 +795,52 @@ BOOL WINAPI XMemMapPhysicalPagesScatter(void* const* addresses, uint32_t page_co
     }
     return TRUE;
 }
+
+// The GPU's page-mapping copies (queue CopyPageMappingsBatchX, d3d12_xs_device.cpp), ported from Marvisak/VIctory's
+// xmem.rs map_alias (GPLv3): maps the physical pages shown at [from, from + len) at `to` as well, in place of what
+// `to` shows; `from` 0 unmaps [to, to + len). Grand Theft Auto VI maps pages into a pool window, then has the GPU map
+// them into its tiled heap this way. Page by page. The source is taken from the view mapped there (its section and
+// offset), not from its page number, so a page the title has freed (whose number may be live again for another
+// allocation) still aliases the memory that pool address shows. The destination gets its window's protection, or
+// read-write outside any recorded window (VIctory maps read-write). False if an address is not 64 KiB-aligned, a
+// source page is not mapped physical memory, or the host refuses; the pages before it stay mapped.
+bool xmem_map_alias(uint64_t to, uint64_t from, uint64_t len) {
+    if (!aligned_page_address(to) || !aligned_page_address(from) || (len & (kPhysicalPageSize - 1)) != 0 ||
+        to > (std::numeric_limits<uintptr_t>::max)() - len ||
+        (from && from > (std::numeric_limits<uintptr_t>::max)() - len)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return false;
+    }
+    if (!placeholder_api().available()) {
+        SetLastError(ERROR_NOT_SUPPORTED);
+        return false;
+    }
+    const std::lock_guard lock(g_phys_mutex);
+    for (uint64_t k = 0; k < len; k += kPhysicalPageSize) {
+        const uintptr_t at = static_cast<uintptr_t>(to + k);
+        if (from == 0) {
+            if (!unmap_page(at)) return false;
+            continue;
+        }
+        const auto source = g_mapped.find(static_cast<uintptr_t>(from + k));
+        if (source == g_mapped.end()) {
+            SetLastError(ERROR_INVALID_ADDRESS);
+            return false;
+        }
+        if (source->first == at) continue;  // already shows itself
+        const MappedPage backing = source->second;  // a copy: unmap_page below may erase the source's entry
+        const Window* const window = find_window(at, kPhysicalPageSize);
+        const DWORD protect = window ? view_protect(*window) : PAGE_READWRITE;
+        if (!unmap_page(at)) return false;
+        if (!map_backing(at, backing.page, backing.section, backing.offset, protect)) return false;
+    }
+    return true;
+}
+
+// Hands xmem_map_alias to the queue proxy through page_alias.h (no link dependency between the two files). Set at
+// static initialization and again by XMemAllocatePhysicalPages, before which there is no pool to alias.
+void register_map_alias() { rt::xmem::map_alias_hook().store(&xmem_map_alias, std::memory_order_release); }
+[[maybe_unused]] const bool g_map_alias_registered = (register_map_alias(), true);
 
 UINT WINAPI XMemGetWriteWatch(DWORD flags, void* base_address, SIZE_T region_size, void** addresses, ULONG_PTR* count,
                               ULONG* granularity) {

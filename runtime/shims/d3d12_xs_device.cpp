@@ -32,6 +32,7 @@
 #include "d3d12_xs_device.h"
 #include "shims.h"
 #include "d3d12_trace.h"
+#include "page_alias.h"
 #include "../src/shader_library.h"
 #include "../src/resource_detile.h"  // leonida::fspx_payload_from_parts for slot 67
 #include "../src/xg_texture.h"
@@ -2180,6 +2181,81 @@ LONG CALLBACK table_overrun_handler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;  // diagnostics only: the fault goes on to the title's handlers or the crash
 }
 
+// Queue slot 31 on this title (VIctory's slot 29 plus the two console slots before Signal):
+// CopyPageMappingsBatchX(count, batches, pool, poolPages, flags). Ported from Marvisak/VIctory queue.rs / xmem.rs
+// (GPLv3). Maps pages of a pool (a window the title mapped physical pages into) at the batches' addresses: Grand
+// Theft Auto VI streams textures into pool pages and maps them into its tiled heap this way (caller game+0xf2cc86,
+// pool = its 99776-page window). Done at once on the CPU, where the D3D12 layer reads guest memory, as if every
+// earlier submission had run. Each range is {kind, start, count}: 0 maps pool pages start.. at the next count pages,
+// 1 maps pool page start at each of them, 2 unmaps them, 3 leaves them. Always S_OK, as VIctory does.
+struct XsPageRange {
+    std::uint32_t kind;
+    std::uint32_t start;
+    std::uint32_t count;
+};
+struct XsPageBatch {
+    std::uint64_t destination;
+    std::uint32_t count;
+    const XsPageRange* ranges;
+};
+static_assert(sizeof(XsPageRange) == 12 && sizeof(XsPageBatch) == 24 && offsetof(XsPageBatch, ranges) == 16,
+              "CopyPageMappingsBatchX structures follow VIctory's repr(C) layout");
+
+HRESULT copy_page_mappings_x(std::uint32_t count, const XsPageBatch* batches, std::uint64_t pool,
+                             std::uint32_t pool_pages) {
+    constexpr std::uint64_t kPage = 0x10000;
+    static std::atomic<bool> first_call{false};
+    if (!first_call.exchange(true, std::memory_order_relaxed)) {
+        std::fprintf(stderr, "[rt] d3d12_xs: CopyPageMappingsBatchX first call: %u batch(es), pool %p, %u pool pages\n",
+                     count, reinterpret_cast<void*>(pool), pool_pages);
+    }
+    const auto map = rt::xmem::map_alias_hook().load(std::memory_order_acquire);
+    bool ok = map != nullptr;
+    if (map && count && batches) {
+        for (std::uint32_t b = 0; b < count; ++b) {
+            const XsPageBatch& batch = batches[b];
+            if (!batch.ranges) continue;
+            std::uint64_t at = batch.destination;
+            for (std::uint32_t r = 0; r < batch.count; ++r) {
+                const XsPageRange& range = batch.ranges[r];
+                const std::uint64_t len = std::uint64_t{range.count} * kPage;
+                const auto inside = [&](std::uint64_t pages) { return std::uint64_t{range.start} + pages <= pool_pages; };
+                const std::uint64_t source = pool + std::uint64_t{range.start} * kPage;
+                switch (range.kind) {
+                case 0:
+                    ok &= inside(range.count) && map(at, source, len);
+                    break;
+                case 1:
+                    if (!inside(1)) {
+                        ok = false;
+                        break;
+                    }
+                    for (std::uint32_t k = 0; k < range.count; ++k) ok &= map(at + k * kPage, source, kPage);
+                    break;
+                case 2:
+                    ok &= map(at, 0, len);
+                    break;
+                case 3:
+                    break;
+                default:
+                    ok = false;
+                    break;
+                }
+                at += len;
+            }
+        }
+    }
+    if (!ok) {
+        static std::atomic<bool> failure_logged{false};
+        if (!failure_logged.exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr, "[rt] d3d12_xs: CopyPageMappingsBatchX: a page mapping failed (pool %p, error %lu%s)\n",
+                         reinterpret_cast<void*>(pool), static_cast<unsigned long>(GetLastError()),
+                         map ? "" : "; xmem.cpp's map_alias hook is not linked in");
+        }
+    }
+    return S_OK;
+}
+
 template <ChildKind K, unsigned Slot>
 std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_t a2, std::uint64_t a3,
                                 std::uint64_t a4, std::uint64_t a5, std::uint64_t a6, std::uint64_t a7,
@@ -2277,6 +2353,12 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
         if constexpr (K == ChildKind::fence && Slot == 12) {
             auto* fence = static_cast<ID3D12Fence*>(static_cast<IUnknown*>(self->real));
             return reinterpret_cast<std::uint64_t>(xs_fence_value_address(self, fence));
+        }
+        if constexpr (K == ChildKind::queue && Slot == 31) {
+            d3d12_trace::record(child_trace_name<K>(Slot));
+            return hr_to_u64(copy_page_mappings_x(static_cast<std::uint32_t>(a1),
+                                                  reinterpret_cast<const XsPageBatch*>(a2), a3,
+                                                  static_cast<std::uint32_t>(a4)));
         }
         if constexpr (K == ChildKind::queue && (Slot == 16 || Slot == 17)) {
             auto* q = static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real));
