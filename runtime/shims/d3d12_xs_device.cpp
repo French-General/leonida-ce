@@ -905,6 +905,14 @@ void xs_tls_sweep(std::uint64_t frame) {
                          te.th32ThreadID, l->second, block);
     }
     CloseHandle(snap);
+    {
+        char hits[1024];
+        int n = std::snprintf(hits, sizeof(hits), "[list] frame %llu calls:", static_cast<unsigned long long>(frame));
+        for (unsigned slot = 0; slot < command_list_proxy_table_size() && n < static_cast<int>(sizeof(hits)) - 24; ++slot)
+            if (const std::uint64_t h = list_slot_hits(slot))
+                n += std::snprintf(hits + n, sizeof(hits) - n, " %u:%llu", slot, static_cast<unsigned long long>(h));
+        std::fprintf(stderr, "%s\n", hits);
+    }
     std::fprintf(stderr, "[tls] frame %llu sweep: %zu threads with a block, %d changed, %d shared\n",
                  static_cast<unsigned long long>(frame), now.size(), changed, shared);
     std::fflush(stderr);
@@ -2147,10 +2155,23 @@ struct ListProxy {
     unsigned pc_slot_count;             // slots the real list implements; mapped slots past it are refused
 
     void pin_cursor_at_limit() {
-        const std::uint64_t at_limit = static_cast<std::uint64_t>(
-            reinterpret_cast<std::uintptr_t>(this) + 0x18 + 0x500);
-        for (const size_t offset : {0x18, 0x28, 0x30})
-            std::memcpy(reinterpret_cast<std::uint8_t*>(this) + offset, &at_limit, sizeof(at_limit));
+        // The put pointer (+0x18) and the plain, draw, API and unbiased-API limits (+0x20..+0x38) all zero, so every
+        // inline "room left?" check in the title fails and each command reaches the method table as a call (after
+        // VIctory, list.rs: GPLv3, credit to its authors). The old pinning (+0x18/+0x28/+0x30 = one address, +0x20 and
+        // +0x38 left 0) let a "limit - put" check wrap around: the title wrote its draws inline into this body and
+        // never called a draw method (no draws, black frames). LEONIDA_CE_OLD_CURSOR=1 restores the old pinning.
+        static const bool old_cursor = [] {
+            char v[8] = {};
+            return GetEnvironmentVariableA("LEONIDA_CE_OLD_CURSOR", v, sizeof(v)) && v[0] == '1';
+        }();
+        if (old_cursor) {
+            const std::uint64_t at_limit = static_cast<std::uint64_t>(
+                reinterpret_cast<std::uintptr_t>(this) + 0x18 + 0x500);
+            for (const size_t offset : {0x18, 0x28, 0x30})
+                std::memcpy(reinterpret_cast<std::uint8_t*>(this) + offset, &at_limit, sizeof(at_limit));
+            return;
+        }
+        std::memset(reinterpret_cast<std::uint8_t*>(this) + 0x18, 0, 5 * sizeof(std::uint64_t));
     }
 };
 static_assert(offsetof(ListProxy, console_fields) == 0x18, "the console fields start at +0x18");

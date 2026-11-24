@@ -390,3 +390,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Wine). Frames are still black: the title still submits no draws of its own (only the runtime's 4 detile draws).
   To reproduce on another machine: run once, then `python3 hacks/psomatch.py` (it reads leonida-psowant.txt), and
   run again. The map is not committed (it holds bytes of the title's code).
+- Black frames with the full PSO map: the title calls DrawInstanced (list slot 12) about once per frame (its final
+  pass) and no other draws; [list] lines (every 300 presents with LEONIDA_CE_STACKS=1) now print per-slot call counts.
+  The thread dump at present 4000 shows it still creating graphics pipelines (workers in gta6rt from +0x247757e,
+  a definition fill waiting in +0x2477400 <- +0x1d65b83 <- +0x247c828), main thread waiting: still loading, bound by
+  pipeline creation (Wine 11000+ in 300 s, Windows ~1500). VIctory keeps pipelines on disk for this reason.
+- List put pointer and limits (+0x18..+0x38) are now all zero as in VIctory's list.rs (every inline packet check
+  fails, commands arrive as calls); the old pinning left +0x20/+0x38 at 0 with a non-zero put pointer. No visible
+  change in the slots called; LEONIDA_CE_OLD_CURSOR=1 restores it.
