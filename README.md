@@ -19,8 +19,7 @@
   <a href="#how-it-works">How it works</a> |
   <a href="#want-to-help">Want to help?</a> |
   <a href="#credits">Credits</a> |
-  <a href="#license">License</a> |
-  <a href="https://discord.gg/rexed">Discord</a>
+  <a href="#license">License</a>
 </p>
 
 > [!NOTE]
@@ -40,7 +39,7 @@ happens **on your PC, from your own copy of the game**.
 > Everything the build creates (the generated shaders, extracted assets, the runtime folder and your saves) comes
 > from your game and stays on your PC. Never share those files.
 
-Discord: https://discord.gg/rexed
+Leonida CE has no official Discord (yet).
 
 Custom Git Mirror: https://git.notrexed.dev/notrexed/Leonida
 <br>
