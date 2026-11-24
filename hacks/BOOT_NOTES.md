@@ -86,3 +86,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - Next stop at about 124 s: soft asserts in the title's free (game+0x1887b0; +0x187fb, +0x1881f, +0x1884a check
   the block header at -0x10/-0xc/-0x2), then a null read at +0x538d0e6 under a recursive teardown
   (+0x183aaf / +0x18435f). A block freed there is not from that heap, or its header was overwritten.
+- The bad free (gdb, break at game+0x1400187fb with the other soft asserts patched to nop): the block's
+  allocated bit (header word at -0x2, bit 10) is clear, so it was already freed (double free) or its header was
+  overwritten; its payload is float data (1.0f). It is freed by a container's teardown (game+0x455aeb0: count at
+  +0x32, entries at +0x38, each freed through the allocator at 0x14abcc310, vtable +0x60), under +0x515ad70.
+  Teardown at this point is an error path: something earlier failed. The first anomaly in the run is a write
+  past a stream buffer's capacity at about 98 s (soft assert +0x4dcbc9d, game+0x4dcbc55: remaining < size;
+  the write is skipped and returns false). Next: what fills that buffer, and why it is too small here.
