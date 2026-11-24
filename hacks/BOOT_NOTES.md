@@ -370,3 +370,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   (stores to +0xc68/+0xc78 at +0x247bcf8/+0x247bd8b), and why not on Windows.
 - A probe on +0x141dc5ca1 / +0x145bb7c58 also waits up to 10 s for a null slot (LEONIDA_CE_PROBE): no hits there in
   the runs so far, though the crash came through those callers; unexplained.
+- The 52 s Windows stop (+0x5392b80, null at +0x38) is in the same task as the Wine 120-140 s stop (+0x41f4xx,
+  +0x4039633, +0x4fc68ba, +0x4fc6849, +0x1186xx on both stacks): once Windows loads, it reaches the same phase and
+  dies there too, so that corruption is not Wine-specific. Wine never hits the missing-definition lookups (0 in
+  try153); Windows does on every lookup.
+- Definition tables (DeepSeek, verified): the deserializer +0x247b6e0.. bump-allocates them inside cfg from
+  cfg+0xd18; c68 (index dwords), c70 (B 24-byte entries), c78 (B record pointers, only reserved here, filled later)
+  via the stream reader +0x51d2260 (return values unchecked). Probe at +0x247bd99 (rax = &c78[0], rcx = B): B is
+  identical on Windows and Wine (0xc, 2, 8 ...). So the stream data matches; the later step that fills c78 runs
+  under Wine but not on Windows. Next: find the writer of c78 slots (a write trap on one table's c78 page).
