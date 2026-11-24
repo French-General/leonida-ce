@@ -131,6 +131,8 @@ DXGI_FORMAT xs_format(const std::string& type, unsigned mask) {
     return n == 4 ? DXGI_FORMAT_R32G32B32A32_FLOAT : n == 3 ? DXGI_FORMAT_R32G32B32_FLOAT : n == 2 ? DXGI_FORMAT_R32G32_FLOAT : DXGI_FORMAT_R32_FLOAT;
 }
 std::mutex g_pso_mu;
+std::mutex g_pso_names_mu;
+std::map<const void*, std::string> g_pso_names;
 std::map<std::string, XsPsoShader> g_pso_map;
 std::set<std::string> g_pso_wanted;
 bool g_pso_loaded = false;
@@ -503,6 +505,41 @@ void xs_capture_frame(ID3D12CommandQueue* queue, ID3D12Resource* texture, std::u
     if (alloc) alloc->Release();
     if (rb) rb->Release();
     dev->Release();
+}
+
+// HACK (Leonida CE boot): see set_console_arena.
+std::uint8_t* g_arena_mapped = nullptr;
+std::uint64_t g_arena_size = 0, g_ring_cpu = 0, g_ring_va = 0, g_ring_size = 0;
+std::atomic<std::uint64_t> g_ring_cursor{0};
+std::uint64_t xs_va_from_cpu(std::uint64_t v) {
+    if (g_ring_cpu && v >= g_ring_cpu && v < g_ring_cpu + g_ring_size) return v - g_ring_cpu + g_ring_va;
+    const auto base = reinterpret_cast<std::uint64_t>(g_arena_mapped);
+    if (g_arena_mapped && v >= base && v < base + g_arena_size) return v - base;
+    return v;
+}
+// Console upload memory: CPU pointer into the ring (wraps; the title reuses it within a few frames).
+std::uint64_t xs_upload_alloc(std::uint64_t size, std::uint64_t align) {
+    if (!g_ring_cpu || !g_ring_size || size > g_ring_size / 4) return 0;
+    for (;;) {
+        std::uint64_t cur = g_ring_cursor.load(std::memory_order_relaxed);
+        std::uint64_t at = (cur + align - 1) & ~(align - 1);
+        std::uint64_t next = at + size;
+        if (next > g_ring_size) { at = 0; next = size; }
+        if (g_ring_cursor.compare_exchange_weak(cur, next, std::memory_order_relaxed))
+            return g_ring_cpu + at;
+    }
+}
+
+// HACK (Leonida CE boot): a GPU address in the title's own memory becomes a snapshot in the arena (the title wrote
+// the data before binding it); addresses already in the arena become offsets. VIctory copies changed title memory.
+std::uint64_t xs_gpu_address(std::uint64_t address, std::uint64_t size) {
+    const std::uint64_t translated = xs_va_from_cpu(address);
+    if (translated != address || !address || !size || size > (8u << 20)) return translated;
+    if (IsBadReadPtr(reinterpret_cast<const void*>(address), static_cast<UINT_PTR>(size))) return translated;
+    const std::uint64_t copy = xs_upload_alloc(size, 256);
+    if (!copy) return translated;
+    std::memcpy(reinterpret_cast<void*>(copy), reinterpret_cast<const void*>(address), static_cast<std::size_t>(size));
+    return xs_va_from_cpu(copy);
 }
 
 std::atomic<std::uint64_t> g_hits[kMaxSlots];
@@ -1530,6 +1567,7 @@ std::uint64_t WINAPI list_slot(ListProxy* self, std::uint64_t a1, std::uint64_t 
         } else if constexpr (Slot == 148) {  // AllocateUploadMemory(size, alignment) -> pointer, until the next reset
             const std::uint64_t align = a2 < 16 ? 16 : a2;
             if ((align & (align - 1)) != 0 || a1 > (1ull << 31)) return 0;
+            if (const std::uint64_t ring = xs_upload_alloc(a1, align)) return ring;  // GPU-visible (arena)
             auto block = std::make_unique<std::uint8_t[]>(static_cast<std::size_t>(a1 + align));
             std::memset(block.get(), 0, static_cast<std::size_t>(a1 + align));
             const auto start = reinterpret_cast<std::uint64_t>(block.get());
@@ -1580,6 +1618,51 @@ std::uint64_t WINAPI list_slot(ListProxy* self, std::uint64_t a1, std::uint64_t 
             auto** const real_vtable = *reinterpret_cast<void***>(self->real);
             UnwrappedArray heaps;
             if constexpr (pc == 31 || pc == 32) a2 = xs_gpu_handle_from_console(a2);  // HACK: unified handles
+            if constexpr (pc >= 37 && pc <= 42) a2 = xs_va_from_cpu(a2);  // HACK: root CBV/SRV/UAV addresses
+            if constexpr (pc == 25) {  // HACK diagnostic: which pipelines the title draws with
+                static std::mutex seen_mu;
+                static std::set<std::uint64_t> seen;
+                std::lock_guard seen_lock(seen_mu);
+                if (seen.size() < 40 && seen.insert(a1).second) {
+                    std::string name = "?";
+                    {
+                        std::lock_guard names_lock(g_pso_names_mu);
+                        auto it = g_pso_names.find(reinterpret_cast<const void*>(a1));
+                        if (it != g_pso_names.end()) name = it->second;
+                    }
+                    std::fprintf(stderr, "[hack] list uses pipeline %llx: %s\n", (unsigned long long)a1, name.c_str());
+                    std::fflush(stderr);
+                }
+            }
+            float magenta[4] = {1.0f, 0.0f, 1.0f, 1.0f};
+            if constexpr (pc == 48) {  // HACK diagnostic: ClearRenderTargetView(rtv, color, rects, count)
+                static std::atomic<int> n{0};
+                const float* c = reinterpret_cast<const float*>(a2);
+                if (n++ < 6 && c)
+                    std::fprintf(stderr, "[hack] ClearRTV %llx color %.3f %.3f %.3f %.3f\n", (unsigned long long)a1, c[0],
+                                 c[1], c[2], c[3]);
+                if (std::getenv("LEONIDA_CE_MAGENTA")) a2 = reinterpret_cast<std::uint64_t>(magenta);
+            }
+            D3D12_INDEX_BUFFER_VIEW ibv{};
+            D3D12_VERTEX_BUFFER_VIEW vbv[32];
+            if constexpr (pc == 43) {
+                if (a1) {
+                    ibv = *reinterpret_cast<const D3D12_INDEX_BUFFER_VIEW*>(a1);
+                    ibv.BufferLocation = xs_gpu_address(ibv.BufferLocation, ibv.SizeInBytes);
+                    a1 = reinterpret_cast<std::uint64_t>(&ibv);
+                }
+            }
+            if constexpr (pc == 44) {
+                const UINT n = static_cast<UINT>(a2) > 32 ? 32 : static_cast<UINT>(a2);
+                if (a3 && n) {
+                    const auto* in = reinterpret_cast<const D3D12_VERTEX_BUFFER_VIEW*>(a3);
+                    for (UINT i = 0; i < n; ++i) {
+                        vbv[i] = in[i];
+                        vbv[i].BufferLocation = xs_gpu_address(vbv[i].BufferLocation, vbv[i].SizeInBytes);
+                    }
+                    a3 = reinterpret_cast<std::uint64_t>(vbv);
+                }
+            }
             if constexpr (pc == 49 || pc == 50) a1 = xs_gpu_handle_from_console(a1);
             if constexpr (Slot == 10) {
                 a1 = unwrap_object(a1);
@@ -2584,6 +2667,29 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
             }
             return 0;
         }
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{};
+        if constexpr (Slot == 17) {  // CBV: the console passes a CPU pointer as BufferLocation
+            if (a1) {
+                cbv = *reinterpret_cast<const D3D12_CONSTANT_BUFFER_VIEW_DESC*>(a1);
+                {   static std::atomic<int> n{0};  // HACK diagnostic
+                    if (n++ < 4) { std::fprintf(stderr, "[hack] CBV location %llx size %u (arena %p+%llx)\n", (unsigned long long)cbv.BufferLocation, cbv.SizeInBytes, (void*)g_arena_mapped, (unsigned long long)g_arena_size); std::fflush(stderr); } }
+                const std::uint64_t translated = xs_va_from_cpu(cbv.BufferLocation);
+                if (translated == cbv.BufferLocation && cbv.BufferLocation && cbv.SizeInBytes &&
+                    cbv.SizeInBytes <= (1u << 16) &&
+                    !IsBadReadPtr(reinterpret_cast<const void*>(cbv.BufferLocation), cbv.SizeInBytes)) {
+                    // HACK (Leonida CE boot): constants in the title's own memory, which the GPU cannot read here yet:
+                    // snapshot them into the arena when the view is made (VIctory copies changed title memory).
+                    if (const std::uint64_t copy = xs_upload_alloc(cbv.SizeInBytes, 256)) {
+                        std::memcpy(reinterpret_cast<void*>(copy), reinterpret_cast<const void*>(cbv.BufferLocation),
+                                    cbv.SizeInBytes);
+                        cbv.BufferLocation = xs_va_from_cpu(copy);
+                    }
+                } else {
+                    cbv.BufferLocation = translated;
+                }
+                a1 = reinterpret_cast<std::uint64_t>(&cbv);
+            }
+        }
         using ForwardFn = std::uint64_t(WINAPI*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
                                                  std::uint64_t, std::uint64_t);
         return reinterpret_cast<ForwardFn>(self->real_vtable[Slot])(self->real, a1, a2, a3, a4, a5, a6);
@@ -2716,6 +2822,10 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                 g.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
                 g.SampleDesc.Count = 1;
                 hr = self->real->CreateGraphicsPipelineState(&g, *riid, out);
+                if (SUCCEEDED(hr) && out && *out) {  // HACK diagnostic: pipeline -> shader names
+                    std::lock_guard names_lock(g_pso_names_mu);
+                    g_pso_names[*out] = vs->name + " + " + (ps ? ps->name : std::string("(no PS)"));
+                }
                 static std::atomic<int> logged{0};
                 if (logged++ < 8 || FAILED(hr)) {
                     std::fprintf(stderr, "[hack] slot 57 pipeline %s + %s -> 0x%08lx\n", vs->name.c_str(),
@@ -2982,6 +3092,17 @@ void* device_proxy_from_dxgi_device(void* dxgi_device) {
 void* device_proxy_primary(void* device) {
     if (is_device_proxy(device)) return device;
     return device_proxy_from_dxgi_device(device);
+}
+
+void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
+                       std::uint64_t ring_size) {
+    g_arena_mapped = mapped;
+    g_arena_size = arena_size;
+    g_ring_cpu = ring_cpu;
+    g_ring_va = ring_va;
+    g_ring_size = ring_size;
+    std::fprintf(stderr, "[hack] console arena %p + %llx, upload ring at VA %llx (%llu MiB)\n", (void*)mapped,
+                 (unsigned long long)arena_size, (unsigned long long)ring_va, (unsigned long long)(ring_size >> 20));
 }
 
 void set_console_descriptor_heap_factory(ConsoleDescriptorHeapFactory factory) {

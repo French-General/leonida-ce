@@ -83,6 +83,12 @@ using ConsoleDescriptorHeapFactory = HRESULT (*)(ID3D12Device* device, const D3D
                                                  D3D12_GPU_VIRTUAL_ADDRESS console_address,
                                                  std::uint64_t console_size, REFIID riid, void** out);
 void set_console_descriptor_heap_factory(ConsoleDescriptorHeapFactory factory);
+
+// HACK (Leonida CE boot): the Vulkan layer's GPU addresses are arena offsets and the CPU sees the arena at
+// `mapped`. The console uses one address for both, so a title passes CPU pointers as GPU addresses: the proxy turns
+// pointers inside the arena back into offsets, and hands out console upload memory from a ring reserved there.
+void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
+                       std::uint64_t ring_size);
 // The device proxy an IDXGIDevice pointer handed out by one belongs to, or null.
 void* device_proxy_from_dxgi_device(void* dxgi_device);
 // The device proxy itself, given the proxy or its DXGI pointer; null for anything else.

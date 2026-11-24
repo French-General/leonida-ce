@@ -5519,6 +5519,17 @@ public:
     bool bind_sampler(const leonida::gfx10::SamplerWords& words) { return state_.bind_sampler(words); }
     void own(const OwnedRuntime& owned) { owned_ = owned; }
     void set_outer(IUnknown* outer) { outer_ = outer; }
+    // HACK (Leonida CE boot): the arena's mapping, and `ring_bytes` of it reserved for console upload memory.
+    bool reserve_console_upload_ring(std::uint64_t ring_bytes, std::uint8_t*& mapped, std::uint64_t& arena_size,
+                                     std::uint64_t& ring_va) {
+        if (!state_.arena.mapped) return false;
+        VkDeviceSize va = 0;
+        if (!state_.arena_allocate(ring_bytes, 65536, va, DeviceState::arena_buffer)) return false;
+        mapped = state_.arena.mapped;
+        arena_size = state_.arena.size;
+        ring_va = va;
+        return true;
+    }
 
     UINT STDMETHODCALLTYPE GetNodeCount() override { return 1; }
 
@@ -8818,6 +8829,42 @@ void set_device_outer(ID3D12Device* device, IUnknown* outer) {
     // for IDXGIDevice1: the device's outer identity is the proxy itself either way.
     if (void* proxy = rt::d3d12_xs::device_proxy_primary(outer)) outer = static_cast<IUnknown*>(proxy);
     d->set_outer(outer);
+    std::fprintf(stderr, "[hack] set_device_outer: outer %p proxy=%d\n", (void*)outer, (int)rt::d3d12_xs::is_device_proxy(outer));
+    if (rt::d3d12_xs::is_device_proxy(outer)) {  // HACK (Leonida CE boot): console upload memory and addresses
+        std::uint8_t* mapped = nullptr;
+        std::uint64_t arena_size = 0, ring_va = 0;
+        bool reserved = false;
+        // The arena's mapping (descriptor heaps live there) without keeping a reservation.
+        if (d->reserve_console_upload_ring(65536, mapped, arena_size, ring_va)) {
+            for (std::uint64_t ring : {64ull << 20, 32ull << 20, 16ull << 20}) {
+                D3D12_HEAP_PROPERTIES hp{};
+                hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+                D3D12_RESOURCE_DESC bd{};
+                bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                bd.Width = ring;
+                bd.Height = 1;
+                bd.DepthOrArraySize = 1;
+                bd.MipLevels = 1;
+                bd.SampleDesc.Count = 1;
+                bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                ID3D12Resource* buffer = nullptr;
+                if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                           D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                           __uuidof(ID3D12Resource), reinterpret_cast<void**>(&buffer))))
+                    continue;
+                void* cpu = nullptr;
+                if (FAILED(buffer->Map(0, nullptr, &cpu)) || !cpu) {
+                    buffer->Release();
+                    continue;
+                }
+                rt::d3d12_xs::set_console_arena(mapped, arena_size, reinterpret_cast<std::uint64_t>(cpu),
+                                                buffer->GetGPUVirtualAddress(), ring);  // kept for the process
+                reserved = true;
+                break;
+            }
+        }
+        if (!reserved) std::fprintf(stderr, "[hack] no console upload ring\n");
+    }
     // Second job, for an outer that is the Xbox-ABI proxy: its IDXGIDevice1::GetAdapter (d3d12_xs_device.h) hands
     // out this layer's adapter, the one create_dxgi_factory enumerates, so a title on the Vulkan device never gets
     // a host DXGI object from it.

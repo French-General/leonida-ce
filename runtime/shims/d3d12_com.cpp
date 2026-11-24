@@ -1,3 +1,4 @@
+#include <intrin.h>
 #include "d3d12_com.h"
 
 #include "d3d12_stubs.h"  // generated
@@ -462,6 +463,7 @@ public:
     }
 
     void STDMETHODCALLTYPE DrawInstanced(UINT vertices, UINT instances, UINT first_vertex, UINT first_instance) override {
+        { static int n_ = 0; if (n_++ < 4) { std::fprintf(stderr, "[hack] list DrawInstanced(%u, %u) from %p\n", vertices, instances, _ReturnAddress()); std::fflush(stderr); } }  // HACK diagnostic
         d3d12_trace::record("ID3D12GraphicsCommandList::DrawInstanced");
         if (defer([=](GraphicsCommandList& l) { l.record_draw(false, vertices, instances, first_vertex, 0, first_instance); },
                   true))
