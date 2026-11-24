@@ -307,3 +307,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   frame pacing (30 fps now), runtime writes into title memory, texture footprint/layout sizes (LEONIDA_CE_PAD).
 - Tools: LEONIDA_CE_STACKS, LEONIDA_CE_TRAP_PAGE/_DELAY/_ARENA (page write trap + arena watcher),
   LEONIDA_CE_PROBE (+_RANGE) in-process code probes; hacks/*.gdb.
+- LEONIDA_CE_SKIP_LUT=1 (nop the two row copies +0x550e57e/+0x550e60f): the crash stays (try137, +0x538d68e at 118.9 s,
+  `and %ecx,(%rax,%r9,4)` with a trashed pointer, same walk). So the table copy is not the only corruption.
+- try138 (trap): the arena object the walk uses (rcx at +0xaa0c2b, 0x7a3a2efce5b8) lies on thread 180's own stack,
+  0xcb8 bytes BELOW the crashing rsp (0x7a3a2efcf270), and its header changes (c002010 -> 1) just before the crash.
+  Working hypothesis: the arena lives in a stack frame that has already returned (use after return), so any deeper
+  call overwrites it; timing decides what gets called there. Next: find the function that builds that arena on its
+  stack and whether it returns before the cleanup walk +0x182bdc uses it.

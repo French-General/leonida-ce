@@ -3069,6 +3069,7 @@ HRESULT proxy_create_descriptor_heap(DeviceProxy* self, const D3D12_DESCRIPTOR_H
     void* created = nullptr;
     HRESULT hr = E_INVALIDARG;
     bool console_extended = false;
+    std::uint64_t seen_address = 0, seen_size = 0, seen_expected = 0;
     if (desc && desc->Type <= D3D12_DESCRIPTOR_HEAP_TYPE_DSV &&
         (desc->Flags & ~D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) == 0) {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(desc);
@@ -3085,6 +3086,9 @@ HRESULT proxy_create_descriptor_heap(DeviceProxy* self, const D3D12_DESCRIPTOR_H
             // pointers). The rule is VIctory's (descriptor.rs: placed = address != 0 && size == size).
             const std::uint64_t expected =
                 std::uint64_t(desc->NumDescriptors) * self->real->GetDescriptorHandleIncrementSize(desc->Type);
+            seen_address = address;
+            seen_size = size;
+            seen_expected = expected;
             if (address != 0 && size == expected && g_console_heap_factory) {
                 console_extended = true;
                 hr = g_console_heap_factory(self->real, desc, static_cast<D3D12_GPU_VIRTUAL_ADDRESS>(address), size,
@@ -3094,7 +3098,22 @@ HRESULT proxy_create_descriptor_heap(DeviceProxy* self, const D3D12_DESCRIPTOR_H
     }
     if (!console_extended)
         hr = self->real->CreateDescriptorHeap(desc, __uuidof(ID3D12DescriptorHeap), &created);
-    if (FAILED(hr) || !created) return FAILED(hr) ? hr : E_FAIL;
+    if (FAILED(hr) || !created) {
+        // Which of the console-path conditions failed (issue #2: E_INVALIDARG here on Windows-native).
+        std::fprintf(stderr,
+                     "[rt] d3d12_xs: CreateDescriptorHeap failed 0x%08lx: type %d count %u flags 0x%x mask 0x%x; console "
+                     "address 0x%llx size 0x%llx expected 0x%llx (increment %u) factory %s -> %s path\n",
+                     static_cast<unsigned long>(hr), desc ? static_cast<int>(desc->Type) : -1,
+                     desc ? desc->NumDescriptors : 0u, desc ? static_cast<unsigned>(desc->Flags) : 0u,
+                     desc ? desc->NodeMask : 0u, static_cast<unsigned long long>(seen_address),
+                     static_cast<unsigned long long>(seen_size), static_cast<unsigned long long>(seen_expected),
+                     desc && desc->Type <= D3D12_DESCRIPTOR_HEAP_TYPE_DSV
+                         ? self->real->GetDescriptorHandleIncrementSize(desc->Type)
+                         : 0u,
+                     g_console_heap_factory ? "set" : "unset", console_extended ? "console" : "PC");
+        std::fflush(stderr);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
 
     ID3D12DescriptorHeap* heap = static_cast<ID3D12DescriptorHeap*>(created);
     hr = create_heap_proxy(heap, self, *riid, out);
@@ -4188,9 +4207,37 @@ void xs_patch_audio_lock_leak() {
     std::fprintf(stderr, "[hack] audio lock patch applied (game+0x5267747 -> +0x5267c7f)\n");
 }
 
+// HACK (Leonida CE boot): the lookup-table fill +0x550e2d0 copies a 256-entry float4 table (4 KiB) into a mapped
+// texture whose CPU pointer lands right after a 0xa0-byte arena node; the copy overruns the following nodes and the
+// arena itself and the title crashes at ~120-145 s (hacks/BOOT_NOTES.md). Until the undersized block is understood,
+// skip both row copies (callq *0x38(%rsp) at +0x550e57e and +0x550e60f) so the table stays empty but nothing is
+// overwritten. Opt-in with LEONIDA_CE_SKIP_LUT=1: it did not stop the crash (try137), so it is off by default.
+void xs_patch_lut_fill() {
+    char v[8] = {};
+    if (!GetEnvironmentVariableA("LEONIDA_CE_SKIP_LUT", v, sizeof(v)) || v[0] != '1') return;
+    static const std::uint8_t expect[4] = {0xff, 0x54, 0x24, 0x38};  // callq *0x38(%rsp)
+    static const std::uint8_t nop4[4] = {0x0f, 0x1f, 0x40, 0x00};
+    for (const std::uintptr_t a : {std::uintptr_t{0x14550e57eull}, std::uintptr_t{0x14550e60full}}) {
+        auto* at = reinterpret_cast<std::uint8_t*>(a);
+        if (!xs_readable(at, 4) || std::memcmp(at, expect, 4) != 0) {
+            std::fprintf(stderr, "[hack] lut fill patch: bytes differ at game+%llx, not applied\n",
+                         static_cast<unsigned long long>(a - 0x140000000ull));
+            continue;
+        }
+        DWORD old_protect = 0;
+        if (!VirtualProtect(at, 4, PAGE_EXECUTE_READWRITE, &old_protect)) continue;
+        std::memcpy(at, nop4, 4);
+        VirtualProtect(at, 4, old_protect, &old_protect);
+        FlushInstructionCache(GetCurrentProcess(), at, 4);
+        std::fprintf(stderr, "[hack] lut fill patch applied at game+%llx\n",
+                     static_cast<unsigned long long>(a - 0x140000000ull));
+    }
+}
+
 void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
                        std::uint64_t ring_size) {
     xs_patch_audio_lock_leak();
+    xs_patch_lut_fill();
     xs_install_probes();
     g_arena_mapped = mapped;
     g_arena_size = arena_size;
