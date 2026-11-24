@@ -2318,7 +2318,11 @@ public:
     // Buffers only, as on D3D12; textures have no GPU VA (images are reached through descriptors). An acceleration
     // structure reports its real device address (instance descriptors and builds hand it to the driver); other
     // buffers report their console VA into the GPU address arena.
-    D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE GetGPUVirtualAddress() override { return accel_ ? gpu_va_ : va_; }
+    D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE GetGPUVirtualAddress() override {
+        if (console_va_) return console_va_;  // HACK (Leonida CE boot): a console texture's address
+        return accel_ ? gpu_va_ : va_;
+    }
+    std::uint64_t console_va_ = 0;
 
     //
     // The node masks read back as the one node of a single adapter (0 becomes 1), and the heap flags as the runtime
@@ -4078,7 +4082,7 @@ public:
         // HACK (Leonida CE boot): some translated compute programs (ray-traced shadow traces, strand interpolation)
         // take the host driver minutes to compile, or longer, and the title creates pipelines on its job workers: a
         // worker held in the compile never returns its job context, and loading stops once all 32 are out. The
-        // compile runs on its own thread; if it is not done in 100 ms the pipeline is registered with an empty
+        // compile runs on its own thread; if it is not done in 5 ms the pipeline is registered with an empty
         // placeholder program (its dispatches do nothing) and the real one replaces it when the compile finishes.
         // Programs whose compile the host driver (NVIDIA 5xx) does not finish in minutes, and which hold its other
         // compiles behind them: ray-traced shadow traces, screen-probe ray activation, hair strand interpolation.
@@ -4112,7 +4116,7 @@ public:
                 return E_FAIL;
         } else {
             CloseHandle(compile_thread);
-            WaitForSingleObject(job->event, 100);
+            WaitForSingleObject(job->event, 5);
             std::lock_guard lock(job->mu);
             if (job->done) {
                 if (job->result != VK_SUCCESS) return E_FAIL;
@@ -5162,6 +5166,9 @@ public:
         // standalone device gta6rt --run uses both come through here (found in review: registering only in
         // create_vulkan_device left the retail path without it).
         rt::d3d12_xs::set_placed_at_va_handler(&create_buffer_at_host_address);
+        rt::d3d12_xs::set_texture_address_hook([](void* resource, std::uint64_t address) {
+            if (auto* r = Resource::from<Resource>(static_cast<IUnknown*>(resource))) r->console_va_ = address;
+        });
         state_.info = info;
         queue_users_.resize(info.command_queues.size(), 0);
         compute_users_.resize(info.compute_queues.size(), 0);

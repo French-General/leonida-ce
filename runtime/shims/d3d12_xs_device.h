@@ -114,6 +114,11 @@ using PlacedAtVaHandler = HRESULT (*)(ID3D12Device* real, void* va, const D3D12_
                                       std::uint32_t layout, REFIID riid, void** out);
 void set_placed_at_va_handler(PlacedAtVaHandler handler);
 
+// HACK (Leonida CE boot): gives a texture the title made a console address, which its
+// ID3D12Resource::GetGPUVirtualAddress then returns (console textures have one; PC textures read 0).
+using TextureAddressHook = void (*)(void* resource, std::uint64_t address);
+void set_texture_address_hook(TextureAddressHook hook);
+
 // Called by slot 133 for a buffer, before the handler, with the buffer's range [va, va + width). gta6rt registers
 // rt::xmem::commit_physical_range: xmem commits physical pages on first touch, so a range the title has mapped but
 // not written yet is still reserved, and the handler's import refuses reserved pages (it would answer with its

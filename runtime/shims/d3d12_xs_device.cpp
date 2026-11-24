@@ -55,6 +55,25 @@
 namespace rt::d3d12_xs {
 namespace {
 
+// Whether [p, p + len) is committed, readable memory, from VirtualQuery: unlike IsBadReadPtr it raises no access
+// violation (each one is a costly first-chance exception under Wine, and the trace logs every one).
+bool xs_readable(const void* p, std::size_t len) {
+    if (!p) return false;
+    auto at = reinterpret_cast<std::uintptr_t>(p);
+    const std::uintptr_t end = at + len;
+    if (end < at) return false;
+    while (at < end) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(at), &mbi, sizeof(mbi))) return false;
+        if (mbi.State != MEM_COMMIT) return false;
+        const DWORD prot = mbi.Protect & 0xFF;
+        if ((mbi.Protect & PAGE_GUARD) || prot == PAGE_NOACCESS || prot == PAGE_EXECUTE) return false;
+        at = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+    return true;
+}
+
+
 // The retail title calls device slots well past ID3D12Device14 (slot 133 at least); every slot past the PC device's
 // vtable goes through the generic thunk and is refused with E_NOTIMPL, so the table must outlast the highest one.
 constexpr unsigned kMaxSlots = 192;
@@ -104,7 +123,7 @@ XsTitleAlloc xs_title_alloc() {
         // The 1.0.2.1 executable's __XMemAllocationHooks__ export, loaded at its preferred base (make_game.py
         // checks the version).
         void* hooks = reinterpret_cast<void*>(0x146844380ull);
-        if (IsBadReadPtr(hooks, sizeof(void*))) return nullptr;
+        if (!xs_readable(hooks, sizeof(void*))) return nullptr;
         auto f = *reinterpret_cast<XsTitleAlloc*>(hooks);
         std::fprintf(stderr, "[hack] title XMem hooks at %p, alloc %p\n", hooks, reinterpret_cast<void*>(f));
         std::fflush(stderr);
@@ -540,7 +559,7 @@ std::uint64_t xs_upload_alloc(std::uint64_t size, std::uint64_t align) {
 std::uint64_t xs_gpu_address(std::uint64_t address, std::uint64_t size) {
     const std::uint64_t translated = xs_va_from_cpu(address);
     if (translated != address || !address || !size || size > (8u << 20)) return translated;
-    if (IsBadReadPtr(reinterpret_cast<const void*>(address), static_cast<UINT_PTR>(size))) return translated;
+    if (!xs_readable(reinterpret_cast<const void*>(address), static_cast<UINT_PTR>(size))) return translated;
     const std::uint64_t copy = xs_upload_alloc(size, 256);
     if (!copy) return translated;
     std::memcpy(reinterpret_cast<void*>(copy), reinterpret_cast<const void*>(address), static_cast<std::size_t>(size));
@@ -638,7 +657,7 @@ void xs_upload_placed_texture(ID3D12Device* dev, const D3D12_RESOURCE_DESC& cons
         return;
     }
     const std::size_t src_bytes = static_cast<std::size_t>(lay.size);
-    if (!src_bytes || IsBadReadPtr(reinterpret_cast<const void*>(va), src_bytes)) return;
+    if (!src_bytes || !xs_readable(reinterpret_cast<const void*>(va), src_bytes)) return;
     const auto* src = reinterpret_cast<const std::uint8_t*>(va);
 
     D3D12_RESOURCE_DESC rd = tex->GetDesc();
@@ -765,7 +784,7 @@ void xs_dump_thread_stacks() {
                 DWORD64 image_base = 0;
                 PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(rip, &image_base, nullptr);
                 if (!fn) {  // leaf: return address at [rsp]
-                    if (IsBadReadPtr(reinterpret_cast<void*>(ctx.Rsp), 8)) break;
+                    if (!xs_readable(reinterpret_cast<void*>(ctx.Rsp), 8)) break;
                     ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
                     ctx.Rsp += 8;
                 } else {
@@ -801,7 +820,7 @@ void xs_refresh_placed_textures(ID3D12Device* dev) {
     }
     for (const auto& t : textures) {
         const std::uint64_t len = t.size;
-        if (!len || IsBadReadPtr(reinterpret_cast<const void*>(t.va), static_cast<UINT_PTR>(len))) continue;
+        if (!len || !xs_readable(reinterpret_cast<const void*>(t.va), static_cast<UINT_PTR>(len))) continue;
         std::uint64_t h = 1469598103934665603ull, nonzero = 0;
         for (std::uint64_t o = 0; o + 8 <= len; o += 4096) {
             std::uint64_t w = 0;
@@ -2764,6 +2783,61 @@ HRESULT proxy_create_resource(DeviceProxy* self, const D3D12_HEAP_PROPERTIES* he
     return hr;
 }
 
+// HACK (Leonida CE boot): the console allows unordered access on a depth-stencil texture (the title makes depth
+// buffers it also writes from compute, flags 0x80300006); PC D3D12 refuses that pair (E_INVALIDARG), and the title
+// asserts on the null resource and then reads through it. The UAV flag is dropped: the texture is made, and only
+// UAVs of it are missing.
+void xs_fix_pc_flags(D3D12_RESOURCE_DESC& desc) {
+    const auto f = static_cast<std::uint32_t>(desc.Flags);
+    if ((f & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) && (f & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) {
+        static std::atomic<int> told{0};
+        if (told++ < 4)
+            std::fprintf(stderr, "[hack] depth-stencil texture %llux%u with unordered access: UAV flag dropped\n",
+                         static_cast<unsigned long long>(desc.Width), desc.Height);
+        desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(f & ~std::uint32_t(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS));
+    }
+}
+
+// HACK (Leonida CE boot): on the console a texture's GPU address is its memory, which the CPU reads and writes too
+// (the title clears an R32_FLOAT texture with memset through the address ID3D12Resource::GetGPUVirtualAddress gives).
+// PC D3D12 gives textures no address (0), so the title wrote through null. Each texture the title makes gets one: the
+// title's own pages for slot 133, otherwise host memory the size of its console layout. The memory is registered as
+// placed, so the periodic refresh copies what the title writes there into the texture.
+std::atomic<TextureAddressHook> g_texture_address_hook{nullptr};
+void xs_console_texture_address(ID3D12Device* dev, void* resource, const D3D12_RESOURCE_DESC& console_desc,
+                                std::uint64_t va) {
+    const TextureAddressHook hook = g_texture_address_hook.load(std::memory_order_acquire);
+    if (!hook || !resource || console_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) return;
+    if (!va) {
+        std::uint64_t bytes = 0;
+        leonida::xg::TextureDesc td;
+        td.dimension = console_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? leonida::xg::Dimension::Tex3d
+                     : console_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? leonida::xg::Dimension::Tex1d
+                                                                                     : leonida::xg::Dimension::Tex2d;
+        td.width = static_cast<std::uint32_t>(console_desc.Width);
+        td.height = console_desc.Height;
+        td.depth_or_array = std::max<std::uint32_t>(console_desc.DepthOrArraySize, 1);
+        td.mips = console_desc.MipLevels;
+        td.format = static_cast<std::uint32_t>(console_desc.Format);
+        td.samples = std::max<std::uint32_t>(console_desc.SampleDesc.Count, 1);
+        const auto layout_word = static_cast<std::uint32_t>(console_desc.Layout);
+        td.swizzle.value = (layout_word & 0x100) ? (layout_word & 0xFF) : leonida::xg::Swizzle::LINEAR;
+        leonida::xg::Texture xt;
+        if (leonida::xg::Texture::make(td, xt) == leonida::xg::Error::Ok) bytes = xt.size;
+        D3D12_RESOURCE_DESC pc = console_desc;
+        pc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        pc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(static_cast<std::uint32_t>(pc.Flags) & 0xffu);
+        bytes = std::max<std::uint64_t>(bytes, dev ? dev->GetResourceAllocationInfo(0, 1, &pc).SizeInBytes : 0);
+        if (!bytes || bytes > (std::uint64_t(2) << 30)) return;
+        bytes = (bytes + 0xFFFF) & ~std::uint64_t(0xFFFF);
+        void* mem = VirtualAlloc(nullptr, static_cast<SIZE_T>(bytes), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!mem) return;
+        va = reinterpret_cast<std::uint64_t>(mem);
+        xs_record_placed(va, bytes, static_cast<ID3D12Resource*>(resource), &console_desc);
+    }
+    hook(resource, va);
+}
+
 // Device slot 133 is the console's CreatePlacedResourceX: (va, desc, state, clear, riid, out), measured on the retail
 // executable (docs/retail_boot_chain.md, section 3.4). `va` is the start of a physical-page range the title has just
 // mapped, `desc` a 56-byte description with Xbox bits above the PC resource flags and an Xbox layout word, and
@@ -2790,6 +2864,7 @@ HRESULT proxy_create_placed_resource_x(DeviceProxy* self, void* va, const D3D12_
     D3D12_RESOURCE_DESC pc_desc = *xbox_desc;
     const auto xbox_flags = static_cast<std::uint32_t>(pc_desc.Flags);
     pc_desc.Flags = static_cast<D3D12_RESOURCE_FLAGS>(xbox_flags & kPcResourceFlags);
+    xs_fix_pc_flags(pc_desc);
     // The Xbox layout word (0x101 tiled, 0x1 row-major buffer) is no PC layout: ROW_MAJOR for a buffer and UNKNOWN
     // for everything else, as slot 76 does.
     pc_desc.Layout = pc_desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
@@ -2909,6 +2984,7 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
         if (!hp || !desc_in || !riid || !out) return hr_to_u64(E_POINTER);
         D3D12_RESOURCE_DESC d = *desc_in;
         d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(static_cast<unsigned>(d.Flags) & 0xffu);
+        xs_fix_pc_flags(d);
         d.Layout = d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
                                                                   : D3D12_TEXTURE_LAYOUT_UNKNOWN;
         const bool clearable = (d.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
@@ -2928,6 +3004,7 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                          (unsigned long)hr);
             std::fflush(stderr);
         }
+        if (SUCCEEDED(hr) && *out) xs_console_texture_address(self->real, *out, *desc_in, 0);
         return hr_to_u64(hr);
     } else if constexpr (Slot == 41) {
         // HACK diagnostic + fallback: CreateCommandSignature(desc, rootSig, riid, out)
@@ -2991,7 +3068,7 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                 const std::uint64_t translated = xs_va_from_cpu(cbv.BufferLocation);
                 if (translated == cbv.BufferLocation && cbv.BufferLocation && cbv.SizeInBytes &&
                     cbv.SizeInBytes <= (1u << 16) &&
-                    !IsBadReadPtr(reinterpret_cast<const void*>(cbv.BufferLocation), cbv.SizeInBytes)) {
+                    xs_readable(reinterpret_cast<const void*>(cbv.BufferLocation), cbv.SizeInBytes)) {
                     // HACK (Leonida CE boot): constants in the title's own memory, which the GPU cannot read here yet:
                     // snapshot them into the arena when the view is made (VIctory copies changed title memory).
                     if (const std::uint64_t copy = xs_upload_alloc(cbv.SizeInBytes, 256)) {
@@ -3261,6 +3338,7 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
         if (!desc_in || !riid || !out) return hr_to_u64(E_POINTER);
         D3D12_RESOURCE_DESC d = *desc_in;
         d.Flags = static_cast<D3D12_RESOURCE_FLAGS>(static_cast<unsigned>(d.Flags) & 0xffu);
+        xs_fix_pc_flags(d);
         d.Layout = d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12_TEXTURE_LAYOUT_ROW_MAJOR
                                                                   : D3D12_TEXTURE_LAYOUT_UNKNOWN;
         D3D12_HEAP_PROPERTIES hp{};
@@ -3279,6 +3357,7 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
             const std::uint64_t bytes = desc_in->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
                 ? desc_in->Width : self->real->GetResourceAllocationInfo(0, 1, &d).SizeInBytes;
             xs_record_placed(a1, bytes, static_cast<ID3D12Resource*>(*out), desc_in);
+            xs_console_texture_address(self->real, *out, *desc_in, a1);
         }
         std::fprintf(stderr, "[hack] slot 133 CreatePlacedResourceX(va=%llx, dim=%d, width=%llu, flags=0x%x) -> 0x%08lx\n",
                      (unsigned long long)a1, (int)desc_in->Dimension, (unsigned long long)desc_in->Width,
@@ -3299,13 +3378,17 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
                                                         static_cast<std::uint32_t>(a3), reinterpret_cast<const IID*>(a5),
                                                         reinterpret_cast<void**>(a6)));
     } else if constexpr (Slot == 76) {
-        return hr_to_u64(proxy_create_resource(
+        const HRESULT hr = proxy_create_resource(
             self, reinterpret_cast<const D3D12_HEAP_PROPERTIES*>(a1),
             static_cast<D3D12_HEAP_FLAGS>(static_cast<std::uint32_t>(a2)),
             reinterpret_cast<const D3D12_RESOURCE_DESC*>(a3),
             static_cast<D3D12_RESOURCE_STATES>(static_cast<std::uint32_t>(a4)),
             reinterpret_cast<const D3D12_CLEAR_VALUE*>(a5), reinterpret_cast<const IID*>(a6),
-            reinterpret_cast<void**>(a7)));
+            reinterpret_cast<void**>(a7));
+        if (SUCCEEDED(hr) && a3 && a7 && *reinterpret_cast<void**>(a7))
+            xs_console_texture_address(self->real, *reinterpret_cast<void**>(a7),
+                                       *reinterpret_cast<const D3D12_RESOURCE_DESC*>(a3), 0);
+        return hr_to_u64(hr);
     } else {
         note_slot(Slot);
         // Xbox device slots, before the PC vtable is indexed: the public HLE's 78/79/80 would otherwise reach
@@ -3485,6 +3568,8 @@ void* device_proxy_primary(void* device) {
     if (is_device_proxy(device)) return device;
     return device_proxy_from_dxgi_device(device);
 }
+
+void set_texture_address_hook(TextureAddressHook hook) { g_texture_address_hook.store(hook, std::memory_order_release); }
 
 void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
                        std::uint64_t ring_size) {
