@@ -243,3 +243,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   (+0xaa0dc0); it does not wrap. The writes at +0xaa05ff/+0xaa0734/+0xaa08d9 are list-node setups, not the
   reset. Next: find the reset (a write of [+8] into [+0x10], or a block free) with LEONIDA_CE_TRAP_ARENA=1 on a
   run where the floats do appear, and what it waits for first (the other thread's use should end before it).
+- The arena object itself is destroyed. A watcher that polls the arena's +0x10 every millisecond (no page
+  protection, timing kept) saw it go 0x14f341f30 -> 0x100000002 -> 0 -> 0xffffffff00000000 -> float data, i.e.
+  the arena struct was freed and its memory handed out again while its owner (tid 180) kept allocating from it.
+  At that moment tid 180 was in the recursive walk +0x183aaf/+0x18435f under +0x1826cb <- +0x503d5f5 <- +0x180f2d
+  <- +0x503ce73 <- +0x41f3f8: a work queue (+0x503ce45 pops items with +0x515ada0) dispatching each item through
+  +0x180f00 (vtable +0x28), whose walk frees nodes. Hypothesis: an item reaches that queue twice (or after its
+  owner is gone), so it is processed and freed twice. Next: log items popped at +0x503ce5e and look for repeats.

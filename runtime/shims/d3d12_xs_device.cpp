@@ -931,6 +931,8 @@ thread_local bool t_trap_arena_step = false;
 thread_local std::uint64_t t_trap_arena_before = 0;
 thread_local char t_trap_arena_line[512];
 std::atomic<int> g_trap_reset_logged{0};
+std::atomic<std::uintptr_t> g_watch_arena{0};
+std::atomic<DWORD> g_watch_owner{0};
 
 long xs_self_game_index() {
     const auto slot = *reinterpret_cast<const volatile std::uint32_t*>(0x146e08b2cull);
@@ -1029,6 +1031,10 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
                 ++found;
             }
         }
+        if (rip == 0x140aa0c2bull && !g_watch_arena.load()) {
+            g_watch_owner = GetCurrentThreadId();
+            g_watch_arena = static_cast<std::uintptr_t>(info->ContextRecord->Rcx);
+        }
         static std::atomic<int> arena_logged{0};
         static const bool trap_arena = GetEnvironmentVariableA("LEONIDA_CE_TRAP_ARENA", nullptr, 0) != 0;
         if (trap_arena && rip == 0x140aa0c2bull && !g_trap_arena.load()) {
@@ -1063,6 +1069,40 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+void xs_dump_one_thread(DWORD tid, const char* why) {
+    HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!th) return;
+    if (SuspendThread(th) == static_cast<DWORD>(-1)) { CloseHandle(th); return; }
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_FULL;
+    char line[1024];
+    int len = std::snprintf(line, sizeof(line), "[watch] %s: tid %lx stack", why, tid);
+    if (GetThreadContext(th, &ctx)) {
+        for (int depth = 0; depth < 24 && ctx.Rip && len < static_cast<int>(sizeof(line)) - 40; ++depth) {
+            const std::uint64_t rip = ctx.Rip;
+            const bool game = rip >= 0x140000000ull && rip < 0x147000000ull;
+            len += std::snprintf(line + len, sizeof(line) - len, game ? " G+%llx" : " %llx",
+                                 static_cast<unsigned long long>(game ? rip - 0x140000000ull : rip));
+            DWORD64 image_base = 0;
+            PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(rip, &image_base, nullptr);
+            if (!fn) {
+                if (!xs_readable(reinterpret_cast<void*>(ctx.Rsp), 8)) break;
+                ctx.Rip = *reinterpret_cast<DWORD64*>(ctx.Rsp);
+                ctx.Rsp += 8;
+            } else {
+                void* handler_data = nullptr;
+                DWORD64 establisher = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, rip, fn, &ctx, &handler_data, &establisher, nullptr);
+            }
+            if (ctx.Rip == rip) break;
+        }
+    }
+    ResumeThread(th);
+    CloseHandle(th);
+    std::fprintf(stderr, "%s\n", line);
+    std::fflush(stderr);
+}
+
 void xs_trap_tick(std::uint64_t /*frame*/) {
     static const std::uintptr_t page = [] {
         char v[32] = {};
@@ -1084,14 +1124,29 @@ void xs_trap_tick(std::uint64_t /*frame*/) {
             std::fflush(stderr);
             g_trap_armed = true;
             int last = -2;
-            for (;;) {
-                const int n = xs_trap_floats();
-                if (n != last) {
-                    std::fprintf(stderr, "[trap] t=%lu floats in page: %d\n", GetTickCount(), n);
-                    std::fflush(stderr);
-                    last = n;
+            std::uint64_t prev = 0;
+            int resets = 0;
+            for (unsigned tick = 0;; ++tick) {
+                if (const std::uintptr_t arena = g_watch_arena.load()) {
+                    const std::uint64_t cur = *reinterpret_cast<const volatile std::uint64_t*>(arena + 0x10);
+                    if (prev && cur < prev && resets++ < 12) {
+                        char why[160];
+                        std::snprintf(why, sizeof(why), "t=%lu arena %llx current %llx -> %llx", GetTickCount(),
+                                      static_cast<unsigned long long>(arena), static_cast<unsigned long long>(prev),
+                                      static_cast<unsigned long long>(cur));
+                        xs_dump_one_thread(g_watch_owner.load(), why);
+                    }
+                    prev = cur;
                 }
-                Sleep(2000);
+                if (tick % 2000 == 0) {
+                    const int n = xs_trap_floats();
+                    if (n != last) {
+                        std::fprintf(stderr, "[trap] t=%lu floats in page: %d\n", GetTickCount(), n);
+                        std::fflush(stderr);
+                        last = n;
+                    }
+                }
+                Sleep(1);
             }
         }, nullptr, 0, nullptr);
         if (t) CloseHandle(t);
