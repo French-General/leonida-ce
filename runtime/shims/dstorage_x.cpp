@@ -2,10 +2,27 @@
 // The Xbox interface layout is not known, so every object handed out is a "probe" whose vtable slots log their slot
 // number and first six arguments and return S_OK. Slots 0-2 behave as IUnknown. The log shows what the game calls,
 // and real behaviour is filled in slot by slot (see kKnown below).
+//
+// Requests complete asynchronously, after Marvisak/VIctory dstorage.rs (GPLv3): EnqueueRequest (queue slot 3) and
+// EnqueueStatus (queue slot 4) only record commands in queue order; Submit (queue slot 6) hands them to a small pool
+// of workers that read and inflate in parallel, started in submission order. Completion stays in order: a status
+// entry turns complete once every request enqueued before it on its queue has finished, carrying the first failure
+// (in queue order) since the previous status entry. As on the console, a queue also submits itself once half its
+// capacity is enqueued. LEONIDA_CE_DSTORAGE_SYNC=1 restores the old behaviour (read inside EnqueueRequest, every
+// status entry complete) for A/B testing; LEONIDA_CE_DSTORAGE_WORKERS sets the pool size (default 4).
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <span>
+#include <thread>
 #include <utility>
 #include <intrin.h>
 #include <cstdint>
@@ -21,6 +38,8 @@ namespace {
 constexpr int kSlots = 96;
 
 struct Probe;
+struct QueueState;
+struct StatusState;
 using Slot = uintptr_t(__stdcall*)(Probe*, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 
 struct Probe {
@@ -29,7 +48,132 @@ struct Probe {
     std::atomic<long> refs{1};
     HANDLE file = INVALID_HANDLE_VALUE;  // "file" probes: the opened package file
     wchar_t path[260] = {};
+    QueueState* queue = nullptr;    // "queue" probes (async mode)
+    StatusState* status = nullptr;  // "status" probes (async mode)
 };
+
+// ---- asynchronous completion (after Marvisak/VIctory dstorage.rs, GPLv3) ----
+
+constexpr int32_t kPending = static_cast<int32_t>(0x8000000Au);  // E_PENDING
+
+bool env_flag(const char* name) {
+    char buf[16] = {};
+    const DWORD n = GetEnvironmentVariableA(name, buf, sizeof buf);
+    return n > 0 && n < sizeof buf && buf[0] != '0';
+}
+
+bool sync_mode() {
+    static const bool on = env_flag("LEONIDA_CE_DSTORAGE_SYNC");
+    return on;
+}
+
+// A request as copied out of the title's 0x48-byte struct at EnqueueRequest.
+struct Req {
+    uint32_t comp;
+    uint8_t* dst;
+    uint32_t dst_size;
+    Probe* f;
+    uint64_t off;
+    uint32_t src_size;
+};
+
+Req parse_request(const void* p) {
+    // Console request layout (measured): +0 options (low byte = compression: 0 none, 1 zlib), +8 destination,
+    // +0x18 destination size, +0x20 IDStorageFile*, +0x28 file offset, +0x30 source size.
+    const auto* rq = static_cast<const uint8_t*>(p);
+    Req r{};
+    r.comp = rq[0];
+    r.dst = *reinterpret_cast<uint8_t* const*>(rq + 0x08);
+    r.dst_size = *reinterpret_cast<const uint32_t*>(rq + 0x18);
+    r.f = *reinterpret_cast<Probe* const*>(rq + 0x20);
+    r.off = *reinterpret_cast<const uint64_t*>(rq + 0x28);
+    r.src_size = *reinterpret_cast<const uint32_t*>(rq + 0x30);
+    return r;
+}
+
+struct StatusState {
+    uint32_t count = 0;
+    std::unique_ptr<std::atomic<int32_t>[]> entries;  // S_OK until a marker makes one pending
+};
+
+struct Cmd {
+    bool is_status = false;
+    uint64_t seq = 0;
+    Req req{};
+    StatusState* array = nullptr;
+    uint32_t index = 0;
+};
+
+struct QueueState {
+    size_t capacity = 0;
+    uint64_t next_seq = 0;
+    std::vector<Cmd> unsubmitted;      // enqueued, not yet submitted
+    std::set<uint64_t> outstanding;    // submitted reads not finished
+    std::deque<Cmd> statuses;          // submitted status markers not yet written
+    std::map<uint64_t, int32_t> failures;  // failed reads not yet reported, by seq
+};
+
+struct Job {
+    QueueState* q;
+    uint64_t seq;
+    Req req;
+};
+
+std::mutex g_mu;
+std::condition_variable g_work;
+std::deque<Job> g_jobs;  // every queue's submitted reads, in submission order
+
+// Writes the status entries whose earlier reads have all finished (g_mu held).
+void flush_locked(QueueState* q) {
+    while (!q->statuses.empty()) {
+        const Cmd& s = q->statuses.front();
+        if (!q->outstanding.empty() && *q->outstanding.begin() < s.seq) return;
+        int32_t hr = S_OK;
+        auto it = q->failures.begin();
+        if (it != q->failures.end() && it->first < s.seq) hr = it->second;
+        q->failures.erase(q->failures.begin(), q->failures.lower_bound(s.seq));
+        s.array->entries[s.index].store(hr, std::memory_order_release);
+        q->statuses.pop_front();
+    }
+}
+
+void worker_main();
+
+void start_workers() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        int n = 4;
+        char buf[16] = {};
+        const DWORD len = GetEnvironmentVariableA("LEONIDA_CE_DSTORAGE_WORKERS", buf, sizeof buf);
+        if (len > 0 && len < sizeof buf) n = std::clamp(std::atoi(buf), 1, 64);
+        for (int i = 0; i < n; ++i) std::thread(worker_main).detach();
+        std::fprintf(stderr, "[dstorage] async completion: %d workers\n", n);
+        std::fflush(stderr);
+    });
+}
+
+// Moves a queue's enqueued commands to the workers (g_mu held).
+void submit_locked(QueueState* q) {
+    bool any = false;
+    for (Cmd& c : q->unsubmitted) {
+        if (c.is_status) {
+            q->statuses.push_back(c);
+        } else {
+            q->outstanding.insert(c.seq);
+            g_jobs.push_back(Job{q, c.seq, c.req});
+            any = true;
+        }
+    }
+    q->unsubmitted.clear();
+    flush_locked(q);
+    if (any) g_work.notify_all();
+}
+
+void enqueue_locked(QueueState* q, Cmd c) {
+    c.seq = q->next_seq++;
+    q->unsubmitted.push_back(c);
+    if (q->capacity && q->unsubmitted.size() >= (std::max)(q->capacity / 2, size_t(1))) submit_locked(q);
+}
 
 void print_guid(const void* p, char* out, size_t n) {
     GUID g{};
@@ -47,6 +191,99 @@ void hexdump(const char* tag, const void* p, size_t n) {
     std::fprintf(stderr, "[dstorage]   %s:", tag);
     for (size_t i = 0; i < n / 4; ++i) std::fprintf(stderr, " %08x", w[i]);
     std::fprintf(stderr, "\n");
+}
+
+// Reads and inflates one request into its destination; returns S_OK or the failure. Thread-safe (positional reads).
+int32_t run_request(const Req& r) {
+    const uint32_t comp = r.comp;
+    uint8_t* dst = r.dst;
+    const uint32_t dst_size = r.dst_size;
+    Probe* f = r.f;
+    const uint64_t off = r.off;
+    const uint32_t src_size = r.src_size;
+    static std::atomic<uint64_t> total{0}, fails{0};
+    bool ok = false;
+    int32_t hr = E_INVALIDARG;
+    std::vector<uint8_t> src;
+    try {
+        src.resize(src_size);
+    } catch (...) {
+        src.clear();
+        hr = E_OUTOFMEMORY;
+    }
+    if (src.size() == src_size && f && f->file != INVALID_HANDLE_VALUE && dst) {
+        OVERLAPPED ov{};
+        ov.Offset = static_cast<DWORD>(off);
+        ov.OffsetHigh = static_cast<DWORD>(off >> 32);
+        DWORD got = 0;
+        const BOOL read_ok = ReadFile(f->file, src.data(), src_size, &got, &ov);
+        if (read_ok && got == src_size) {
+            if (comp == 0) {
+                std::memcpy(dst, src.data(), (std::min)(src_size, dst_size));
+                ok = true;
+            } else if (comp == 1) {
+                std::vector<uint8_t> out;
+                if (leonida::zlib_inflate(std::span<const uint8_t>(src.data(), src.size()), out, dst_size)) {
+                    std::memcpy(dst, out.data(), (std::min)(out.size(), static_cast<size_t>(dst_size)));
+                    ok = true;
+                } else {
+                    hr = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                }
+            } else {
+                hr = E_NOTIMPL;
+            }
+        } else {
+            const DWORD err = read_ok ? ERROR_SUCCESS : GetLastError();
+            hr = HRESULT_FROM_WIN32(err != ERROR_SUCCESS ? err : ERROR_HANDLE_EOF);
+        }
+    }
+    total += src_size;
+    if (!ok) {
+        if (fails++ < 12) {
+            const bool have = src.size() == src_size;
+            std::fprintf(stderr, "[dstorage] request FAILED: comp=%u file=%ls off=0x%llx size=%u dst=%p/%u first=%02x %02x %02x %02x\n",
+                         comp, f ? f->path : L"?", (unsigned long long)off, src_size, (void*)dst, dst_size,
+                         have && src_size > 0 ? src[0] : 0, have && src_size > 1 ? src[1] : 0,
+                         have && src_size > 2 ? src[2] : 0, have && src_size > 3 ? src[3] : 0);
+            std::fflush(stderr);
+        }
+        return hr;
+    }
+    static std::atomic<int> n{0};
+    const int k = n++;
+    if (k < 3 || (k % 2000) == 0) {
+        std::fprintf(stderr, "[dstorage] request #%d ok: comp=%u %ls @0x%llx %u -> %u (total %llu MiB read)\n",
+                     k, comp, f->path, (unsigned long long)off, src_size, dst_size,
+                     (unsigned long long)(total.load() >> 20));
+        std::fflush(stderr);
+    }
+    return S_OK;
+}
+
+void worker_main() {
+    std::unique_lock<std::mutex> lock(g_mu);
+    for (;;) {
+        g_work.wait(lock, [] { return !g_jobs.empty(); });
+        Job job = g_jobs.front();
+        g_jobs.pop_front();
+        lock.unlock();
+        const int32_t hr = run_request(job.req);
+        lock.lock();
+        job.q->outstanding.erase(job.seq);
+        if (hr != S_OK) job.q->failures.emplace(job.seq, hr);
+        flush_locked(job.q);
+    }
+}
+
+// EnqueueStatus / Submit used to log every call through the generic probe line; keep a sparse trace.
+void log_marker(int slot, uintptr_t a, uintptr_t b) {
+    static std::atomic<int> n[8]{};
+    const int k = n[slot & 7]++;
+    if (k < 4 || (k % 64) == 0) {
+        std::fprintf(stderr, "[dstorage] queue slot %d (%s) #%d: a=0x%llx b=0x%llx\n", slot,
+                     slot == 4 ? "EnqueueStatus" : "Submit", k, (unsigned long long)a, (unsigned long long)b);
+        std::fflush(stderr);
+    }
 }
 
 // HACK: known shapes (PC IDStorageFactory order where it matches the title's calls).
@@ -82,7 +319,15 @@ bool special(Probe* self, int slot, uintptr_t a, uintptr_t b, uintptr_t c, uintp
         std::fprintf(stderr, "[dstorage] CreateStatusArray(capacity=%llu, name=%s)\n", (unsigned long long)a,
                      b && !IsBadReadPtr(reinterpret_cast<void*>(b), 1) ? reinterpret_cast<const char*>(b) : "?");
         std::fflush(stderr);
-        if (d) *reinterpret_cast<void**>(d) = make_probe("status");
+        Probe* p = make_probe("status");
+        if (!sync_mode()) {
+            auto* s = new StatusState;
+            s->count = static_cast<uint32_t>((std::min)(a, uintptr_t(1) << 20));
+            s->entries.reset(new std::atomic<int32_t>[s->count]);
+            for (uint32_t i = 0; i < s->count; ++i) s->entries[i].store(S_OK, std::memory_order_relaxed);
+            p->status = s;
+        }
+        if (d) *reinterpret_cast<void**>(d) = p;
         *result = S_OK;
         return true;
     }
@@ -90,68 +335,73 @@ bool special(Probe* self, int slot, uintptr_t a, uintptr_t b, uintptr_t c, uintp
         std::fprintf(stderr, "[dstorage] factory slot 10 (queue?) desc=%p\n", reinterpret_cast<void*>(a));
         hexdump("queue desc", reinterpret_cast<void*>(a), 48);
         std::fflush(stderr);
-        if (c) *reinterpret_cast<void**>(c) = make_probe("queue");
-        *result = S_OK;
-        return true;
-    }
-    if (std::strcmp(self->name, "status") == 0 && slot == 3) {  // IsComplete(index) -> TRUE (HACK)
-        *result = 1;
-        return true;
-    }
-    if (std::strcmp(self->name, "status") == 0 && slot == 4) {  // GetHResult(index) -> S_OK
-        *result = S_OK;
-        return true;
-    }
-    if (std::strcmp(self->name, "queue") == 0 && slot == 3) {  // EnqueueRequest(request*): synchronous read
-        // Console request layout (measured): +0 options (low byte = compression: 0 none, 1 zlib), +8 destination,
-        // +0x18 destination size, +0x20 IDStorageFile*, +0x28 file offset, +0x30 source size.
-        const auto* rq = reinterpret_cast<const uint8_t*>(a);
-        const uint32_t comp = rq[0];
-        auto* dst = *reinterpret_cast<uint8_t* const*>(rq + 0x08);
-        const uint32_t dst_size = *reinterpret_cast<const uint32_t*>(rq + 0x18);
-        auto* f = *reinterpret_cast<Probe* const*>(rq + 0x20);
-        const uint64_t off = *reinterpret_cast<const uint64_t*>(rq + 0x28);
-        const uint32_t src_size = *reinterpret_cast<const uint32_t*>(rq + 0x30);
-        static std::atomic<uint64_t> total{0}, fails{0};
-        bool ok = false;
-        std::vector<uint8_t> src(src_size);
-        if (f && f->file != INVALID_HANDLE_VALUE && dst) {
-            OVERLAPPED ov{};
-            ov.Offset = static_cast<DWORD>(off);
-            ov.OffsetHigh = static_cast<DWORD>(off >> 32);
-            DWORD got = 0;
-            if (ReadFile(f->file, src.data(), src_size, &got, &ov) && got == src_size) {
-                if (comp == 0) {
-                    std::memcpy(dst, src.data(), (std::min)(src_size, dst_size));
-                    ok = true;
-                } else if (comp == 1) {
-                    std::vector<uint8_t> out;
-                    if (leonida::zlib_inflate(std::span<const uint8_t>(src.data(), src.size()), out, dst_size)) {
-                        std::memcpy(dst, out.data(), (std::min)(out.size(), static_cast<size_t>(dst_size)));
-                        ok = true;
-                    }
-                }
-            }
+        Probe* q = make_probe("queue");
+        if (!sync_mode()) {
+            auto* s = new QueueState;
+            // desc: +0 source type (u64), +8 capacity (u16), +0xA priority (i8), +0x10 name
+            if (a && !IsBadReadPtr(reinterpret_cast<void*>(a), 10))
+                s->capacity = *reinterpret_cast<const uint16_t*>(a + 8);
+            q->queue = s;
+            start_workers();
         }
-        total += src_size;
-        if (!ok) {
-            if (fails++ < 12) {
-                std::fprintf(stderr, "[dstorage] request FAILED: comp=%u file=%ls off=0x%llx size=%u dst=%p/%u first=%02x %02x %02x %02x\n",
-                             comp, f ? f->path : L"?", (unsigned long long)off, src_size, (void*)dst, dst_size,
-                             src_size > 0 ? src[0] : 0, src_size > 1 ? src[1] : 0, src_size > 2 ? src[2] : 0,
-                             src_size > 3 ? src[3] : 0);
-                std::fflush(stderr);
-            }
+        if (c) *reinterpret_cast<void**>(c) = q;
+        *result = S_OK;
+        return true;
+    }
+    if (std::strcmp(self->name, "status") == 0 && slot == 3) {  // IsComplete(index)
+        // Entries that never had a marker (and sync mode) answer TRUE, as the old HACK did.
+        const uint32_t index = static_cast<uint32_t>(a);
+        StatusState* s = self->status;
+        *result = (s && index < s->count) ? (s->entries[index].load(std::memory_order_acquire) != kPending) : 1;
+        return true;
+    }
+    if (std::strcmp(self->name, "status") == 0 && slot == 4) {  // GetHResult(index)
+        const uint32_t index = static_cast<uint32_t>(a);
+        StatusState* s = self->status;
+        *result = static_cast<uintptr_t>(static_cast<uint32_t>(
+            (s && index < s->count) ? s->entries[index].load(std::memory_order_acquire) : S_OK));
+        return true;
+    }
+    if (std::strcmp(self->name, "queue") == 0 && slot == 3) {  // EnqueueRequest(request*)
+        if (!a || IsBadReadPtr(reinterpret_cast<void*>(a), 0x38)) { *result = S_OK; return true; }
+        const Req r = parse_request(reinterpret_cast<void*>(a));
+        if (sync_mode() || !self->queue) {
+            run_request(r);  // synchronous read (old behaviour)
         } else {
-            static std::atomic<int> n{0};
-            const int k = n++;
-            if (k < 3 || (k % 2000) == 0) {
-                std::fprintf(stderr, "[dstorage] request #%d ok: comp=%u %ls @0x%llx %u -> %u (total %llu MiB read)\n",
-                             k, comp, f->path, (unsigned long long)off, src_size, dst_size,
-                             (unsigned long long)(total.load() >> 20));
-                std::fflush(stderr);
-            }
+            std::lock_guard<std::mutex> lock(g_mu);
+            Cmd c;
+            c.req = r;
+            enqueue_locked(self->queue, c);
         }
+        *result = S_OK;
+        return true;
+    }
+    if (!sync_mode() && self->queue && slot == 4) {  // EnqueueStatus(array, index)
+        auto* arr = reinterpret_cast<Probe*>(a);
+        const uint32_t index = static_cast<uint32_t>(b);
+        log_marker(slot, a, b);
+        const bool is_array = arr && !IsBadReadPtr(arr, sizeof(Probe)) && arr->name &&
+                              std::strcmp(arr->name, "status") == 0 && arr->status;
+        if (is_array && index < arr->status->count) {
+            std::lock_guard<std::mutex> lock(g_mu);
+            arr->status->entries[index].store(kPending, std::memory_order_release);
+            Cmd c;
+            c.is_status = true;
+            c.array = arr->status;
+            c.index = index;
+            enqueue_locked(self->queue, c);
+        } else {
+            std::fprintf(stderr, "[dstorage] EnqueueStatus: not a known status entry (array=%p index=%u)\n",
+                         reinterpret_cast<void*>(a), index);
+            std::fflush(stderr);
+        }
+        *result = S_OK;
+        return true;
+    }
+    if (!sync_mode() && self->queue && slot == 6) {  // Submit()
+        log_marker(slot, a, b);
+        std::lock_guard<std::mutex> lock(g_mu);
+        submit_locked(self->queue);
         *result = S_OK;
         return true;
     }
