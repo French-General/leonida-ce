@@ -4011,8 +4011,15 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
             std::fflush(stderr);
         }
         return reinterpret_cast<std::uint64_t>(ret);
-    } else if constexpr (Slot == 57) {
-        // HACK: Xbox slot 57 = ID3D12Device2::CreatePipelineState(streamDesc, riid, out) (PC slot 47).
+    } else if constexpr (Slot == 81) {
+        // Device slot 81: frame statistics (token, kinds, count*, out). No statistics: count 0, S_OK (VIctory frame.rs
+        // statistics, GPLv3, credit to its authors). It used to answer E_NOTIMPL.
+        if (a3) *reinterpret_cast<std::uint32_t*>(a3) = 0;
+        return hr_to_u64(S_OK);
+    } else if constexpr (Slot == 57 || Slot == 86) {
+        // HACK: Xbox slot 57 = ID3D12Device2::CreatePipelineState(streamDesc, riid, out) (PC slot 47). Slot 86 takes
+        // the same (desc, riid, out) stream form (VIctory device.rs: f[86] = pipeline::create_stream; GPLv3, credit to
+        // its authors); it used to answer E_NOTIMPL, so every pipeline the title made through it was missing.
         auto* desc_in = reinterpret_cast<const D3D12_PIPELINE_STATE_STREAM_DESC*>(a1);
         auto* riid = reinterpret_cast<const IID*>(a2);
         auto** out = reinterpret_cast<void**>(a3);

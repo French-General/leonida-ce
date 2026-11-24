@@ -44,6 +44,11 @@
 #include <XAsync.h>
 #include <XAsyncProvider.h>
 #include <XTaskQueue.h>
+#include <atomic>
+#include <cstdio>
+#include <intrin.h>
+// Leonida CE: first calls of each service function (boot diagnosis).
+#define CE_SVC_TRACE() do { static std::atomic<int> ce_n{0}; if (ce_n++ < 3) { std::fprintf(stderr, "[svc] %s from %p\n", __func__, _ReturnAddress()); std::fflush(stderr); } } while (0)
 
 namespace {
 
@@ -592,11 +597,13 @@ HRESULT begin(XAsyncBlock* async, Job* job, const char* name) {
 // 3: HRESULT XGameSaveInitializeProvider(XUserHandle requestingUser, const char* configurationId, bool syncOnDemand,
 //                                         XGameSaveProviderHandle* provider)
 HRESULT STDMETHODCALLTYPE save_init(void*, XUserHandle user, const char* config_id, bool, XGameSaveProviderHandle* out) {
+    CE_SVC_TRACE();
     return open_provider(user, config_id, out);
 }
 
 // 4: HRESULT XGameSaveInitializeProviderAsync(XUserHandle, const char* configurationId, bool syncOnDemand, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE save_init_async(void*, XUserHandle user, const char* config_id, bool, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!user || !config_id) return E_INVALIDARG;
     auto* job = new Job{&kInitIdentity};
     job->user = user;
@@ -606,6 +613,7 @@ HRESULT STDMETHODCALLTYPE save_init_async(void*, XUserHandle user, const char* c
 
 // 5: HRESULT XGameSaveInitializeProviderResult(XAsyncBlock* async, XGameSaveProviderHandle* provider)
 HRESULT STDMETHODCALLTYPE save_init_result(void*, XAsyncBlock* async, XGameSaveProviderHandle* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     *out = nullptr;
     return XAsyncGetResult(async, &kInitIdentity, sizeof(*out), out, nullptr);
@@ -613,6 +621,7 @@ HRESULT STDMETHODCALLTYPE save_init_result(void*, XAsyncBlock* async, XGameSaveP
 
 // 6: void XGameSaveCloseProvider(XGameSaveProviderHandle provider)
 void STDMETHODCALLTYPE save_close_provider(void*, XGameSaveProviderHandle p) {
+    CE_SVC_TRACE();
     {
         std::lock_guard<std::recursive_mutex> lock(g_mutex);
         if (!p || g_providers.erase(p) == 0) return;
@@ -622,11 +631,13 @@ void STDMETHODCALLTYPE save_close_provider(void*, XGameSaveProviderHandle p) {
 
 // 7: HRESULT XGameSaveGetRemainingQuota(XGameSaveProviderHandle provider, int64_t* remainingQuota)
 HRESULT STDMETHODCALLTYPE save_quota(void*, XGameSaveProviderHandle p, int64_t* remaining) {
+    CE_SVC_TRACE();
     return remaining_quota(p, remaining);
 }
 
 // 8: HRESULT XGameSaveGetRemainingQuotaAsync(XGameSaveProviderHandle provider, XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE save_quota_async(void*, XGameSaveProviderHandle p, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     auto* job = new Job{&kQuotaIdentity};
     job->provider = p;
     job->serial = serial_of(g_providers, p);
@@ -635,17 +646,20 @@ HRESULT STDMETHODCALLTYPE save_quota_async(void*, XGameSaveProviderHandle p, XAs
 
 // 9: HRESULT XGameSaveGetRemainingQuotaResult(XAsyncBlock* async, int64_t* remainingQuota)
 HRESULT STDMETHODCALLTYPE save_quota_result(void*, XAsyncBlock* async, int64_t* remaining) {
+    CE_SVC_TRACE();
     if (!remaining) return E_POINTER;
     return XAsyncGetResult(async, &kQuotaIdentity, sizeof(*remaining), remaining, nullptr);
 }
 
 // 10: HRESULT XGameSaveDeleteContainer(XGameSaveProviderHandle provider, const char* containerName)
 HRESULT STDMETHODCALLTYPE save_delete(void*, XGameSaveProviderHandle p, const char* name) {
+    CE_SVC_TRACE();
     return delete_container(p, name);
 }
 
 // 11: HRESULT XGameSaveDeleteContainerAsync(XGameSaveProviderHandle provider, const char* containerName, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE save_delete_async(void*, XGameSaveProviderHandle p, const char* name, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!valid_container_name(name)) return E_GS_INVALID_CONTAINER_NAME;
     auto* job = new Job{&kDeleteIdentity};
     job->provider = p;
@@ -656,6 +670,7 @@ HRESULT STDMETHODCALLTYPE save_delete_async(void*, XGameSaveProviderHandle p, co
 
 // 12: HRESULT XGameSaveDeleteContainerResult(XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE save_delete_result(void*, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     return XAsyncGetResult(async, &kDeleteIdentity, 0, nullptr, nullptr);
 }
 
@@ -663,6 +678,7 @@ HRESULT STDMETHODCALLTYPE save_delete_result(void*, XAsyncBlock* async) {
 //                                       XGameSaveContainerInfoCallback* callback)
 HRESULT STDMETHODCALLTYPE save_container_info(void*, XGameSaveProviderHandle p, const char* name, void* context,
                                               ContainerInfoCallback cb) {
+    CE_SVC_TRACE();
     if (!cb) return E_INVALIDARG;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (!live(g_providers, p)) return E_GS_HANDLE_EXPIRED;
@@ -679,6 +695,7 @@ HRESULT STDMETHODCALLTYPE save_container_info(void*, XGameSaveProviderHandle p, 
 
 // 14: HRESULT XGameSaveEnumerateContainerInfo(XGameSaveProviderHandle, void* context, XGameSaveContainerInfoCallback*)
 HRESULT STDMETHODCALLTYPE save_enum_containers(void*, XGameSaveProviderHandle p, void* context, ContainerInfoCallback cb) {
+    CE_SVC_TRACE();
     if (!cb) return E_INVALIDARG;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (!live(g_providers, p)) return E_GS_HANDLE_EXPIRED;
@@ -690,6 +707,7 @@ HRESULT STDMETHODCALLTYPE save_enum_containers(void*, XGameSaveProviderHandle p,
 //                                                   void* context, XGameSaveContainerInfoCallback*)
 HRESULT STDMETHODCALLTYPE save_enum_containers_by_name(void*, XGameSaveProviderHandle p, const char* prefix,
                                                        void* context, ContainerInfoCallback cb) {
+    CE_SVC_TRACE();
     if (!cb) return E_INVALIDARG;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (!live(g_providers, p)) return E_GS_HANDLE_EXPIRED;
@@ -701,6 +719,7 @@ HRESULT STDMETHODCALLTYPE save_enum_containers_by_name(void*, XGameSaveProviderH
 // The folder appears when the first update is submitted.
 HRESULT STDMETHODCALLTYPE save_create_container(void*, XGameSaveProviderHandle p, const char* name,
                                                 XGameSaveContainerHandle* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     *out = nullptr;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
@@ -715,6 +734,7 @@ HRESULT STDMETHODCALLTYPE save_create_container(void*, XGameSaveProviderHandle p
 
 // 17: void XGameSaveCloseContainer(XGameSaveContainerHandle context)
 void STDMETHODCALLTYPE save_close_container(void*, XGameSaveContainerHandle c) {
+    CE_SVC_TRACE();
     {
         std::lock_guard<std::recursive_mutex> lock(g_mutex);
         if (!c || g_containers.erase(c) == 0) return;
@@ -736,6 +756,7 @@ HRESULT enumerate_blobs(XGameSaveContainerHandle c, std::string_view prefix, voi
 
 // 18: HRESULT XGameSaveEnumerateBlobInfo(XGameSaveContainerHandle, void* context, XGameSaveBlobInfoCallback*)
 HRESULT STDMETHODCALLTYPE save_enum_blobs(void*, XGameSaveContainerHandle c, void* context, BlobInfoCallback cb) {
+    CE_SVC_TRACE();
     return enumerate_blobs(c, {}, context, cb);
 }
 
@@ -743,6 +764,7 @@ HRESULT STDMETHODCALLTYPE save_enum_blobs(void*, XGameSaveContainerHandle c, voi
 //                                              XGameSaveBlobInfoCallback*)
 HRESULT STDMETHODCALLTYPE save_enum_blobs_by_name(void*, XGameSaveContainerHandle c, const char* prefix, void* context,
                                                   BlobInfoCallback cb) {
+    CE_SVC_TRACE();
     return enumerate_blobs(c, prefix ? std::string_view(prefix) : std::string_view{}, context, cb);
 }
 
@@ -750,6 +772,7 @@ HRESULT STDMETHODCALLTYPE save_enum_blobs_by_name(void*, XGameSaveContainerHandl
 //                                   size_t blobsSize, XGameSaveBlob* blobData)
 HRESULT STDMETHODCALLTYPE save_read(void*, XGameSaveContainerHandle c, const char** names, uint32_t* count,
                                     size_t size, XGameSaveBlob* out) {
+    CE_SVC_TRACE();
     if (!count || !out) return E_POINTER;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (!live(g_containers, c)) return E_GS_HANDLE_EXPIRED;
@@ -766,6 +789,7 @@ HRESULT STDMETHODCALLTYPE save_read(void*, XGameSaveContainerHandle c, const cha
 //                                        XAsyncBlock* async). The names are copied: the title may free them at once.
 HRESULT STDMETHODCALLTYPE save_read_async(void*, XGameSaveContainerHandle c, const char** names, uint32_t count,
                                           XAsyncBlock* async) {
+    CE_SVC_TRACE();
     auto* job = new Job{&kReadIdentity};
     job->container = c;
     job->serial = serial_of(g_containers, c);
@@ -783,6 +807,7 @@ HRESULT STDMETHODCALLTYPE save_read_async(void*, XGameSaveContainerHandle c, con
 // 22: HRESULT XGameSaveReadBlobDataResult(XAsyncBlock* async, size_t blobsSize, XGameSaveBlob* blobData,
 //                                         uint32_t* countOfBlobs). blobsSize: XAsyncGetResultSize's answer.
 HRESULT STDMETHODCALLTYPE save_read_result(void*, XAsyncBlock* async, size_t size, XGameSaveBlob* out, uint32_t* count) {
+    CE_SVC_TRACE();
     if (!out || !count) return E_POINTER;
     *count = 0;
     t_read_count = 0;
@@ -796,6 +821,7 @@ HRESULT STDMETHODCALLTYPE save_read_result(void*, XAsyncBlock* async, size_t siz
 // 23: HRESULT XGameSaveCreateUpdate(XGameSaveContainerHandle, const char* containerDisplayName, XGameSaveUpdateHandle*)
 HRESULT STDMETHODCALLTYPE save_create_update(void*, XGameSaveContainerHandle c, const char* display_name,
                                              XGameSaveUpdateHandle* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     *out = nullptr;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
@@ -809,6 +835,7 @@ HRESULT STDMETHODCALLTYPE save_create_update(void*, XGameSaveContainerHandle c, 
 
 // 24: void XGameSaveCloseUpdate(XGameSaveUpdateHandle context)
 void STDMETHODCALLTYPE save_close_update(void*, XGameSaveUpdateHandle u) {
+    CE_SVC_TRACE();
     {
         std::lock_guard<std::recursive_mutex> lock(g_mutex);
         if (!u || g_updates.erase(u) == 0) return;
@@ -819,6 +846,7 @@ void STDMETHODCALLTYPE save_close_update(void*, XGameSaveUpdateHandle u) {
 // 25: HRESULT XGameSaveSubmitBlobWrite(XGameSaveUpdateHandle, const char* blobName, const uint8_t* data, size_t size).
 // One write or delete per blob per update; the update (and so each blob) stays within GS_MAX_BLOB_SIZE.
 HRESULT STDMETHODCALLTYPE save_write(void*, XGameSaveUpdateHandle u, const char* name, const uint8_t* data, size_t size) {
+    CE_SVC_TRACE();
     if (!valid_blob_name(name) || (!data && size)) return E_INVALIDARG;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (!live(g_updates, u)) return E_GS_HANDLE_EXPIRED;
@@ -831,6 +859,7 @@ HRESULT STDMETHODCALLTYPE save_write(void*, XGameSaveUpdateHandle u, const char*
 
 // 26: HRESULT XGameSaveSubmitBlobDelete(XGameSaveUpdateHandle, const char* blobName)
 HRESULT STDMETHODCALLTYPE save_delete_blob(void*, XGameSaveUpdateHandle u, const char* name) {
+    CE_SVC_TRACE();
     if (!valid_blob_name(name)) return E_INVALIDARG;
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     if (!live(g_updates, u)) return E_GS_HANDLE_EXPIRED;
@@ -840,10 +869,12 @@ HRESULT STDMETHODCALLTYPE save_delete_blob(void*, XGameSaveUpdateHandle u, const
 }
 
 // 27: HRESULT XGameSaveSubmitUpdate(XGameSaveUpdateHandle update)
-HRESULT STDMETHODCALLTYPE save_submit(void*, XGameSaveUpdateHandle u) { return submit_update(u); }
+HRESULT STDMETHODCALLTYPE save_submit(void*, XGameSaveUpdateHandle u) {
+    CE_SVC_TRACE(); return submit_update(u); }
 
 // 28: HRESULT XGameSaveSubmitUpdateAsync(XGameSaveUpdateHandle update, XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE save_submit_async(void*, XGameSaveUpdateHandle u, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     auto* job = new Job{&kSubmitIdentity};
     job->update = u;
     job->serial = serial_of(g_updates, u);
@@ -852,6 +883,7 @@ HRESULT STDMETHODCALLTYPE save_submit_async(void*, XGameSaveUpdateHandle u, XAsy
 
 // 29: HRESULT XGameSaveSubmitUpdateResult(XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE save_submit_result(void*, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     return XAsyncGetResult(async, &kSubmitIdentity, 0, nullptr, nullptr);
 }
 

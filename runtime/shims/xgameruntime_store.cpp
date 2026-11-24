@@ -36,6 +36,11 @@
 #include <XAsync.h>
 #include <XAsyncProvider.h>
 #include <XTaskQueue.h>
+#include <atomic>
+#include <cstdio>
+#include <intrin.h>
+// Leonida CE: first calls of each service function (boot diagnosis).
+#define CE_SVC_TRACE() do { static std::atomic<int> ce_n{0}; if (ce_n++ < 3) { std::fprintf(stderr, "[svc] %s from %p\n", __func__, _ReturnAddress()); std::fflush(stderr); } } while (0)
 
 namespace {
 
@@ -190,6 +195,7 @@ HRESULT begin(XStoreContextHandle context, XAsyncBlock* async, const char* ident
 // 3: HRESULT XStoreCreateContext(const XUserHandle user, XStoreContextHandle* storeContextHandle). The user may be
 // null (PC: the store's user).
 HRESULT STDMETHODCALLTYPE store_create_context(void*, XUserHandle, XStoreContextHandle* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     *out = new_handle<XStoreContext>(g_contexts);
     static std::atomic<bool> s_logged{false};
@@ -199,38 +205,46 @@ HRESULT STDMETHODCALLTYPE store_create_context(void*, XUserHandle, XStoreContext
 }
 
 // 4: void XStoreCloseContextHandle(XStoreContextHandle storeContextHandle)
-void STDMETHODCALLTYPE store_close_context(void*, XStoreContextHandle h) { close_handle(g_contexts, h); }
+void STDMETHODCALLTYPE store_close_context(void*, XStoreContextHandle h) {
+    CE_SVC_TRACE(); close_handle(g_contexts, h); }
 
 // Product queries (5-14, 77-78): every one completes with an empty query: no products, no further pages.
 // 5: XStoreQueryAssociatedProductsAsync(context, XStoreProductKind, uint32_t maxItemsToRetrievePerPage, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_query_associated_async(void*, XStoreContextHandle c, uint32_t, uint32_t, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kProductsIdentity, "XStoreQueryAssociatedProductsAsync");
 }
 // 7: XStoreQueryProductsAsync(context, kinds, const char** storeIds, size_t, const char** actionFilters, size_t, async)
 HRESULT STDMETHODCALLTYPE store_query_products_async(void*, XStoreContextHandle c, uint32_t, const char**, size_t,
                                                      const char**, size_t, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kProductsIdentity, "XStoreQueryProductsAsync");
 }
 // 9: XStoreQueryEntitledProductsAsync(context, kinds, uint32_t maxItemsToRetrievePerPage, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_query_entitled_async(void*, XStoreContextHandle c, uint32_t, uint32_t, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kProductsIdentity, "XStoreQueryEntitledProductsAsync");
 }
 // 11: XStoreQueryProductForCurrentGameAsync(context, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_query_current_game_async(void*, XStoreContextHandle c, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kProductsIdentity, "XStoreQueryProductForCurrentGameAsync");
 }
 // 13: XStoreQueryProductForPackageAsync(context, kinds, const char* packageIdentifier, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_query_for_package_async(void*, XStoreContextHandle c, uint32_t, const char*,
                                                         XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kProductsIdentity, "XStoreQueryProductForPackageAsync");
 }
 // 77: XStoreQueryAssociatedProductsForStoreIdAsync(context, const char* storeId, kinds, uint32_t maxItems, async)
 HRESULT STDMETHODCALLTYPE store_query_associated_for_id_async(void*, XStoreContextHandle c, const char*, uint32_t,
                                                               uint32_t, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kProductsIdentity, "XStoreQueryAssociatedProductsForStoreIdAsync");
 }
 // 6, 8, 10, 12, 14, 18, 78: HRESULT ...Result(XAsyncBlock* async, XStoreProductQueryHandle* productQueryHandle)
 HRESULT STDMETHODCALLTYPE store_products_result(void*, XAsyncBlock* async, XStoreProductQueryHandle* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     *out = nullptr;
     return XAsyncGetResult(async, &kProductsIdentity, sizeof(*out), out, nullptr);
@@ -238,93 +252,112 @@ HRESULT STDMETHODCALLTYPE store_products_result(void*, XAsyncBlock* async, XStor
 
 // 15: HRESULT XStoreEnumerateProductsQuery(productQueryHandle, void* context, XStoreProductQueryCallback* callback)
 HRESULT STDMETHODCALLTYPE store_enumerate_products(void*, XStoreProductQueryHandle q, void*, void* callback) {
+    CE_SVC_TRACE();
     if (!callback) return E_INVALIDARG;
     return live(g_queries, q) ? S_OK : E_INVALIDARG;   // no products: the callback is never called
 }
 
 // 16: bool XStoreProductsQueryHasMorePages(const XStoreProductQueryHandle productQueryHandle)
-bool STDMETHODCALLTYPE store_has_more_pages(void*, XStoreProductQueryHandle) { return false; }
+bool STDMETHODCALLTYPE store_has_more_pages(void*, XStoreProductQueryHandle) {
+    CE_SVC_TRACE(); return false; }
 
 // 17: HRESULT XStoreProductsQueryNextPageAsync(productQueryHandle, XAsyncBlock*): there is no next page.
 HRESULT STDMETHODCALLTYPE store_next_page_async(void*, XStoreProductQueryHandle, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     return async ? E_INVALIDARG : E_POINTER;
 }
 
 // 19: void XStoreCloseProductsQueryHandle(XStoreProductQueryHandle productQueryHandle)
-void STDMETHODCALLTYPE store_close_query(void*, XStoreProductQueryHandle h) { close_handle(g_queries, h); }
+void STDMETHODCALLTYPE store_close_query(void*, XStoreProductQueryHandle h) {
+    CE_SVC_TRACE(); close_handle(g_queries, h); }
 
 // 20: HRESULT XStoreAcquireLicenseForPackageAsync(context, const char* packageIdentifier, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_acquire_package_async(void*, XStoreContextHandle c, const char* package, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     if (!package) return E_INVALIDARG;
     return begin(c, a, &kLicenseIdentity, "XStoreAcquireLicenseForPackageAsync");
 }
 // 21: HRESULT XStoreAcquireLicenseForPackageResult(XAsyncBlock* async, XStoreLicenseHandle* storeLicenseHandle)
 HRESULT STDMETHODCALLTYPE store_acquire_package_result(void*, XAsyncBlock* async, XStoreLicenseHandle* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     *out = nullptr;
     return XAsyncGetResult(async, &kLicenseIdentity, sizeof(*out), out, nullptr);
 }
 
 // 22: bool XStoreIsLicenseValid(const XStoreLicenseHandle storeLicenseHandle)
-bool STDMETHODCALLTYPE store_is_license_valid(void*, XStoreLicenseHandle h) { return live(g_licenses, h); }
+bool STDMETHODCALLTYPE store_is_license_valid(void*, XStoreLicenseHandle h) {
+    CE_SVC_TRACE(); return live(g_licenses, h); }
 
 // 23: void XStoreCloseLicenseHandle(XStoreLicenseHandle storeLicenseHandle)
-void STDMETHODCALLTYPE store_close_license(void*, XStoreLicenseHandle h) { close_handle(g_licenses, h); }
+void STDMETHODCALLTYPE store_close_license(void*, XStoreLicenseHandle h) {
+    CE_SVC_TRACE(); close_handle(g_licenses, h); }
 
 // 24: HRESULT XStoreCanAcquireLicenseForStoreIdAsync(context, const char* storeProductId, XAsyncBlock*)
 // 26: HRESULT XStoreCanAcquireLicenseForPackageAsync(context, const char* packageIdentifier, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_can_acquire_async(void*, XStoreContextHandle c, const char* id, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     if (!id) return E_INVALIDARG;
     return begin(c, a, &kCanAcquireIdentity, "XStoreCanAcquireLicenseAsync");
 }
 // 25, 27: HRESULT ...Result(XAsyncBlock* async, XStoreCanAcquireLicenseResult* storeCanAcquireLicense)
 HRESULT STDMETHODCALLTYPE store_can_acquire_result(void*, XAsyncBlock* async, XStoreCanAcquireLicenseResult* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     return XAsyncGetResult(async, &kCanAcquireIdentity, sizeof(*out), out, nullptr);
 }
 
 // 28: HRESULT XStoreQueryGameLicenseAsync(const XStoreContextHandle storeContextHandle, XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE store_game_license_async(void*, XStoreContextHandle c, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kGameLicenseIdentity, "XStoreQueryGameLicenseAsync");
 }
 // 29: HRESULT XStoreQueryGameLicenseResult(XAsyncBlock* async, XStoreGameLicense* license)
 HRESULT STDMETHODCALLTYPE store_game_license_result(void*, XAsyncBlock* async, XStoreGameLicense* out) {
+    CE_SVC_TRACE();
     if (!out) return E_POINTER;
     return XAsyncGetResult(async, &kGameLicenseIdentity, sizeof(*out), out, nullptr);
 }
 
 // 30: HRESULT XStoreQueryAddOnLicensesAsync(const XStoreContextHandle storeContextHandle, XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE store_addons_async(void*, XStoreContextHandle c, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kAddOnsIdentity, "XStoreQueryAddOnLicensesAsync");
 }
 // 55: HRESULT XStoreQueryGameAndDlcPackageUpdatesAsync(const XStoreContextHandle storeContextHandle, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_updates_async(void*, XStoreContextHandle c, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kUpdatesIdentity, "XStoreQueryGameAndDlcPackageUpdatesAsync");
 }
 // 79: HRESULT XStoreQueryPackageUpdatesAsync(context, const char** packageIdentifiers, size_t count, XAsyncBlock*)
 HRESULT STDMETHODCALLTYPE store_package_updates_async(void*, XStoreContextHandle c, const char**, size_t, XAsyncBlock* a) {
+    CE_SVC_TRACE();
     return begin(c, a, &kUpdatesIdentity, "XStoreQueryPackageUpdatesAsync");
 }
 
 // 31: HRESULT XStoreQueryAddOnLicensesResultCount(XAsyncBlock* async, uint32_t* count)
 HRESULT STDMETHODCALLTYPE store_addons_count(void*, XAsyncBlock* async, uint32_t* count) {
+    CE_SVC_TRACE();
     if (!count) return E_POINTER;
     *count = 0;
     return XAsyncGetResult(async, &kAddOnsIdentity, 0, nullptr, nullptr);
 }
 // 56, 80: HRESULT ...ResultCount(XAsyncBlock* async, uint32_t* count)
 HRESULT STDMETHODCALLTYPE store_updates_count(void*, XAsyncBlock* async, uint32_t* count) {
+    CE_SVC_TRACE();
     if (!count) return E_POINTER;
     *count = 0;
     return XAsyncGetResult(async, &kUpdatesIdentity, 0, nullptr, nullptr);
 }
 // 32: HRESULT XStoreQueryAddOnLicensesResult(XAsyncBlock* async, uint32_t count, XStoreAddonLicense* addOnLicenses)
 HRESULT STDMETHODCALLTYPE store_addons_result(void*, XAsyncBlock* async, uint32_t count, void*) {
+    CE_SVC_TRACE();
     if (count != 0) return E_INVALIDARG;   // the count was 0
     return XAsyncGetResult(async, &kAddOnsIdentity, 0, nullptr, nullptr);
 }
 // 57, 81: HRESULT ...Result(XAsyncBlock* async, uint32_t count, XStorePackageUpdate* packageUpdates)
 HRESULT STDMETHODCALLTYPE store_updates_result(void*, XAsyncBlock* async, uint32_t count, void*) {
+    CE_SVC_TRACE();
     if (count != 0) return E_INVALIDARG;
     return XAsyncGetResult(async, &kUpdatesIdentity, 0, nullptr, nullptr);
 }
@@ -332,6 +365,7 @@ HRESULT STDMETHODCALLTYPE store_updates_result(void*, XAsyncBlock* async, uint32
 // 65: HRESULT XStoreQueryPackageIdentifier(const char* storeId, size_t size, char* packageIdentifier): no store
 // product is installed as a package offline.
 HRESULT STDMETHODCALLTYPE store_query_package_identifier(void*, const char* store_id, size_t size, char* out) {
+    CE_SVC_TRACE();
     if (!store_id || !out) return E_INVALIDARG;
     if (size) out[0] = '\0';
     return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
@@ -342,13 +376,15 @@ HRESULT STDMETHODCALLTYPE store_query_package_identifier(void*, const char* stor
 // Nothing changes offline: the token is handed out, the callback is never called.
 HRESULT STDMETHODCALLTYPE store_register(void*, void* handle, XTaskQueueHandle, void*, LicenseChangedCallback callback,
                                          XTaskQueueRegistrationToken* token) {
+    CE_SVC_TRACE();
     if (!handle || !callback || !token) return E_INVALIDARG;
     std::lock_guard<std::mutex> lock(g_mutex);
     token->token = g_next_token++;
     return S_OK;
 }
 // 67, 69: bool ...Unregister...(handle, XTaskQueueRegistrationToken token, bool wait): never pending, so true.
-bool STDMETHODCALLTYPE store_unregister(void*, void*, XTaskQueueRegistrationToken, bool) { return true; }
+bool STDMETHODCALLTYPE store_unregister(void*, void*, XTaskQueueRegistrationToken, bool) {
+    CE_SVC_TRACE(); return true; }
 
 // ---- The object ----
 

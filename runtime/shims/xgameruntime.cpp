@@ -36,6 +36,11 @@
 
 #include "file_system.h"
 #include "shims.h"
+#include <atomic>
+#include <cstdio>
+#include <intrin.h>
+// Leonida CE: first calls of each service function (boot diagnosis).
+#define CE_SVC_TRACE() do { static std::atomic<int> ce_n{0}; if (ce_n++ < 3) { std::fprintf(stderr, "[svc] %s from %p\n", __func__, _ReturnAddress()); std::fflush(stderr); } } while (0)
 
 namespace rt::shims {
 bool xgameruntime_user_query(const GUID& class_id, REFIID interface_id, void** out, HRESULT* hr);
@@ -188,11 +193,14 @@ HRESULT STDMETHODCALLTYPE begin_alloc_not_provided(void*) {
 // the GDK; nothing is enforced offline (a time-sensitive thread may still block).
 thread_local bool t_time_sensitive = false;
 HRESULT STDMETHODCALLTYPE thread_set_time_sensitive(void*, bool value) {
+    CE_SVC_TRACE();
     t_time_sensitive = value;
     return S_OK;
 }
-void STDMETHODCALLTYPE thread_assert_not_time_sensitive(void*) {}
-bool STDMETHODCALLTYPE thread_is_time_sensitive(void*) { return t_time_sensitive; }
+void STDMETHODCALLTYPE thread_assert_not_time_sensitive(void*) {
+    CE_SVC_TRACE();}
+bool STDMETHODCALLTYPE thread_is_time_sensitive(void*) {
+    CE_SVC_TRACE(); return t_time_sensitive; }
 
 #define XM(fn) reinterpret_cast<const void*>(&Method<&fn>::call)
 const void* const kThreadingVtable[] = {
@@ -240,6 +248,7 @@ std::mutex g_error_mutex{};   // guards g_error_callback + g_error_context as on
 
 // HRESULT XErrorReport(HRESULT, const char*) (xgameruntime-docs' XErrorReport.md): S_OK once reported.
 HRESULT STDMETHODCALLTYPE error_report(void*, HRESULT hr, const char* message) {
+    CE_SVC_TRACE();
     static std::atomic<int> s_logged{0};
     if (s_logged.fetch_add(1) < 64)
         std::fprintf(stderr, "[rt] xgameruntime: XErrorReport(0x%08lx, %s)\n", static_cast<unsigned long>(hr),
@@ -254,12 +263,14 @@ HRESULT STDMETHODCALLTYPE error_report(void*, HRESULT hr, const char* message) {
 // is missing (retail executable: the lookup at +0x55e2b7e, the null check at +0x55e2c08, then an int3 at +0x5a91c21).
 HRESULT WINAPI XErrorReport(HRESULT hr, const char* message) { return error_report(nullptr, hr, message); }
 void STDMETHODCALLTYPE error_set_callback(void*, XErrorCallback callback, void* context) {
+    CE_SVC_TRACE();
     std::lock_guard<std::mutex> lock(g_error_mutex);
     g_error_context = context;
     g_error_callback = callback;
 }
 // void XErrorSetOptions(XErrorOptions, XErrorOptions), as Microsoft documents it: nothing to configure offline.
-void STDMETHODCALLTYPE error_set_options(void*, uint32_t, uint32_t) {}
+void STDMETHODCALLTYPE error_set_options(void*, uint32_t, uint32_t) {
+    CE_SVC_TRACE();}
 
 const void* const kErrorVtable[] = {
     reinterpret_cast<const void*>(&object_query_interface), reinterpret_cast<const void*>(&object_add_ref),
@@ -296,6 +307,7 @@ struct ConnectivityHint {
 static_assert(sizeof(ConnectivityHint) == 16, "XNetworkingConnectivityHint is 16 bytes");
 
 HRESULT STDMETHODCALLTYPE net_query_port(void*, uint16_t* port) {
+    CE_SVC_TRACE();
     if (!port) return E_POINTER;
     *port = 0;
     return kNoNetwork;
@@ -305,17 +317,21 @@ HRESULT start_failed_async(XAsyncBlock* async) {
     if (!async) return E_POINTER;
     return XAsyncRun(async, [](XAsyncBlock*) -> HRESULT { return kNoNetwork; });
 }
-HRESULT STDMETHODCALLTYPE net_query_port_async(void*, XAsyncBlock* async) { return start_failed_async(async); }
+HRESULT STDMETHODCALLTYPE net_query_port_async(void*, XAsyncBlock* async) {
+    CE_SVC_TRACE(); return start_failed_async(async); }
 HRESULT STDMETHODCALLTYPE net_query_port_result(void*, XAsyncBlock* async, uint16_t* port) {
+    CE_SVC_TRACE();
     if (!async || !port) return E_POINTER;
     *port = 0;
     return XAsyncGetStatus(async, false);
 }
 HRESULT STDMETHODCALLTYPE net_security_async(void*, const void* url, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!url) return E_INVALIDARG;
     return start_failed_async(async);
 }
 HRESULT STDMETHODCALLTYPE net_security_result_size(void*, XAsyncBlock* async, size_t* size) {
+    CE_SVC_TRACE();
     if (!async || !size) return E_POINTER;
     *size = 0;
     return XAsyncGetStatus(async, false);
@@ -324,13 +340,16 @@ HRESULT STDMETHODCALLTYPE net_security_result_size(void*, XAsyncBlock* async, si
 // size_t* bufferByteCountUsed, uint8_t* buffer, XNetworkingSecurityInformation** securityInformation), in the order
 // of Microsoft's reference pages. The buffer itself is never written: there is no result to copy offline.
 HRESULT STDMETHODCALLTYPE net_security_result(void*, XAsyncBlock* async, size_t, size_t* used, uint8_t*, void** info) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     if (used) *used = 0;
     if (info) *info = nullptr;
     return XAsyncGetStatus(async, false);
 }
-HRESULT STDMETHODCALLTYPE net_verify_certificate(void*, void*, const void*) { return kNoNetwork; }
+HRESULT STDMETHODCALLTYPE net_verify_certificate(void*, void*, const void*) {
+    CE_SVC_TRACE(); return kNoNetwork; }
 HRESULT STDMETHODCALLTYPE net_connectivity_hint(void*, ConnectivityHint* hint) {
+    CE_SVC_TRACE();
     if (!hint) return E_POINTER;
     *hint = {};
     hint->connectivity_level = 1;   // None: the stack is up, nothing is reachable
@@ -388,6 +407,7 @@ template <class Callback> struct InitialNotification {
 template <class Callback>
 HRESULT STDMETHODCALLTYPE net_register(void*, XTaskQueueHandle queue, void* context, Callback callback,
                                        XTaskQueueRegistrationToken* token) {
+    CE_SVC_TRACE();
     if (!callback) return E_INVALIDARG;
     if (!token) return E_POINTER;
     XTaskQueueHandle process_queue = nullptr;
@@ -414,6 +434,7 @@ HRESULT STDMETHODCALLTYPE net_register(void*, XTaskQueueHandle queue, void* cont
     return hr;
 }
 bool STDMETHODCALLTYPE net_unregister(void*, XTaskQueueRegistrationToken token, bool wait) {
+    CE_SVC_TRACE();
     std::unique_lock lock(g_net_mu);
     const auto it = g_net_registrations.find(token.token);
     if (it == g_net_registrations.end()) return true;
@@ -425,7 +446,8 @@ bool STDMETHODCALLTYPE net_unregister(void*, XTaskQueueRegistrationToken token, 
     if (wait) g_net_cv.wait(lock, [&] { return !g_net_registrations.contains(token.token); });
     return wait;
 }
-HRESULT STDMETHODCALLTYPE net_not_implemented(void*) { return E_NOTIMPL; }
+HRESULT STDMETHODCALLTYPE net_not_implemented(void*) {
+    CE_SVC_TRACE(); return E_NOTIMPL; }
 
 #define NM(fn) reinterpret_cast<const void*>(&fn)
 const void* const kNetworkingVtable[] = {
@@ -509,6 +531,7 @@ uint64_t folder_bytes(const std::filesystem::path& dir) {
 }
 
 HRESULT STDMETHODCALLTYPE pls_get_path_size(void*, size_t* path_size) {
+    CE_SVC_TRACE();
     if (!path_size) return E_POINTER;
     *path_size = 0;
     const std::string path = utf8_of(persistent_storage_dir().native());
@@ -518,6 +541,7 @@ HRESULT STDMETHODCALLTYPE pls_get_path_size(void*, size_t* path_size) {
 }
 
 HRESULT STDMETHODCALLTYPE pls_get_path(void*, size_t path_size, char* path, size_t* path_used) {
+    CE_SVC_TRACE();
     if (path_used) *path_used = 0;
     if (!path) return E_POINTER;
     const std::string folder = utf8_of(persistent_storage_dir().native());
@@ -529,6 +553,7 @@ HRESULT STDMETHODCALLTYPE pls_get_path(void*, size_t path_size, char* path, size
 }
 
 HRESULT STDMETHODCALLTYPE pls_get_space_info(void*, PersistentSpaceInfo* info) {
+    CE_SVC_TRACE();
     if (!info) return E_POINTER;
     *info = {};
     const std::filesystem::path dir = persistent_storage_dir();
@@ -545,6 +570,7 @@ HRESULT STDMETHODCALLTYPE pls_get_space_info(void*, PersistentSpaceInfo* info) {
 }
 
 HRESULT STDMETHODCALLTYPE pls_prompt_async(void*, uint64_t requested_bytes, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     const std::filesystem::path dir = persistent_storage_dir();
     const bool fits = !dir.empty() && requested_bytes <= kPersistentQuotaBytes - (std::min)(folder_bytes(dir), kPersistentQuotaBytes);
@@ -553,12 +579,14 @@ HRESULT STDMETHODCALLTYPE pls_prompt_async(void*, uint64_t requested_bytes, XAsy
 }
 
 HRESULT STDMETHODCALLTYPE pls_prompt_result(void*, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     return XAsyncGetStatus(async, false);
 }
 
 // IXPersistentLocalStorageImpl3's package mount has nothing to mount offline; the handle is left empty.
 HRESULT STDMETHODCALLTYPE pls_mount_for_package(void*, const char*, void** mount_handle) {
+    CE_SVC_TRACE();
     if (!mount_handle) return E_POINTER;
     *mount_handle = nullptr;
     return E_NOTIMPL;
@@ -749,21 +777,27 @@ constexpr char kAppDeviceId[] = "00000000000000000000000000000000000000000000";
 static_assert(sizeof(kAppDeviceId) == 45, "fills XSystemAppSpecificDeviceIdBytes");
 
 HRESULT STDMETHODCALLTYPE sys_console_id(void*, size_t size, char* out, size_t* used) {
+    CE_SVC_TRACE();
     return XSystemGetConsoleId(size, out, used);
 }
 HRESULT STDMETHODCALLTYPE sys_sandbox_id(void*, size_t size, char* out, size_t* used) {
+    CE_SVC_TRACE();
     return copy_id(kSandboxId, sizeof(kSandboxId), kSandboxIdMaxBytes, size, out, used);
 }
 HRESULT STDMETHODCALLTYPE sys_app_device_id(void*, size_t size, char* out, size_t* used) {
+    CE_SVC_TRACE();
     return copy_id(kAppDeviceId, sizeof(kAppDeviceId), sizeof(kAppDeviceId), size, out, used);
 }
 // XSystemHandleTrack(callback, context): the GDK reports handle creation and destruction to it. Offline nothing is
 // tracked, so the callback is accepted and never called.
-HRESULT STDMETHODCALLTYPE sys_handle_track(void*, void*, void*) { return S_OK; }
+HRESULT STDMETHODCALLTYPE sys_handle_track(void*, void*, void*) {
+    CE_SVC_TRACE(); return S_OK; }
 // bool XSystemIsHandleValid(XSystemHandle) and void XSystemAllowFullDownloadBandwidth(bool), as Microsoft documents
 // them: a bool, not an HRESULT (S_OK would read as false).
-bool STDMETHODCALLTYPE sys_is_handle_valid(void*, void* handle) { return handle != nullptr; }
-void STDMETHODCALLTYPE sys_allow_full_download_bandwidth(void*, bool) {}
+bool STDMETHODCALLTYPE sys_is_handle_valid(void*, void* handle) {
+    CE_SVC_TRACE(); return handle != nullptr; }
+void STDMETHODCALLTYPE sys_allow_full_download_bandwidth(void*, bool) {
+    CE_SVC_TRACE();}
 
 const void* const kSystemVtable[] = {
     reinterpret_cast<const void*>(&object_query_interface), reinterpret_cast<const void*>(&object_add_ref),
@@ -1003,15 +1037,18 @@ constexpr GUID kPackage3 = {0xe2a4734b, 0x2f4a, 0x456d, {0xaa, 0x8f, 0xd0, 0x65,
 const GUID* const kPackageIids[] = {&kPackage1, &kPackage2, &kPackage3, nullptr};
 
 template <int Slot> HRESULT STDMETHODCALLTYPE package_not_implemented(void*) {
+    CE_SVC_TRACE();
     static std::atomic<bool> s_logged{false};
     if (!s_logged.exchange(true))
         std::fprintf(stderr, "[rt] xgameruntime: XPackageImpl slot %d not implemented offline (E_NOTIMPL)\n", Slot);
     return E_NOTIMPL;
 }
 HRESULT STDMETHODCALLTYPE pkg_identifier(void*, size_t size, char* buffer) {
+    CE_SVC_TRACE();
     return XPackageGetCurrentProcessPackageIdentifier(size, buffer);
 }
-bool STDMETHODCALLTYPE pkg_is_packaged(void*) { return XPackageIsPackagedProcess(); }
+bool STDMETHODCALLTYPE pkg_is_packaged(void*) {
+    CE_SVC_TRACE(); return XPackageIsPackagedProcess(); }
 // The package's MicrosoftGame.Config as text, from the game folder (LEONIDA_GAME_DIR, else --game-dir); empty when
 // there is no folder or no config. Wide on purpose: a game folder named outside the ANSI code page must reach the file
 // intact.
@@ -1075,6 +1112,7 @@ std::vector<std::string> package_locales() {
 // information is declared for the package, this function succeeds but does not return a user locale". The host's
 // locale is never handed out as the package's.
 HRESULT STDMETHODCALLTYPE pkg_user_locale(void*, size_t size, char* locale) {
+    CE_SVC_TRACE();
     if (!locale || !size) return E_INVALIDARG;
     const std::vector<std::string> declared = package_locales();
     if (declared.empty()) {
@@ -1101,15 +1139,19 @@ HRESULT STDMETHODCALLTYPE pkg_user_locale(void*, size_t size, char* locale) {
 // Slots 23-26 forward to the named exports' content-package mounts (XPackageMount and its handle registry), so the two
 // ways in behave the same. XPackageMountHandle is one u64, passed in a register like the named exports take it.
 HRESULT STDMETHODCALLTYPE pkg_mount(void*, const char* package_identifier, XPackageMountHandle* mount) {
+    CE_SVC_TRACE();
     return XPackageMount(package_identifier, mount);
 }
 HRESULT STDMETHODCALLTYPE pkg_mount_path_size(void*, XPackageMountHandle mount, size_t* size) {
+    CE_SVC_TRACE();
     return XPackageGetMountPathSize(mount, size);
 }
 HRESULT STDMETHODCALLTYPE pkg_mount_path(void*, XPackageMountHandle mount, size_t size, char* path) {
+    CE_SVC_TRACE();
     return XPackageGetMountPath(mount, size, path);
 }
-void STDMETHODCALLTYPE pkg_close_mount(void*, XPackageMountHandle mount) { XPackageCloseMountHandle(mount); }
+void STDMETHODCALLTYPE pkg_close_mount(void*, XPackageMountHandle mount) {
+    CE_SVC_TRACE(); XPackageCloseMountHandle(mount); }
 
 // XPackageInstallationProgress: totalBytes, installedBytes, launchBytes (u64), launchable, completed (bool).
 struct InstallationProgress {
@@ -1120,15 +1162,20 @@ static_assert(sizeof(InstallationProgress) == 32, "XPackageInstallationProgress 
 // void XPackageGetInstallationProgress(monitor, XPackageInstallationProgress*): an offline package is installed,
 // launchable and completed, every byte present.
 void STDMETHODCALLTYPE pkg_installation_progress(void*, void*, InstallationProgress* progress) {
+    CE_SVC_TRACE();
     if (progress) *progress = {0, 0, 0, true, true};
 }
 // The bool methods with no offline work, as Microsoft documents them: XPackageUpdateInstallationMonitor is false
 // (nothing changed), the two Unregister* calls are true (nothing pending), XPackageUninstallPackage is false (not
 // uninstalled). A generic E_NOTIMPL stub would read as true in al.
-bool STDMETHODCALLTYPE pkg_update_monitor(void*, void*) { return false; }
-bool STDMETHODCALLTYPE pkg_unregister_progress(void*, void*, XTaskQueueRegistrationToken, bool) { return true; }
-bool STDMETHODCALLTYPE pkg_unregister_installed(void*, XTaskQueueRegistrationToken, bool) { return true; }
-bool STDMETHODCALLTYPE pkg_uninstall_package(void*, const char*) { return false; }
+bool STDMETHODCALLTYPE pkg_update_monitor(void*, void*) {
+    CE_SVC_TRACE(); return false; }
+bool STDMETHODCALLTYPE pkg_unregister_progress(void*, void*, XTaskQueueRegistrationToken, bool) {
+    CE_SVC_TRACE(); return true; }
+bool STDMETHODCALLTYPE pkg_unregister_installed(void*, XTaskQueueRegistrationToken, bool) {
+    CE_SVC_TRACE(); return true; }
+bool STDMETHODCALLTYPE pkg_uninstall_package(void*, const char*) {
+    CE_SVC_TRACE(); return false; }
 
 #define PN(n) reinterpret_cast<const void*>(&package_not_implemented<n>)
 const void* const kPackageVtable[] = {
@@ -1205,6 +1252,7 @@ bool package_title_id(uint32_t& out) {
 // HRESULT XGameGetXboxTitleId(uint32_t* titleId): the package's title id. Without a config that declares one there
 // is no title id to give (E_FAIL), rather than a made-up one.
 HRESULT STDMETHODCALLTYPE game_get_title_id(void*, uint32_t* title_id) {
+    CE_SVC_TRACE();
     if (!title_id) return E_INVALIDARG;
     uint32_t id = 0;
     if (!package_title_id(id)) {
@@ -1220,6 +1268,7 @@ HRESULT STDMETHODCALLTYPE game_get_title_id(void*, uint32_t* title_id) {
 // void XLaunchNewGame(const char* exePath, const char* args, XUserHandle defaultUser): on the console this ends the
 // title and starts another. Offline there is no other title to start; the call is logged and returns.
 void STDMETHODCALLTYPE game_launch_new(void*, const char* exe_path, const char* args, void*) {
+    CE_SVC_TRACE();
     std::fprintf(stderr, "[rt] xgameruntime: XLaunchNewGame(\"%s\", \"%s\") ignored offline\n",
                  exe_path ? exe_path : "", args ? args : "");
 }
@@ -1227,6 +1276,7 @@ void STDMETHODCALLTYPE game_launch_new(void*, const char* exe_path, const char* 
 // HRESULT XLaunchRestartOnCrash(const char* args, uint32_t reserved): asks the console to restart the title after a
 // crash. Nothing restarts the process here; it succeeds with nothing registered.
 HRESULT STDMETHODCALLTYPE game_restart_on_crash(void*, const char*, uint32_t) {
+    CE_SVC_TRACE();
     static std::atomic<bool> s_logged{false};
     if (!s_logged.exchange(true))
         std::fprintf(stderr, "[rt] xgameruntime: XLaunchRestartOnCrash: no restart is registered offline\n");

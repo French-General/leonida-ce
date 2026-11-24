@@ -30,6 +30,11 @@
 #include <XAsync.h>
 #include <XAsyncProvider.h>
 #include <XTaskQueue.h>
+#include <atomic>
+#include <cstdio>
+#include <intrin.h>
+// Leonida CE: first calls of each service function (boot diagnosis).
+#define CE_SVC_TRACE() do { static std::atomic<int> ce_n{0}; if (ce_n++ < 3) { std::fprintf(stderr, "[svc] %s from %p\n", __func__, _ReturnAddress()); std::fflush(stderr); } } while (0)
 
 namespace {
 
@@ -109,6 +114,7 @@ bool valid(XUserHandle h) {
 
 // 3: HRESULT XUserDuplicateHandle(XUserHandle handle, XUserHandle* duplicatedHandle)
 HRESULT STDMETHODCALLTYPE user_duplicate(void*, XUserHandle handle, XUserHandle* dup) {
+    CE_SVC_TRACE();
     if (!dup) return E_POINTER;
     *dup = nullptr;
     if (!valid(handle)) return E_INVALIDARG;
@@ -118,6 +124,7 @@ HRESULT STDMETHODCALLTYPE user_duplicate(void*, XUserHandle handle, XUserHandle*
 
 // 4: void XUserCloseHandle(XUserHandle user)
 void STDMETHODCALLTYPE user_close(void*, XUserHandle user) {
+    CE_SVC_TRACE();
     {
         std::lock_guard<std::mutex> lock(g_handles_mutex);
         if (!user || g_handles.erase(user) == 0) return;   // closed already, or not ours
@@ -136,6 +143,7 @@ int32_t STDMETHODCALLTYPE user_compare(void*, XUserHandle a, XUserHandle b) {
 
 // 6: HRESULT XUserGetMaxUsers(uint32_t* maxUsers). One local user offline.
 HRESULT STDMETHODCALLTYPE user_get_max_users(void*, uint32_t* max_users) {
+    CE_SVC_TRACE();
     if (!max_users) return E_POINTER;
     *max_users = 1;
     return S_OK;
@@ -194,6 +202,7 @@ HRESULT CALLBACK resolve_provider(XAsyncOp op, const XAsyncProviderData* data) {
 // refused, as documented ("A guest cannot be the default user"). Without a silent option the console would show the
 // account picker; offline the one user is the answer either way.
 HRESULT STDMETHODCALLTYPE user_add_async(void*, XUserAddOptions options, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     const auto bits = static_cast<uint32_t>(options);
     if ((bits & static_cast<uint32_t>(XUserAddOptions::AddDefaultUserSilently)) &&
@@ -204,6 +213,7 @@ HRESULT STDMETHODCALLTYPE user_add_async(void*, XUserAddOptions options, XAsyncB
 
 // 8: HRESULT XUserAddResult(XAsyncBlock* async, XUserHandle* newUser)
 HRESULT STDMETHODCALLTYPE user_add_result(void*, XAsyncBlock* async, XUserHandle* user) {
+    CE_SVC_TRACE();
     if (!user) return E_POINTER;
     *user = nullptr;
     return XAsyncGetResult(async, &kAddIdentity, sizeof(*user), user, nullptr);
@@ -211,6 +221,7 @@ HRESULT STDMETHODCALLTYPE user_add_result(void*, XAsyncBlock* async, XUserHandle
 
 // 9: HRESULT XUserGetLocalId(XUserHandle user, XUserLocalId* userLocalId)
 HRESULT STDMETHODCALLTYPE user_get_local_id(void*, XUserHandle user, XUserLocalId* id) {
+    CE_SVC_TRACE();
     if (!id) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     id->value = kOfflineLocalId;
@@ -219,6 +230,7 @@ HRESULT STDMETHODCALLTYPE user_get_local_id(void*, XUserHandle user, XUserLocalI
 
 // 10: HRESULT XUserFindUserByLocalId(XUserLocalId userLocalId, XUserHandle* handle)
 HRESULT STDMETHODCALLTYPE user_find_by_local_id(void*, XUserLocalId id, XUserHandle* handle) {
+    CE_SVC_TRACE();
     if (!handle) return E_POINTER;
     *handle = nullptr;
     if (id.value != kOfflineLocalId) return E_GAMEUSER_USER_NOT_FOUND;
@@ -228,6 +240,7 @@ HRESULT STDMETHODCALLTYPE user_find_by_local_id(void*, XUserLocalId id, XUserHan
 
 // 11: HRESULT XUserGetId(XUserHandle user, uint64_t* userId)
 HRESULT STDMETHODCALLTYPE user_get_id(void*, XUserHandle user, uint64_t* id) {
+    CE_SVC_TRACE();
     if (!id) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     *id = kOfflineXuid;
@@ -236,6 +249,7 @@ HRESULT STDMETHODCALLTYPE user_get_id(void*, XUserHandle user, uint64_t* id) {
 
 // 12: HRESULT XUserFindUserById(uint64_t userId, XUserHandle* handle)
 HRESULT STDMETHODCALLTYPE user_find_by_id(void*, uint64_t id, XUserHandle* handle) {
+    CE_SVC_TRACE();
     if (!handle) return E_POINTER;
     *handle = nullptr;
     if (id != kOfflineXuid) return E_GAMEUSER_USER_NOT_FOUND;
@@ -245,6 +259,7 @@ HRESULT STDMETHODCALLTYPE user_find_by_id(void*, uint64_t id, XUserHandle* handl
 
 // 13: HRESULT XUserGetIsGuest(XUserHandle user, bool* isGuest)
 HRESULT STDMETHODCALLTYPE user_get_is_guest(void*, XUserHandle user, bool* guest) {
+    CE_SVC_TRACE();
     if (!guest) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     *guest = false;
@@ -253,6 +268,7 @@ HRESULT STDMETHODCALLTYPE user_get_is_guest(void*, XUserHandle user, bool* guest
 
 // 14: HRESULT XUserGetState(XUserHandle user, XUserState* state)
 HRESULT STDMETHODCALLTYPE user_get_state(void*, XUserHandle user, XUserState* state) {
+    CE_SVC_TRACE();
     if (!state) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     *state = XUserState::SignedIn;
@@ -288,6 +304,7 @@ template <int Slot, HRESULT Error> HRESULT STDMETHODCALLTYPE offline_failure(voi
 
 // 19: HRESULT XUserGetAgeGroup(XUserHandle user, XUserAgeGroup* ageGroup)
 HRESULT STDMETHODCALLTYPE user_get_age_group(void*, XUserHandle user, XUserAgeGroup* group) {
+    CE_SVC_TRACE();
     if (!group) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     *group = XUserAgeGroup::Adult;
@@ -299,6 +316,7 @@ HRESULT STDMETHODCALLTYPE user_get_age_group(void*, XUserHandle user, XUserAgeGr
 // (multiplayer and the like then fail at the network, as on a console without one).
 HRESULT STDMETHODCALLTYPE user_check_privilege(void*, XUserHandle user, uint32_t, uint32_t, bool* has,
                                                XUserPrivilegeDenyReason* reason) {
+    CE_SVC_TRACE();
     if (!has) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     *has = true;
@@ -309,6 +327,7 @@ HRESULT STDMETHODCALLTYPE user_check_privilege(void*, XUserHandle user, uint32_t
 // 21: HRESULT XUserResolvePrivilegeWithUiAsync(XUserHandle user, XUserPrivilegeOptions options, XUserPrivilege privilege,
 //                                              XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE user_resolve_privilege_async(void*, XUserHandle user, uint32_t, uint32_t, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     if (!valid(user)) return E_INVALIDARG;
     return XAsyncBegin(async, nullptr, &kResolveIdentity, "XUserResolvePrivilegeWithUiAsync", resolve_provider);
@@ -316,6 +335,7 @@ HRESULT STDMETHODCALLTYPE user_resolve_privilege_async(void*, XUserHandle user, 
 
 // 22: HRESULT XUserResolvePrivilegeWithUiResult(XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE user_resolve_privilege_result(void*, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     return XAsyncGetResult(async, &kResolveIdentity, 0, nullptr, nullptr);
 }
 
@@ -329,6 +349,7 @@ uint64_t g_next_token = 1;
 
 HRESULT STDMETHODCALLTYPE user_register_change(void*, XTaskQueueHandle, void*, XUserChangeEventCallback callback,
                                                XTaskQueueRegistrationToken* token) {
+    CE_SVC_TRACE();
     if (!callback || !token) return E_POINTER;
     std::lock_guard<std::mutex> lock(g_tokens_mutex);
     token->token = g_next_token++;
@@ -340,6 +361,7 @@ HRESULT STDMETHODCALLTYPE user_register_change(void*, XTaskQueueHandle, void*, X
 // true for every token, including one already unregistered or never handed out (a title polling with wait = false
 // would otherwise spin).
 bool STDMETHODCALLTYPE user_unregister_change(void*, XTaskQueueRegistrationToken token, bool) {
+    CE_SVC_TRACE();
     std::lock_guard<std::mutex> lock(g_tokens_mutex);
     g_tokens.erase(token.token);
     return true;
@@ -348,17 +370,20 @@ bool STDMETHODCALLTYPE user_unregister_change(void*, XTaskQueueRegistrationToken
 // 35: HRESULT XUserGetSignOutDeferral(XUserSignOutDeferralHandle* deferral): nothing signs out offline, so there is
 // no sign-out to defer (the documented E_GAMEUSER_DEFERRAL_NOT_AVAILABLE).
 HRESULT STDMETHODCALLTYPE user_get_signout_deferral(void*, XUserSignOutDeferralHandle* deferral) {
+    CE_SVC_TRACE();
     if (deferral) *deferral = nullptr;
     return E_GAMEUSER_DEFERRAL_NOT_AVAILABLE;
 }
 
 // 36: void XUserCloseSignOutDeferralHandle(XUserSignOutDeferralHandle deferral)
-void STDMETHODCALLTYPE user_close_signout_deferral(void*, XUserSignOutDeferralHandle) {}
+void STDMETHODCALLTYPE user_close_signout_deferral(void*, XUserSignOutDeferralHandle) {
+    CE_SVC_TRACE();}
 
 // ---- IXUserImpl2 (37-38) ----
 
 // 37: HRESULT XUserAddByIdWithUiAsync(uint64_t userId, XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE user_add_by_id_async(void*, uint64_t id, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     return XAsyncBegin(async, reinterpret_cast<void*>(static_cast<uintptr_t>(id)), &kAddByIdIdentity,
                        "XUserAddByIdWithUiAsync", add_by_id_provider);
@@ -366,6 +391,7 @@ HRESULT STDMETHODCALLTYPE user_add_by_id_async(void*, uint64_t id, XAsyncBlock* 
 
 // 38: HRESULT XUserAddByIdWithUiResult(XAsyncBlock* async, XUserHandle* newUser)
 HRESULT STDMETHODCALLTYPE user_add_by_id_result(void*, XAsyncBlock* async, XUserHandle* user) {
+    CE_SVC_TRACE();
     if (!user) return E_POINTER;
     *user = nullptr;
     return XAsyncGetResult(async, &kAddByIdIdentity, sizeof(*user), user, nullptr);
@@ -375,7 +401,8 @@ HRESULT STDMETHODCALLTYPE user_add_by_id_result(void*, XAsyncBlock* async, XUser
 
 // 42: bool XUserIsStoreUser(XUserHandle user): the handle is _In_opt_, and the GDK reference says the function
 // always returns true on console.
-bool STDMETHODCALLTYPE user_is_store_user(void*, XUserHandle) { return true; }
+bool STDMETHODCALLTYPE user_is_store_user(void*, XUserHandle) {
+    CE_SVC_TRACE(); return true; }
 
 // ---- IXUserGamertagImpl (its slot 3) ----
 
@@ -385,6 +412,7 @@ bool STDMETHODCALLTYPE user_is_store_user(void*, XUserHandle) { return true; }
 // terminator.
 HRESULT STDMETHODCALLTYPE user_get_gamertag(void*, XUserHandle user, XUserGamertagComponent component, size_t size,
                                             char* out, size_t* used) {
+    CE_SVC_TRACE();
     if (used) *used = 0;
     if (!valid(user)) return E_INVALIDARG;
     const char* text = nullptr;

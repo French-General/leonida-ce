@@ -438,3 +438,14 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   has drawn into the UI layer yet. So the black is real: the title composites an empty layer each frame; its
   frontend (boot screens / intro video / menus) has not produced anything. Next: what should fill it, and what the
   title waits for before it does. (Also: textures above 4 GiB cannot be reached through heap_base + VA at all.)
+- Device slot 86 is the stream CreatePipelineState (desc, riid, out) like slot 57 (VIctory device.rs f[86] =
+  pipeline::create_stream) and now shares slot 57's handler (it answered E_NOTIMPL: every pipeline made through it was
+  missing; with it the title adds a second draw per frame, VS_BlitInteriorStencilQuads). Slot 81 is frame statistics
+  (token, kinds, count*, out): count 0, S_OK (VIctory frame.rs).
+- The console list slots dropped as "not forwarded" (70, 74, 75, 126, 131/132, 142) are, in this title's layout
+  (2020-era + 2 from slot 59), depth bounds, wait-value, PS depth order, shading rate, sync: VIctory ignores them too.
+- Service-call trace ([svc] <function> from <caller>, first 3 calls of each runtime service function): the boot
+  makes thread/net/user-change/PLM/display/accessibility/speech/title-id/sandbox calls, then signs in
+  (user_add_async/result, get_id, get_local_id, duplicate, close) and makes NO further service call. The main thread
+  waits each frame on a frame-slot semaphore (0x1475e0e78, normal pacing; DeepSeek analysis). Next: what the boot flow
+  waits for after sign-in.

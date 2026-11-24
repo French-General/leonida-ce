@@ -40,6 +40,11 @@
 #include <XAsync.h>
 #include <XAsyncProvider.h>
 #include <XTaskQueue.h>
+#include <atomic>
+#include <cstdio>
+#include <intrin.h>
+// Leonida CE: first calls of each service function (boot diagnosis).
+#define CE_SVC_TRACE() do { static std::atomic<int> ce_n{0}; if (ce_n++ < 3) { std::fprintf(stderr, "[svc] %s from %p\n", __func__, _ReturnAddress()); std::fflush(stderr); } } while (0)
 
 namespace rt::shims {
 void* xgameruntime_user_new_handle();   // xgameruntime_user.cpp
@@ -117,6 +122,7 @@ bool log_every_event() {
 //                            const char* eventName, const char* dimensionsJson, const char* measurementsJson)
 HRESULT STDMETHODCALLTYPE event_write(void*, XUserHandle, const char*, const char*, const char* name,
                                       const char* dimensions, const char* measurements) {
+    CE_SVC_TRACE();
     if (!name) return E_INVALIDARG;
     const long n = g_events.fetch_add(1);
     if (log_every_event())
@@ -136,6 +142,7 @@ const void* const kEventVtable[] = {
 ClassObject g_event_object{kEventVtable};
 const GUID kEventInterfaces[] = {kEventClass};
 HRESULT STDMETHODCALLTYPE event_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     return answer(&g_event_object, std::begin(kEventInterfaces), std::end(kEventInterfaces), iid, out);
 }
 
@@ -188,6 +195,7 @@ HRESULT CALLBACK error_dialog_provider(XAsyncOp op, const XAsyncProviderData* da
 HRESULT STDMETHODCALLTYPE ui_message_dialog_async(void*, XAsyncBlock* async, const char* title, const char* content,
                                                   const char* first, const char* second, const char* third,
                                                   XGameUiMessageDialogButton default_button, XGameUiMessageDialogButton) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     const auto button = static_cast<uint32_t>(default_button);
     if (button > 2) return E_INVALIDARG;
@@ -201,12 +209,14 @@ HRESULT STDMETHODCALLTYPE ui_message_dialog_async(void*, XAsyncBlock* async, con
 
 // 4: HRESULT XGameUiShowMessageDialogResult(XAsyncBlock* async, XGameUiMessageDialogButton* resultButton)
 HRESULT STDMETHODCALLTYPE ui_message_dialog_result(void*, XAsyncBlock* async, XGameUiMessageDialogButton* button) {
+    CE_SVC_TRACE();
     if (!button) return E_POINTER;
     return XAsyncGetResult(async, &kDialogIdentity, sizeof(*button), button, nullptr);
 }
 
 // 14: HRESULT XGameUiShowErrorDialogAsync(XAsyncBlock* async, HRESULT errorCode, const char* context)
 HRESULT STDMETHODCALLTYPE ui_error_dialog_async(void*, XAsyncBlock* async, HRESULT code, const char* context) {
+    CE_SVC_TRACE();
     if (!async) return E_POINTER;
     std::fprintf(stderr, "[rt] game error dialog: HRESULT 0x%08lX%s%s [dismissed]\n", static_cast<unsigned long>(code),
                  context ? " context " : "", context ? context : "");
@@ -215,14 +225,18 @@ HRESULT STDMETHODCALLTYPE ui_error_dialog_async(void*, XAsyncBlock* async, HRESU
 
 // 15: HRESULT XGameUiShowErrorDialogResult(XAsyncBlock* async)
 HRESULT STDMETHODCALLTYPE ui_error_dialog_result(void*, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     return XAsyncGetResult(async, &kErrorDialogIdentity, 0, nullptr, nullptr);
 }
 
 // 16: XGameUiSetNotificationPositionHint(position): there are no notifications to place.
-HRESULT STDMETHODCALLTYPE ui_set_notification_hint(void*) { return S_OK; }
+HRESULT STDMETHODCALLTYPE ui_set_notification_hint(void*) {
+    CE_SVC_TRACE(); return S_OK; }
 
-template <int Slot> HRESULT STDMETHODCALLTYPE ui_offline(void* self) { return offline_failure<kUiName, Slot>(self); }
-template <int Slot> HRESULT STDMETHODCALLTYPE ui_unknown(void* self) { return unknown_slot<kUiName, Slot>(self); }
+template <int Slot> HRESULT STDMETHODCALLTYPE ui_offline(void* self) {
+    CE_SVC_TRACE(); return offline_failure<kUiName, Slot>(self); }
+template <int Slot> HRESULT STDMETHODCALLTYPE ui_unknown(void* self) {
+    CE_SVC_TRACE(); return unknown_slot<kUiName, Slot>(self); }
 
 HRESULT STDMETHODCALLTYPE ui_query_interface(void*, REFIID iid, void** out);
 const void* const kUiVtable[] = {
@@ -279,6 +293,7 @@ const void* const kUiVtable[] = {
 static_assert(std::size(kUiVtable) == 51, "IUnknown + IXGameUiImpl's 27 methods + 10 + 2 + 9");
 ClassObject g_ui_object{kUiVtable};
 HRESULT STDMETHODCALLTYPE ui_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     return answer(&g_ui_object, std::begin(kUiInterfaces), std::end(kUiInterfaces), iid, out);
 }
 
@@ -296,13 +311,17 @@ std::mutex g_streaming_mutex;
 uint64_t g_next_token = 1;
 
 // 3: HRESULT XGameStreamingInitialize()
-HRESULT STDMETHODCALLTYPE streaming_initialize(void*) { return S_OK; }
+HRESULT STDMETHODCALLTYPE streaming_initialize(void*) {
+    CE_SVC_TRACE(); return S_OK; }
 // 4: void XGameStreamingUninitialize()
-void STDMETHODCALLTYPE streaming_uninitialize(void*) {}
+void STDMETHODCALLTYPE streaming_uninitialize(void*) {
+    CE_SVC_TRACE();}
 // 5: bool XGameStreamingIsStreaming(): no client is ever connected.
-bool STDMETHODCALLTYPE streaming_is_streaming(void*) { return false; }
+bool STDMETHODCALLTYPE streaming_is_streaming(void*) {
+    CE_SVC_TRACE(); return false; }
 // 9: uint32_t XGameStreamingGetClientCount()
-uint32_t STDMETHODCALLTYPE streaming_client_count(void*) { return 0; }
+uint32_t STDMETHODCALLTYPE streaming_client_count(void*) {
+    CE_SVC_TRACE(); return 0; }
 
 // 12: HRESULT XGameStreamingRegisterConnectionStateChanged(XTaskQueueHandle queue, void* context,
 //        XGameStreamingConnectionStateChangedCallback* callback, XTaskQueueRegistrationToken* token)
@@ -310,6 +329,7 @@ uint32_t STDMETHODCALLTYPE streaming_client_count(void*) { return 0; }
 // links no XGameStreamingImpl thunk (docs/runtime_imports.md). No client connects, so the callback never runs.
 HRESULT STDMETHODCALLTYPE streaming_register_connection(void*, XTaskQueueHandle, void*, void* callback,
                                                         XTaskQueueRegistrationToken* token) {
+    CE_SVC_TRACE();
     if (!callback || !token) return E_INVALIDARG;
     std::lock_guard<std::mutex> lock(g_streaming_mutex);
     token->token = g_next_token++;
@@ -318,13 +338,15 @@ HRESULT STDMETHODCALLTYPE streaming_register_connection(void*, XTaskQueueHandle,
 
 // Unregistering (7, 13): nothing is ever pending. Returns true, in case the caller reads a bool; a void caller
 // ignores it.
-bool STDMETHODCALLTYPE streaming_unregister(void*) { return true; }
+bool STDMETHODCALLTYPE streaming_unregister(void*) {
+    CE_SVC_TRACE(); return true; }
 
 // Every other slot asks about a client, its touch controls or its stream, and there is none. The answer is
 // E_GAMESTREAMING_NOT_INITIALIZED (0x89245400), chosen for its shape: a caller reading an HRESULT sees a failure, and
 // one reading a bool (al) sees false, since its low byte is 0. The slots returning an enum or a count are the ones
 // above, answered explicitly.
 template <int Slot> HRESULT STDMETHODCALLTYPE client_not_connected(void*) {
+    CE_SVC_TRACE();
     static std::atomic<bool> s_logged{false};
     if (!s_logged.exchange(true))
         std::fprintf(stderr, "[rt] xgameruntime: XGameStreamingImpl slot %d: no streaming client offline\n", Slot);
@@ -334,7 +356,8 @@ static_assert((static_cast<uint32_t>(E_GAMESTREAMING_NOT_INITIALIZED) & 0xFF) ==
 
 // 11: XGameStreamingConnectionState XGameStreamingGetConnectionState(XGameStreamingClientId client): 0, the first
 // enumerator, taken to be Disconnected; there is no client to ask about either way, and the executable has no caller.
-uint32_t STDMETHODCALLTYPE streaming_connection_state(void*) { return 0; }
+uint32_t STDMETHODCALLTYPE streaming_connection_state(void*) {
+    CE_SVC_TRACE(); return 0; }
 
 HRESULT STDMETHODCALLTYPE streaming_query_interface(void*, REFIID iid, void** out);
 const void* const kStreamingVtable[] = {
@@ -375,6 +398,7 @@ const void* const kStreamingVtable[] = {
 static_assert(std::size(kStreamingVtable) == 35, "IUnknown + IXGameStreamingImpl's 29 methods + 1 + 2");
 ClassObject g_streaming_object{kStreamingVtable};
 HRESULT STDMETHODCALLTYPE streaming_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     return answer(&g_streaming_object, std::begin(kStreamingInterfaces), std::end(kStreamingInterfaces), iid, out);
 }
 
@@ -409,6 +433,7 @@ bool hdr_requested() {
 // The host swapchain is SDR, so HDR stays off unless LEONIDA_HDR=1; then it is "enabled" with the documented
 // defaults (0.01 / 1000 / 1000 nits).
 uint32_t STDMETHODCALLTYPE display_try_enable_hdr(void*, XDisplayHdrModePreference, XDisplayHdrModeInfo* info) {
+    CE_SVC_TRACE();
     const bool on = hdr_requested();
     if (info) *info = on ? XDisplayHdrModeInfo{0.01f, 1000.0f, 1000.0f} : XDisplayHdrModeInfo{};
     static std::atomic<bool> s_logged{false};
@@ -418,7 +443,8 @@ uint32_t STDMETHODCALLTYPE display_try_enable_hdr(void*, XDisplayHdrModePreferen
     return static_cast<uint32_t>(on ? XDisplayHdrModeResult::Enabled : XDisplayHdrModeResult::Disabled);
 }
 
-template <int Slot> HRESULT STDMETHODCALLTYPE display_unknown(void* self) { return unknown_slot<kDisplayName, Slot>(self); }
+template <int Slot> HRESULT STDMETHODCALLTYPE display_unknown(void* self) {
+    CE_SVC_TRACE(); return unknown_slot<kDisplayName, Slot>(self); }
 
 HRESULT STDMETHODCALLTYPE display_query_interface(void*, REFIID iid, void** out);
 const void* const kDisplayVtable[] = {
@@ -428,6 +454,7 @@ const void* const kDisplayVtable[] = {
 };
 ClassObject g_display_object{kDisplayVtable};
 HRESULT STDMETHODCALLTYPE display_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     return answer(&g_display_object, std::begin(kDisplayInterfaces), std::end(kDisplayInterfaces), iid, out);
 }
 
@@ -450,6 +477,7 @@ const char kFindControllerIdentity = 0;
 // 3: HRESULT XUserFindForDevice(const APP_LOCAL_DEVICE_ID* deviceId, XUserHandle* handle): every device belongs to
 // the one offline user.
 HRESULT STDMETHODCALLTYPE device_find_user(void*, const APP_LOCAL_DEVICE_ID* device, XUserHandle* out) {
+    CE_SVC_TRACE();
     if (!device || !out) return E_INVALIDARG;
     *out = rt::shims::xgameruntime_user_new_handle();
     return S_OK;
@@ -490,6 +518,7 @@ constinit uint64_t g_device_next_token = 1;               // guarded by g_device
 template <DeviceEvent Kind>
 HRESULT STDMETHODCALLTYPE device_register(void*, XTaskQueueHandle queue, void* context, void* callback,
                                           XTaskQueueRegistrationToken* token) {
+    CE_SVC_TRACE();
     if (!callback || !token) return E_INVALIDARG;
     XTaskQueueHandle kept = nullptr;
     if (queue) {
@@ -513,6 +542,7 @@ HRESULT STDMETHODCALLTYPE device_register(void*, XTaskQueueHandle queue, void* c
 }
 
 template <DeviceEvent Kind> bool STDMETHODCALLTYPE device_unregister(void*, XTaskQueueRegistrationToken token, bool) {
+    CE_SVC_TRACE();
     XTaskQueueHandle queue = nullptr;
     AcquireSRWLockExclusive(&g_device_lock);
     for (auto it = g_device_registrations.begin(); it != g_device_registrations.end(); ++it)
@@ -530,6 +560,7 @@ template <DeviceEvent Kind> bool STDMETHODCALLTYPE device_unregister(void*, XTas
 //        size_t endpointIdUtf16Count, wchar_t* endpointIdUtf16, size_t* endpointIdUtf16Used)
 // The user has no audio endpoint of its own (no headset): ERROR_NOT_FOUND, with an empty string written.
 HRESULT STDMETHODCALLTYPE device_audio_endpoint(void*, uint64_t, uint32_t, size_t count, wchar_t* id, size_t* used) {
+    CE_SVC_TRACE();
     if (id && count) id[0] = L'\0';
     if (used) *used = 0;
     return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
@@ -553,6 +584,7 @@ HRESULT CALLBACK find_controller_provider(XAsyncOp op, const XAsyncProviderData*
 
 // 9: HRESULT XUserFindControllerForUserWithUiAsync(XUserHandle user, XAsyncBlock* async): no UI, as on desktop.
 HRESULT STDMETHODCALLTYPE device_find_controller_async(void*, XUserHandle user, XAsyncBlock* async) {
+    CE_SVC_TRACE();
     if (!user) return E_INVALIDARG;
     if (!async) return E_POINTER;
     return XAsyncBegin(async, nullptr, &kFindControllerIdentity, "XUserFindControllerForUserWithUiAsync",
@@ -562,6 +594,7 @@ HRESULT STDMETHODCALLTYPE device_find_controller_async(void*, XUserHandle user, 
 // 10: HRESULT XUserFindControllerForUserWithUiResult(XAsyncBlock* async, APP_LOCAL_DEVICE_ID* deviceId): all zero,
 // as the GDK documents for desktop.
 HRESULT STDMETHODCALLTYPE device_find_controller_result(void*, XAsyncBlock* async, APP_LOCAL_DEVICE_ID* device) {
+    CE_SVC_TRACE();
     if (!device) return E_POINTER;
     return XAsyncGetResult(async, &kFindControllerIdentity, sizeof(*device), device, nullptr);
 }
@@ -581,6 +614,7 @@ const void* const kUserDeviceVtable[] = {
 static_assert(std::size(kUserDeviceVtable) == 11, "IUnknown + IXUserDeviceImpl's 8 methods");
 ClassObject g_user_device_object{kUserDeviceVtable};
 HRESULT STDMETHODCALLTYPE device_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     return answer(&g_user_device_object, std::begin(kUserDeviceInterfaces), std::end(kUserDeviceInterfaces), iid, out);
 }
 
@@ -596,17 +630,20 @@ const GUID kAccessibilityInterfaces[] = {
 // 5: HRESULT XHighContrastGetMode(XHighContrastMode* mode): Off, the first enumerator. ASSUMPTION: the signature and
 // that Off is 0 (GDK reference, not re-checked for this file).
 HRESULT STDMETHODCALLTYPE accessibility_high_contrast(void*, uint32_t* mode) {
+    CE_SVC_TRACE();
     if (!mode) return E_POINTER;
     *mode = 0;
     return S_OK;
 }
 
 // 4: HRESULT XClosedCaptionSetEnabled(bool enabled): there are no captions to show; accepted and dropped.
-HRESULT STDMETHODCALLTYPE accessibility_captions_set_enabled(void*, bool) { return S_OK; }
+HRESULT STDMETHODCALLTYPE accessibility_captions_set_enabled(void*, bool) {
+    CE_SVC_TRACE(); return S_OK; }
 
 // 8: HRESULT XSpeechSynthesizerEnumerateInstalledVoices(callback, void* context): no voice is installed, so the
 // callback runs zero times. ASSUMPTION: the argument order (GDK reference), only the count (2) was measured.
 HRESULT STDMETHODCALLTYPE speech_enumerate_voices(void*, void* callback, void*) {
+    CE_SVC_TRACE();
     return callback ? S_OK : E_INVALIDARG;
 }
 
@@ -622,17 +659,20 @@ unsigned char g_speech_stream = 0;
 
 // 9: HRESULT XSpeechSynthesizerCreate(XSpeechSynthesizerHandle* handle)
 HRESULT STDMETHODCALLTYPE speech_create(void*, void** handle) {
+    CE_SVC_TRACE();
     if (!handle) return E_POINTER;
     *handle = &g_speech_synthesizer;
     return S_OK;
 }
 
 // 10-12, 14: close a synthesizer, set its voice, close a stream: the handles are fixed, nothing to do.
-HRESULT STDMETHODCALLTYPE speech_bad_handle(void*) { return S_OK; }
+HRESULT STDMETHODCALLTYPE speech_bad_handle(void*) {
+    CE_SVC_TRACE(); return S_OK; }
 
 // 13, 21: HRESULT XSpeechSynthesizerCreateStreamFromText/Ssml(synthesizer, const char* text,
 //                                                             XSpeechSynthesizerStreamHandle* stream)
 HRESULT STDMETHODCALLTYPE speech_create_stream(void*, void*, const char*, void** stream) {
+    CE_SVC_TRACE();
     if (!stream) return E_POINTER;
     *stream = &g_speech_stream;
     return S_OK;
@@ -640,6 +680,7 @@ HRESULT STDMETHODCALLTYPE speech_create_stream(void*, void*, const char*, void**
 
 // 15: HRESULT XSpeechSynthesizerGetStreamDataSize(stream, size_t* size)
 HRESULT STDMETHODCALLTYPE speech_stream_size(void*, void*, size_t* size) {
+    CE_SVC_TRACE();
     if (!size) return E_POINTER;
     *size = sizeof(kSilentWave);
     return S_OK;
@@ -647,6 +688,7 @@ HRESULT STDMETHODCALLTYPE speech_stream_size(void*, void*, size_t* size) {
 
 // 16: HRESULT XSpeechSynthesizerGetStreamData(stream, size_t size, void* buffer, size_t* used)
 HRESULT STDMETHODCALLTYPE speech_stream_data(void*, void*, size_t size, void* buffer, size_t* used) {
+    CE_SVC_TRACE();
     if (!buffer || size < sizeof(kSilentWave)) return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
     std::memcpy(buffer, kSilentWave, sizeof(kSilentWave));
     if (used) *used = sizeof(kSilentWave);
@@ -656,6 +698,7 @@ HRESULT STDMETHODCALLTYPE speech_stream_data(void*, void*, size_t size, void* bu
 // The slots with no offline counterpart whose arguments the layout doesn't give: the caption properties (3) and
 // speech-to-text display (6, 7, 17-20). Nothing is written.
 template <int Slot> HRESULT STDMETHODCALLTYPE accessibility_offline(void* self) {
+    CE_SVC_TRACE();
     return offline_failure<kAccessibilityName, Slot>(self);
 }
 
@@ -685,6 +728,7 @@ const void* const kAccessibilityVtable[] = {
 static_assert(std::size(kAccessibilityVtable) == 22, "IUnknown + IXAccessibilityImpl's 19 methods");
 ClassObject g_accessibility_object{kAccessibilityVtable};
 HRESULT STDMETHODCALLTYPE accessibility_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     return answer(&g_accessibility_object, std::begin(kAccessibilityInterfaces), std::end(kAccessibilityInterfaces),
                   iid, out);
 }
@@ -698,6 +742,7 @@ constexpr GUID kLauncherClass = {0x1b339674, 0x328d, 0x4283, {0xa2, 0x00, 0x31, 
 // 4: HRESULT XDisplayAcquireTimeoutDeferral(XDisplayTimeoutDeferralHandle* handle): none is handed out.
 // 5: XDisplayCloseTimeoutDeferralHandle(handle): no handle exists; E_FAIL, which a void caller ignores.
 HRESULT STDMETHODCALLTYPE launcher_acquire_deferral(void* self, void** handle) {
+    CE_SVC_TRACE();
     if (handle) *handle = nullptr;
     return offline_failure<kLauncherName, 4>(self);
 }
@@ -712,6 +757,7 @@ const void* const kLauncherVtable[] = {
 static_assert(std::size(kLauncherVtable) == 6, "IUnknown + IXLauncherImpl's 3 methods");
 ClassObject g_launcher_object{kLauncherVtable};
 HRESULT STDMETHODCALLTYPE launcher_query_interface(void*, REFIID iid, void** out) {
+    CE_SVC_TRACE();
     // IXLauncherImpl's id is the class id.
     return answer(&g_launcher_object, &kLauncherClass, &kLauncherClass + 1, iid, out);
 }
