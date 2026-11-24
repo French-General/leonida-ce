@@ -26,6 +26,12 @@
   <a href="https://discord.gg/rexed">Discord</a>
 </p>
 
+> [!NOTE]
+> **Leonida CE (community edition)** continues Leonida after the original repository went private and its
+> maintainers stepped away. The full history is kept, and so are the license (GPLv3 or later) and the credit to everyone
+> who worked on it. Links to `ItsNotRexed/Leonida` issues and pull requests below point at the old, now private, repository
+> and are kept as references to where each finding came from.
+
 Leonida is a static recompilation project. The Xbox Series CPU is x86-64 like a PC, so the game's code is loaded
 and run natively, and the console's system software is reimplemented. The console's precompiled RDNA2 GPU programs
 are translated to SPIR-V for Vulkan. The game's models, textures and audio are read from your package. All of this
@@ -89,7 +95,7 @@ The port isn't downloaded ready-made. It's built on your PC from your own copy.
 **The easy way:**
 
 1. Install the prerequisites below.
-2. Download this project **with its submodule**: `git clone --recursive https://github.com/ItsNotRexed/Leonida`. A
+2. Download this project **with its submodule**: `git clone --recursive https://github.com/IAmNotSiob/leonida-ce`. A
    "Download ZIP" from GitHub leaves out `third_party/rpf9-explorer`. The build fetches it if `git` is installed,
    and otherwise tells you what to do.
 3. Double-click **`Build.bat`**.
