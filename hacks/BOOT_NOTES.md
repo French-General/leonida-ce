@@ -197,3 +197,6 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   bad free still comes (at 131 s in that run). Open, from the same review: VIctory keeps XMemVirtualAlloc
   reservations without an address field below 2^40 (the console keeps title memory there); CE places them near
   0x7xxx_xxxx_xxxx. If the title packs pointers into fewer bits, that would corrupt memory. Next candidate.
+- Not the address range either: with title reservations below 2^40 (as on the console) the bad free still comes
+  at about 125 s. Ruled out so far for this stop: audio lock (fixed), XMemAlloc hooks, xmem aliasing, page
+  mapping batches (implemented), the address range, the runtime's audio allocations and list writes.

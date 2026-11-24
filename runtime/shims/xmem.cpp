@@ -365,7 +365,48 @@ bool isolate_placeholder(void* address, SIZE_T size) {
     return VirtualFree(address, size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) != FALSE;
 }
 
-PVOID reserve_placeholder(void* address, SIZE_T size, SIZE_T alignment) {
+// The addresses an XMem attribute word allows, after Marvisak/VIctory's xmem.rs address_range (GPLv3, its decision
+// 0001): the low 4 GiB for 32-bit memory (bit 2); otherwise from 4 GiB up to 47 - field bits, the field at bit 12, or
+// 40 bits without one. The console keeps title memory below 2^40; the host would place it near the top of the 47-bit
+// space, where pointers the title packs into fewer bits would not fit.
+void title_address_range(ULONGLONG attributes, ULONG_PTR& lowest, ULONG_PTR& highest) {
+    const unsigned field = static_cast<unsigned>((attributes >> 12) & 7);
+    if (attributes & 4) {
+        lowest = 0;
+        highest = 0xFFFFFFFFull;
+        return;
+    }
+    const unsigned bits = field ? 47 - field : 40;
+    lowest = ULONG_PTR(1) << 32;
+    highest = (ULONG_PTR(1) << bits) - 1;
+}
+
+// VirtualAlloc2 of a host-placed reservation inside the title's range; null when the host cannot (the caller then
+// reserves anywhere, as before).
+PVOID reserve_in_title_range(SIZE_T size, ULONG type, ULONG protect, SIZE_T alignment, ULONGLONG attributes) {
+    MEM_ADDRESS_REQUIREMENTS requirements{};
+    ULONG_PTR lowest = 0, highest = 0;
+    title_address_range(attributes, lowest, highest);
+    requirements.LowestStartingAddress = reinterpret_cast<PVOID>(lowest);
+    requirements.HighestEndingAddress = reinterpret_cast<PVOID>(highest);
+    requirements.Alignment = alignment > kXmemPageSize64k ? alignment : 0;
+    MEM_EXTENDED_PARAMETER parameter{};
+    parameter.Type = MemExtendedParameterAddressRequirements;
+    parameter.Pointer = &requirements;
+    PVOID result = placeholder_api().virtual_alloc2(GetCurrentProcess(), nullptr, size, type, protect, &parameter, 1);
+    static std::atomic<int> told{0};
+    if (told++ < 6)
+        std::fprintf(stderr, "[rt] xmem: title-range reservation (0x%llx bytes, attributes 0x%llx) -> %p\n",
+                     static_cast<unsigned long long>(size), static_cast<unsigned long long>(attributes), result);
+    return result;
+}
+
+PVOID reserve_placeholder(void* address, SIZE_T size, SIZE_T alignment, ULONGLONG attributes = 0) {
+    if (!address) {
+        if (PVOID p = reserve_in_title_range(size, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, alignment,
+                                             attributes))
+            return p;
+    }
     MEM_ADDRESS_REQUIREMENTS requirements{};
     MEM_EXTENDED_PARAMETER parameter{};
     ULONG parameter_count = 0;
@@ -472,7 +513,7 @@ void* WINAPI XMemVirtualAlloc(void* address, SIZE_T size, DWORD allocation_type,
                                                 nullptr, 0);
     }
     if (new_placeholder || window) {
-        void* const result = reserve_placeholder(address, size, base_granularity);
+        void* const result = reserve_placeholder(address, size, base_granularity, attributes);
         if (result && window) {
             const std::lock_guard lock(g_phys_mutex);
             record_window(result, size, host_prot);
@@ -480,6 +521,8 @@ void* WINAPI XMemVirtualAlloc(void* address, SIZE_T size, DWORD allocation_type,
         return result;
     }
     if (page_mode == kXmemLargePages && address == nullptr) {
+        if (PVOID p = reserve_in_title_range(size, host_type | MEM_RESERVE, host_prot, kXmemPageSize2m, attributes))
+            return p;
         MEM_ADDRESS_REQUIREMENTS requirements{};
         requirements.Alignment = kXmemPageSize2m;
         MEM_EXTENDED_PARAMETER parameter{};
@@ -487,6 +530,9 @@ void* WINAPI XMemVirtualAlloc(void* address, SIZE_T size, DWORD allocation_type,
         parameter.Pointer = &requirements;
         return placeholder_api().virtual_alloc2(GetCurrentProcess(), nullptr, size, host_type | MEM_RESERVE, host_prot,
                                                 &parameter, 1);
+    }
+    if (address == nullptr && (host_type & MEM_RESERVE)) {
+        if (PVOID p = reserve_in_title_range(size, host_type, host_prot, 0, attributes)) return p;
     }
     return VirtualAlloc(address, size, host_type, host_prot);
 }
