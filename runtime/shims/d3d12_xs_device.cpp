@@ -983,6 +983,7 @@ void xs_dump_thread_stacks() {
 std::uintptr_t g_trap_page = 0;
 std::atomic<bool> g_trap_armed{false};
 std::atomic<int> g_trap_logged{0};
+std::uintptr_t g_slot_lo = 0, g_slot_hi = 0;  // LEONIDA_CE_SLOT_TRAP: log only writes in here
 thread_local bool t_trap_stepping = false;
 thread_local int t_trap_before = 0;
 thread_local char t_trap_line[512];
@@ -1152,7 +1153,8 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
                          xs_readable(arena, 0x18) ? static_cast<unsigned long long>(arena[2]) : 0ull);
             std::fflush(stderr);
         }
-        if (g_trap_logged++ < 20) {
+        const bool slot_write = !g_slot_hi || (addr >= g_slot_lo && addr < g_slot_hi);
+        if (slot_write && g_trap_logged++ < (g_slot_hi ? 60 : 20)) {
             std::fprintf(stderr, "%s\n", line);
             std::fflush(stderr);
         }
@@ -4219,6 +4221,25 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
         // HACK (Leonida CE, Windows): a probe on +0x1dc5ca1 (mov (%rax,%rcx,8),%rax: a definition-table read) waits up
         // to 10 s for a null entry to be registered before the read runs, and logs whether it appeared (a race with
         // registration) or not (never registered). The crash it guards is +0xb5a5f8 reading [null+0x68].
+        // DIAGNOSTIC: LEONIDA_CE_SLOT_TRAP=1 with a probe on +0x247bd99 (rax = &cfg->c78[0] of a definition table just
+        // deserialized) write-protects that page, so the code that later fills the record slots shows up in [trap].
+        if (at == 0x14247bd99ull && !g_trap_page) {
+            static const bool slot_trap = [] {
+                char v[8] = {};
+                return GetEnvironmentVariableA("LEONIDA_CE_SLOT_TRAP", v, sizeof(v)) && v[0] == '1';
+            }();
+            if (slot_trap) {
+                g_slot_lo = static_cast<std::uintptr_t>(c->Rax);
+                g_slot_hi = g_slot_lo + static_cast<std::uintptr_t>(c->Rcx) * 8;
+                g_trap_page = static_cast<std::uintptr_t>(c->Rax) & ~std::uintptr_t(4095);
+                AddVectoredExceptionHandler(1, &xs_trap_handler);
+                DWORD old = 0;
+                const BOOL ok = VirtualProtect(reinterpret_cast<void*>(g_trap_page), 4096, PAGE_READONLY, &old);
+                std::fprintf(stderr, "[trap] slot trap on page %llx (c78[0] at %llx, %llu slots): %s\n",
+                             static_cast<unsigned long long>(g_trap_page), static_cast<unsigned long long>(c->Rax),
+                             static_cast<unsigned long long>(c->Rcx), ok ? "armed" : "VirtualProtect failed");
+            }
+        }
         if (at == 0x141dc5ca1ull || at == 0x145bb7c58ull) {
             // +0x1dc5ca1: mov (%rax,%rcx,8),%rax; +0x5bb7c58: mov (%rdx,%rax,8),%rax
             auto* slot = reinterpret_cast<volatile std::uint64_t*>(at == 0x141dc5ca1ull ? c->Rax + c->Rcx * 8
@@ -4366,7 +4387,7 @@ LONG CALLBACK xs_null_definition_handler(EXCEPTION_POINTERS* info) {
 void xs_install_probes() {
     {
         char k[8] = {};
-        if (!(GetEnvironmentVariableA("LEONIDA_CE_KEEP_NULLDEF", k, sizeof(k)) && k[0] == 1))
+        if (!(GetEnvironmentVariableA("LEONIDA_CE_KEEP_NULLDEF", k, sizeof(k)) && k[0] == '1'))
             AddVectoredExceptionHandler(1, &xs_null_definition_handler);
     }
     char v[256] = {};

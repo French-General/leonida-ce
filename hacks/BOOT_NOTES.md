@@ -379,3 +379,14 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   via the stream reader +0x51d2260 (return values unchecked). Probe at +0x247bd99 (rax = &c78[0], rcx = B): B is
   identical on Windows and Wine (0xc, 2, 8 ...). So the stream data matches; the later step that fills c78 runs
   under Wine but not on Windows. Next: find the writer of c78 slots (a write trap on one table's c78 page).
+- ROOT CAUSE of the 120-140 s stop (Wine) and of the Windows null-definition stop: an incomplete PSO map.
+  Slot 57 builds graphics pipelines from leonida-psomap.txt; a code header missing from it fails CreatePipelineState
+  (E_INVALIDARG, header appended to leonida-psowant.txt). The title's definition tables (+0x247c833 stores the
+  result of +0x1d65750 into cfg->c78[i]) then hold null records: on Windows the lookup faults at +0xb5a5f8; under
+  Wine the walk over them corrupts its arena (the stop chased since a1e6ef1). A write trap on c78 (LEONIDA_CE_SLOT_TRAP
+  with a probe on +0x247bd99) found the writer; a probe on +0x247c833 showed 6 null records on Windows.
+  Fix: run hacks/psomatch.py (wanted headers from both runs, 8747) -> the map grows from 911 to 9658 entries, all
+  matched. With it both Windows and Wine run 300 s without a crash (frame 4096+, 11000 graphics pipelines under
+  Wine). Frames are still black: the title still submits no draws of its own (only the runtime's 4 detile draws).
+  To reproduce on another machine: run once, then `python3 hacks/psomatch.py` (it reads leonida-psowant.txt), and
+  run again. The map is not committed (it holds bytes of the title's code).
