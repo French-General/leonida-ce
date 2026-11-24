@@ -106,3 +106,9 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   consumer is elsewhere or its thread never runs. AcpHal now acknowledges commands (97ca179), but the title only
   registers for messages (command 2) before this stop, so the coprocessor is not what the consumer waits on.
   gdb note: a breakpoint must be on an instruction boundary (check game.asm), or the run breaks silently.
+- The stream consumer, found: game+0x43a6b40 walks every stream-table entry (count at 0x149ae9958) and is called
+  only from the manager update +0x6d8da0, which is reached from +0x43ae2f2 and from the job callback +0x537f810
+  (CAS on a frame counter at obj+0x78, then the update, then clears obj+0x7c and decrements obj+0x80). Under gdb
+  from 20 s the update ran once (gdb thread 17) and never again, so the per-frame job is not submitted again, or
+  the scheduler holds it back on those counters. Next: who submits the +0x537f810 job each frame, and what it
+  checks (obj+0x78/+0x7c/+0x80) before submitting.
