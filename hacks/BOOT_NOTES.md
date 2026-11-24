@@ -101,3 +101,8 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   large function around +0x4dc3df2/+0x4dc3e11). No thread was in that code in the stack dumps, and the stream fills
   in about 100 s. A null ALSA device (ALSA_CONFIG_PATH with pcm.!default type null, run setting only) removed the
   ALSA open errors but did not change this. Next: who calls the switch, and what it waits on.
+- gdb from 20 s to 280 s: the stream append (+0x4dcbc72) runs on several threads (gdb threads 27, 96), about
+  1,000 times in that window; neither write of the stream index (+0x4dc3e11, +0x4dc2e23) ever runs. Either the
+  consumer is elsewhere or its thread never runs. AcpHal now acknowledges commands (97ca179), but the title only
+  registers for messages (command 2) before this stop, so the coprocessor is not what the consumer waits on.
+  gdb note: a breakpoint must be on an instruction boundary (check game.asm), or the run breaks silently.
