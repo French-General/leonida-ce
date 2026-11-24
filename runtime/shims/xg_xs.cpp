@@ -311,6 +311,22 @@ HRESULT __stdcall computer_layout(Computer* c, LayoutOut* out) {
         plane.tail_mips = c->mips - l.first_tail_mip;
         for (size_t i = 0; i < l.mips.size() && i < kMips; ++i) plane.mips[i] = mip_out(c->desc, l, i);
     }
+    // DIAGNOSTIC (Leonida CE boot): small textures' layouts, to compare with what the title then allocates and writes
+    // (the 120-140 s stop writes a 256-entry float4 table past a texture's end).
+    if (c->desc.width <= 256 && c->desc.height <= 4) {
+        static std::atomic<int> told{0};
+        if (told++ < 40) {
+            const xg::Layout& l0 = c->texture.planes[0].layout;
+            std::fprintf(stderr,
+                         "[xg] layout %llux%u fmt %u mips %u (layout word 0x%x) -> size 0x%llx align 0x%llx; mip0 offset "
+                         "0x%llx pitch %u\n",
+                         static_cast<unsigned long long>(c->desc.width), c->desc.height, c->desc.format, c->mips,
+                         c->desc.layout, static_cast<unsigned long long>(c->texture.size),
+                         static_cast<unsigned long long>(c->texture.alignment),
+                         l0.mips.empty() ? 0ull : static_cast<unsigned long long>(l0.mips[0].offset),
+                         l0.mips.empty() ? 0u : l0.mips[0].pitch);
+        }
+    }
     return S_OK;
 }
 

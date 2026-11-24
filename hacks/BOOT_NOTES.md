@@ -282,3 +282,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   allocator 0x14abcc310 vtable +0x70, size 0xa0, flags 0x47). Next: where the 256 comes from ([item+0x38] of an
   item in the pool) and whether that node should have been allocated larger for it; then which runtime answer
   feeds either (the title may size the table from a count the console reports smaller).
+- The row copy's destination comes from a texture map (+0x13367a0 fills {.., pitch at +8, data at +0x18}) inside
+  the fill function +0x550e2d0 (vtable 0x1466314b0 slot +0x40, called at +0x1335be6): it writes a 256x1
+  R32G32B32A32 lookup table. The texture computer reports that texture correctly ([xg] log: 256x1 fmt 2, layout
+  0x100 -> size 0x1000, align 0x100, mip0 at 0), and the write is exactly 0x1000. Padding every footprint by
+  4 KiB (LEONIDA_CE_PAD=4096) did not help. So the table's 4 KiB lands right after a 0xa0-byte node, in memory
+  the arena also gave to other objects. Next: what size the title requests for that block (probe the arena
+  allocator entry +0xaa0bf0: rdx = size, for the allocation that returns the node), against 0xa0 + 0x1000.

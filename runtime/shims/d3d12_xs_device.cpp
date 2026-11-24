@@ -328,7 +328,13 @@ bool xs_console_footprint(const D3D12_RESOURCE_DESC& d, D3D12_RESOURCE_ALLOCATIO
     const std::uint64_t align = std::max<std::uint64_t>(d.Alignment, t.alignment);
     if (!align || (align & (align - 1))) return false;
     out.Alignment = align;
-    out.SizeInBytes = (t.size + align - 1) & ~(align - 1);
+    // DIAGNOSTIC (Leonida CE boot): LEONIDA_CE_PAD=<bytes> adds that much to every texture footprint, to test whether
+    // the overrun past a texture's end behind the 120-140 s stop comes from these sizes.
+    static const std::uint64_t pad = [] {
+        char v[24] = {};
+        return GetEnvironmentVariableA("LEONIDA_CE_PAD", v, sizeof(v)) ? std::strtoull(v, nullptr, 0) : 0ull;
+    }();
+    out.SizeInBytes = (t.size + pad + align - 1) & ~(align - 1);
     return true;
 }
 
@@ -4086,6 +4092,14 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
                              static_cast<unsigned long long>(hdr[2]), static_cast<unsigned long long>(hdr[3]),
                              static_cast<unsigned long long>(hdr[4]), static_cast<unsigned long long>(hdr[5]),
                              static_cast<unsigned long long>(hdr[6]), static_cast<unsigned long long>(hdr[7]));
+            {
+                const auto* vt = reinterpret_cast<const std::uint64_t*>(c->R10);
+                const unsigned long long target = xs_readable(vt ? vt + 8 : nullptr, 8) ? vt[8] : 0ull;
+                std::fprintf(stderr, "[probe] G+%llx rax=%llx r10=%llx [r10+40]=%llx r12=%llx rbx=%llx rdi=%llx\n",
+                             static_cast<unsigned long long>(at - 0x140000000ull), static_cast<unsigned long long>(c->Rax),
+                             static_cast<unsigned long long>(c->R10), target, static_cast<unsigned long long>(c->R12),
+                             static_cast<unsigned long long>(c->Rbx), static_cast<unsigned long long>(c->Rdi));
+            }
             const auto* item = reinterpret_cast<const std::uint32_t*>(c->R14);
             const bool ok = xs_readable(item ? item + 14 : nullptr, 8);
             std::fprintf(stderr,
