@@ -348,3 +348,7 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   The package's own msvcp140 is 14.29 and cannot be used: gta6rt (built with MSVC 14.44) crashes in its first
   std::mutex::lock with it (try149). Next: run with Microsoft's current VC++ 2022 runtime as native DLLs in a copy
   of the prefix (winetricks vcrun2022), to see whether the 120-140 s stop follows Wine's builtin C++ runtime.
+- Ruled out: Wine's builtin C++ runtime. With Microsoft's VC++ 2022 runtime (14.44.35211, winetricks vcrun2022 in a
+  copy of the prefix, WINEDLLOVERRIDES msvcp140/vcruntime140/concrt140=n,b; module list shows PE, not PE-Wine) the
+  stop is unchanged (try151: +0x538d0e6 at 119.9 s). Note: the package's own 14.29 DLLs next to gta6rt.exe make
+  gta6rt itself crash at start (std::mutex), so do not leave them in the output folder.
