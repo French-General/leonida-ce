@@ -361,3 +361,12 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Fix: shims/readfile_ce.cpp commits the destination (rt::xmem::commit_physical_range) before ReadFile. With it the
   Windows run opens all 40 files (world data) and builds 1028 compute pipelines, then stops at 98 s at +0xb5a5f8
   (read of 0x68): the next problem on Windows.
+- Windows, after the ReadFile fix: +0xb5a5f8 reads [record+0x68] with record = 0 (20-100 s). +0xb5a5d0 interns a
+  definition record picked from a table: cfg->[0xc78][bits 15..23 of cfg->[0xc68][row]] (callers +0x5bb7c58 with
+  cfg = [rsi+0x650], +0x1dc5ca1 with cfg = global). Index data is valid (row word 0x04000001 -> index 0); the entry
+  stays null (not a race: every lookup misses). No ReadFile fails any more. Hack (default on, Windows and Wine):
+  a vectored handler turns that exact fault into "return 0" to the caller; the run then reaches 52 s and stops at
+  +0x5392b80 (read of 0x38), probably the null it got back. Next: what registers those table entries
+  (stores to +0xc68/+0xc78 at +0x247bcf8/+0x247bd8b), and why not on Windows.
+- A probe on +0x141dc5ca1 / +0x145bb7c58 also waits up to 10 s for a null slot (LEONIDA_CE_PROBE): no hits there in
+  the runs so far, though the crash came through those callers; unexplained.

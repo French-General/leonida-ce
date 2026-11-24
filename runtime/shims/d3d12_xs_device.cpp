@@ -4216,6 +4216,23 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
     for (int i = 0; i < g_code_probe_count; ++i) {
         XsCodeProbe& pr = g_code_probes[i];
         if (pr.at != at) continue;
+        // HACK (Leonida CE, Windows): a probe on +0x1dc5ca1 (mov (%rax,%rcx,8),%rax: a definition-table read) waits up
+        // to 10 s for a null entry to be registered before the read runs, and logs whether it appeared (a race with
+        // registration) or not (never registered). The crash it guards is +0xb5a5f8 reading [null+0x68].
+        if (at == 0x141dc5ca1ull || at == 0x145bb7c58ull) {
+            // +0x1dc5ca1: mov (%rax,%rcx,8),%rax; +0x5bb7c58: mov (%rdx,%rax,8),%rax
+            auto* slot = reinterpret_cast<volatile std::uint64_t*>(at == 0x141dc5ca1ull ? c->Rax + c->Rcx * 8
+                                                                                         : c->Rdx + c->Rax * 8);
+            if (xs_readable(const_cast<std::uint64_t*>(slot), 8) && *slot == 0) {
+                int waited = 0;
+                while (*slot == 0 && waited < 10000) { Sleep(1); ++waited; }
+                static std::atomic<int> told{0};
+                if (told++ < 20)
+                    std::fprintf(stderr, "[wait] table %llx index %llu: %s after %d ms (tid %lx)\n",
+                                 static_cast<unsigned long long>(c->Rax), static_cast<unsigned long long>(c->Rcx),
+                                 *slot ? "registered" : "STILL NULL", waited, GetCurrentThreadId());
+            }
+        }
         static std::uint64_t range_lo = 0, range_hi = ~0ull;
         static const bool range_read = [] {
             char v[64] = {};
@@ -4286,6 +4303,15 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
                 // a virtual call site: rax is the vtable, print the slot [rax+0x70] it is about to call
                 const auto* vt = reinterpret_cast<const std::uint64_t*>(c->Rax);
                 const bool vok = xs_readable(vt ? vt + 14 : nullptr, 8);
+                {
+                    const auto* q = reinterpret_cast<const std::uint64_t*>(c->Rdx);
+                    if (xs_readable(q, 32))
+                        std::fprintf(stderr, "[probe] G+%llx [rdx]= %llx %llx %llx %llx rcx=%llx\n",
+                                     static_cast<unsigned long long>(at - 0x140000000ull),
+                                     static_cast<unsigned long long>(q[0]), static_cast<unsigned long long>(q[1]),
+                                     static_cast<unsigned long long>(q[2]), static_cast<unsigned long long>(q[3]),
+                                     static_cast<unsigned long long>(c->Rcx));
+                }
                 std::fprintf(stderr, "[probe] G+%llx rax=%llx [rax+70]=%llx\n",
                              static_cast<unsigned long long>(at - 0x140000000ull), static_cast<unsigned long long>(c->Rax),
                              vok ? static_cast<unsigned long long>(vt[14]) : 0ull);
@@ -4312,7 +4338,37 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// HACK (Leonida CE, Windows): +0xb5a5d0 interns a definition record and reads [record+0x68] before any null check;
+// on native Windows a slot of a definition table can still be empty when a job asks for it (+0x5bb7cc9,
+// +0x1dc5caf), and the title faults at +0xb5a5f8 (20-100 s). Make that call return 0 instead: undo the prologue
+// (8 pushes, sub 0x58) and return to the caller with rax = 0. LEONIDA_CE_KEEP_NULLDEF=1 leaves the fault alone.
+LONG CALLBACK xs_null_definition_handler(EXCEPTION_POINTERS* info) {
+    if (!info || !info->ExceptionRecord || !info->ContextRecord) return EXCEPTION_CONTINUE_SEARCH;
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT* c = info->ContextRecord;
+    if (c->Rip != 0x140b5a5f8ull || c->Rax != 0) return EXCEPTION_CONTINUE_SEARCH;
+    const auto* p = reinterpret_cast<const std::uint64_t*>(c->Rsp + 0x58);
+    if (!xs_readable(p, 9 * 8)) return EXCEPTION_CONTINUE_SEARCH;
+    c->Rbx = p[0]; c->Rbp = p[1]; c->Rdi = p[2]; c->Rsi = p[3];
+    c->R12 = p[4]; c->R13 = p[5]; c->R14 = p[6]; c->R15 = p[7];
+    c->Rip = p[8];
+    c->Rsp = c->Rsp + 0x58 + 9 * 8;
+    c->Rax = 0;
+    static std::atomic<int> told{0};
+    if (told++ < 20) {
+        std::fprintf(stderr, "[hack] null definition at +0xb5a5f8: returned 0 to G+%llx (tid %lx)\n",
+                     static_cast<unsigned long long>(c->Rip - 0x140000000ull), GetCurrentThreadId());
+        std::fflush(stderr);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 void xs_install_probes() {
+    {
+        char k[8] = {};
+        if (!(GetEnvironmentVariableA("LEONIDA_CE_KEEP_NULLDEF", k, sizeof(k)) && k[0] == 1))
+            AddVectoredExceptionHandler(1, &xs_null_definition_handler);
+    }
     char v[256] = {};
     if (!GetEnvironmentVariableA("LEONIDA_CE_PROBE", v, sizeof(v))) return;
     AddVectoredExceptionHandler(1, &xs_probe_handler);
