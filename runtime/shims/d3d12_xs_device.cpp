@@ -923,6 +923,14 @@ thread_local bool t_trap_stepping = false;
 thread_local int t_trap_before = 0;
 thread_local char t_trap_line[512];
 std::atomic<int> g_trap_float_logged{0};
+// The arena that allocates in the trapped page (found from its allocator's writes there): its page is trapped too,
+// and a write that moves its current-block pointer (+0x10) backwards, a reset, is logged with its writer.
+std::atomic<std::uintptr_t> g_trap_arena{0};
+std::uintptr_t g_trap_arena_page = 0;
+thread_local bool t_trap_arena_step = false;
+thread_local std::uint64_t t_trap_arena_before = 0;
+thread_local char t_trap_arena_line[512];
+std::atomic<int> g_trap_reset_logged{0};
 
 int xs_trap_floats() {
     if (!g_trap_page || !xs_readable(reinterpret_cast<const void*>(g_trap_page), 4096)) return -1;
@@ -935,6 +943,19 @@ int xs_trap_floats() {
 LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
     if (!g_trap_page || !info || !info->ExceptionRecord || !info->ContextRecord) return EXCEPTION_CONTINUE_SEARCH;
     const auto* r = info->ExceptionRecord;
+    if (r->ExceptionCode == EXCEPTION_SINGLE_STEP && t_trap_arena_step) {
+        t_trap_arena_step = false;
+        const std::uintptr_t arena = g_trap_arena.load();
+        const std::uint64_t after = *reinterpret_cast<const volatile std::uint64_t*>(arena + 0x10);
+        if (after < t_trap_arena_before && g_trap_reset_logged++ < 40) {
+            std::fprintf(stderr, "%s RESET %llx -> %llx\n", t_trap_arena_line,
+                         static_cast<unsigned long long>(t_trap_arena_before), static_cast<unsigned long long>(after));
+            std::fflush(stderr);
+        }
+        DWORD old = 0;
+        VirtualProtect(reinterpret_cast<void*>(g_trap_arena_page), 4096, PAGE_READONLY, &old);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (r->ExceptionCode == EXCEPTION_SINGLE_STEP && t_trap_stepping) {
         t_trap_stepping = false;
         const int after = xs_trap_floats();
@@ -949,6 +970,32 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
     if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 || r->ExceptionInformation[0] != 1)
         return EXCEPTION_CONTINUE_SEARCH;
     const auto addr = static_cast<std::uintptr_t>(r->ExceptionInformation[1]);
+    if (g_trap_arena_page && addr >= g_trap_arena_page && addr < g_trap_arena_page + 4096) {
+        const std::uintptr_t arena = g_trap_arena.load();
+        t_trap_arena_before = *reinterpret_cast<const volatile std::uint64_t*>(arena + 0x10);
+        const std::uint64_t ip = info->ContextRecord->Rip;
+        int len = std::snprintf(t_trap_arena_line, sizeof(t_trap_arena_line), "[trap] t=%lu arena write %llx by %s+%llx callers",
+                                GetTickCount(), static_cast<unsigned long long>(addr),
+                                (ip >= 0x140000000ull && ip < 0x147000000ull) ? "G" : "host",
+                                static_cast<unsigned long long>(ip >= 0x140000000ull && ip < 0x147000000ull
+                                                                    ? ip - 0x140000000ull : ip));
+        const auto* sp = reinterpret_cast<const std::uint64_t*>(info->ContextRecord->Rsp);
+        int found = 0;
+        for (int i = 0; i < 256 && found < 8 && len < static_cast<int>(sizeof(t_trap_arena_line)) - 24; ++i) {
+            if (!xs_readable(sp + i, 8)) break;
+            const std::uint64_t v = sp[i];
+            if (v >= 0x140001000ull && v < 0x146000000ull) {
+                len += std::snprintf(t_trap_arena_line + len, sizeof(t_trap_arena_line) - len, " G+%llx",
+                                     static_cast<unsigned long long>(v - 0x140000000ull));
+                ++found;
+            }
+        }
+        DWORD old = 0;
+        VirtualProtect(reinterpret_cast<void*>(g_trap_arena_page), 4096, PAGE_READWRITE, &old);
+        t_trap_arena_step = true;
+        info->ContextRecord->EFlags |= 0x100;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (addr < g_trap_page || addr >= g_trap_page + 4096) return EXCEPTION_CONTINUE_SEARCH;
     const std::uint64_t rip = info->ContextRecord->Rip;
     t_trap_before = xs_trap_floats();
@@ -971,6 +1018,27 @@ LONG CALLBACK xs_trap_handler(EXCEPTION_POINTERS* info) {
                                      static_cast<unsigned long long>(v - 0x140000000ull));
                 ++found;
             }
+        }
+        static std::atomic<int> arena_logged{0};
+        if (rip == 0x140aa0c2bull && !g_trap_arena.load()) {
+            const std::uintptr_t arena = static_cast<std::uintptr_t>(info->ContextRecord->Rcx);
+            const std::uintptr_t page = arena & ~std::uintptr_t(4095);
+            if (page != g_trap_page && ((arena + 0x18 - 1) & ~std::uintptr_t(4095)) == page) {
+                g_trap_arena = arena;
+                g_trap_arena_page = page;
+                DWORD old = 0;
+                VirtualProtect(reinterpret_cast<void*>(page), 4096, PAGE_READONLY, &old);
+                std::fprintf(stderr, "[trap] arena %llx: its page %llx is trapped too\n",
+                             static_cast<unsigned long long>(arena), static_cast<unsigned long long>(page));
+            }
+        }
+        if (rip == 0x140aa0c2bull && arena_logged++ < 12) {  // the arena allocator writing its end marker here
+            const auto* arena = reinterpret_cast<const std::uint64_t*>(info->ContextRecord->Rcx);
+            std::fprintf(stderr, "%s ARENA rcx=%llx [+8]=%llx [+0x10]=%llx\n", line,
+                         static_cast<unsigned long long>(info->ContextRecord->Rcx),
+                         xs_readable(arena, 0x18) ? static_cast<unsigned long long>(arena[1]) : 0ull,
+                         xs_readable(arena, 0x18) ? static_cast<unsigned long long>(arena[2]) : 0ull);
+            std::fflush(stderr);
         }
         if (g_trap_logged++ < 20) {
             std::fprintf(stderr, "%s\n", line);

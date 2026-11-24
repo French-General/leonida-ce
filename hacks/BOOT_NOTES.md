@@ -222,3 +222,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   through a callback) fills the same page with float rows, so the allocator gave the block to a second owner
   while the first still used it. Root is the double free (form a): find the first free of a block that is
   still referenced. Idea: trap the title's free (+0x187b0) for blocks in this page.
+- The objects in the trapped page come from a bump arena (allocator +0xaa0bf0; arena object on the heap, e.g.
+  0x71fb5d79e5b8: [+8] first block 0x14e928620, [+0x10] current block). They are carved in a burst of about 15 ms,
+  and about 0.3 s later the float rows land in the same page. Trapping the arena's own page (to catch a reset of
+  +0x10) slowed things enough that no corruption happened and the run went on to world data (no crash in 300 s),
+  so it is a race. Pinning the title to 8 CPUs (taskset -c 0-7; Wine may still report all 128) did not avoid it:
+  the stop came at 143 s, after the world tiles had started loading. To check next: the CPU count the title sees
+  (GetSystemInfo / logical processor info under Wine) and whether its job system sizes worker counts from it, and
+  who resets or shares this arena across threads.
