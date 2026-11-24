@@ -171,3 +171,9 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - The engine lock's word has 2 or 3 in its low half, but the lock routine +0x4b40 always writes 1 there (its
   recursion count lives at +0x10), so another routine (a recursive or inlined variant) takes this lock; that is
   why the breakpoint at +0x4bdf never saw owner 336. Next: find the lock routines that add to the low half.
+- FIXED (audio): the lock leak is the title's own function +0x5267720, which takes the engine lock and skips the
+  unlock when its object's count at +0x52c is 0 (branch +0x5267747). Patched at device setup to go to the
+  unlocking tail (+0x5267c7f). The audio thread now runs and the command stream no longer overflows. What +0x52c
+  counts (and why it is 0 here) is still open; the patch only makes the zero case unlock like its sibling.
+- The run still ends at about 121 s: the bad free (+0x187fb, +0x1881f, +0x1884a) then +0x538d0e6. That is a
+  separate fault, not the overflow's error path as guessed before.

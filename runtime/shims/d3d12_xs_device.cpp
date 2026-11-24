@@ -3677,8 +3677,32 @@ void* device_proxy_primary(void* device) {
 
 void set_texture_address_hook(TextureAddressHook hook) { g_texture_address_hook.store(hook, std::memory_order_release); }
 
+// HACK (Leonida CE boot): GTA VI 1.0.2.1 only (the bytes are checked first). The audio function at game+0x5267720
+// takes its object's lock (engine+0x3ced0) and, when the object's count at +0x52c is 0, returns from the branch at
+// +0x5267747 without unlocking; every other path ends in the unlock (+0x4d9dab0), as does its sibling +0x5594650
+// on the same zero count. Here the count is 0 (on the console it is evidently not by then), the lock stays with a
+// job worker, the audio thread blocks on it forever, the per-frame command stream is never drained and overflows
+// (about 100 s), and the title crashes on the error path. The branch is sent to the unlocking tail instead
+// (+0x5267c7f: rcx = the object, frame popped, jmp unlock). Found with hacks/engine.gdb; see hacks/BOOT_NOTES.md.
+void xs_patch_audio_lock_leak() {
+    auto* at = reinterpret_cast<std::uint8_t*>(0x145267747ull);
+    static const std::uint8_t expect[6] = {0x0f, 0x84, 0xae, 0x05, 0x00, 0x00};  // je +0x5ae (to +0x5267cfb)
+    if (!xs_readable(at, 6) || std::memcmp(at, expect, 6) != 0) {
+        std::fprintf(stderr, "[hack] audio lock patch: bytes differ, not applied\n");
+        return;
+    }
+    DWORD old_protect = 0;
+    if (!VirtualProtect(at, 6, PAGE_EXECUTE_READWRITE, &old_protect)) return;
+    const std::int32_t rel = static_cast<std::int32_t>(0x145267c7fll - 0x14526774dll);  // je to the unlocking tail
+    std::memcpy(at + 2, &rel, 4);
+    VirtualProtect(at, 6, old_protect, &old_protect);
+    FlushInstructionCache(GetCurrentProcess(), at, 6);
+    std::fprintf(stderr, "[hack] audio lock patch applied (game+0x5267747 -> +0x5267c7f)\n");
+}
+
 void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
                        std::uint64_t ring_size) {
+    xs_patch_audio_lock_leak();
     g_arena_mapped = mapped;
     g_arena_size = arena_size;
     g_ring_cpu = ring_cpu;
