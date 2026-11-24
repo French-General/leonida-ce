@@ -253,3 +253,10 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
 - Work queue pops (gdb at +0x503ce63, hacks/pops.gdb): items do come back (6 of 24 distinct items popped twice,
   queues 0x14ece91a0, 0x14ece9b90, 0x14f1eef80, all on one thread), but recurring items may be normal. To tell,
   next: also log the title's free (+0x187b0) of those item addresses and look for a pop after a free.
+- Pops vs frees (hacks/popfree.gdb): no popped work item was freed through +0x187b0, so "an item popped after its
+  free" is not it. That run ended in a third form of the same stop: +0x515acf5, an allocator's block lookup (a
+  tree search for the block holding a pointer) finding none and reading through null, called from the container
+  teardown +0x455aeb0 under +0x1335dce <- +0x186424 (the same function family whose virtual call is form b). All
+  three forms are frees or calls through objects the recursive walk +0x183aaf/+0x18435f has already destroyed.
+  Next: find what decides that walk destroys a subtree (its caller +0x503d5f5 and the item flags it reads), or
+  try skipping the destroy step there as a hack (as with the audio lock) to see how far the title gets.
