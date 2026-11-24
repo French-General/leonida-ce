@@ -1,7 +1,7 @@
 // Xbox-ABI command allocator proxies (d3d12_xs_device.h, device slot 9) behind the device proxy, on the Vulkan-backed
 // device and on the host PC runtime (WARP, and the first hardware adapter when there is one):
 //   - Vulkan device: slot 9 wraps the allocator; the public chain (9 slots) is forwarded with the real allocator's
-//     answers, every slot past it up to the end of the table is refused (E_NOTIMPL), and a read past the table faults
+//     answers, every slot past it up to the end of the table is refused (E_NOTIMPL) except 9 (S_OK, see below), and a read past the table faults
 //     in the guard region and is counted;
 //   - QueryInterface identity, GetDevice -> the device proxy, references and release orders;
 //   - a command list created on the proxy and Reset on it (the Vulkan layer resolves the proxy), recording a buffer
@@ -182,12 +182,14 @@ int check_proxy(const Backend& b, ID3D12CommandAllocator* allocator) {
     back->Release();
     EXPECT(SUCCEEDED(allocator->SetPrivateDataInterface(key, nullptr)));
 
-    // The refused tail: every slot past the public chain, up to the table end, is E_NOTIMPL and counted.
+    // The refused tail: every slot past the public chain, up to the table end, is E_NOTIMPL and counted -- except
+    // slot 9, which answers S_OK. The retail title calls slot 9 in a loop over its blocks and retried forever while
+    // it was refused (d3d12_xs_device.cpp); the slot's meaning is not decoded, so this pins the answer, not a method.
     const unsigned table = xs::allocator_proxy_table_size();
     EXPECT(table == 64);
     for (unsigned slot = 9; slot < table; ++slot) {
         const std::uint64_t before = xs::allocator_slot_hits(slot);
-        EXPECT(call_slot(allocator, slot) == E_NOTIMPL);
+        EXPECT(call_slot(allocator, slot) == (slot == 9 ? S_OK : E_NOTIMPL));
         EXPECT(xs::allocator_slot_hits(slot) == before + 1 && xs::allocator_slot_first_call_seen(slot));
     }
 

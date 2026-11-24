@@ -209,7 +209,7 @@ std::vector<std::uint8_t> xs_read_file(const std::wstring& path) {
 void xs_pso_load() {
     if (g_pso_loaded) return;
     g_pso_loaded = true;
-    const auto txt = xs_read_file(L"Z:\\root\\leonida-psomap.txt");
+    const auto txt = xs_read_file(ce_data_path(L"leonida-psomap.txt").c_str());
     std::string all(txt.begin(), txt.end());
     size_t pos = 0;
     while (pos < all.size()) {
@@ -255,7 +255,7 @@ void xs_pso_load() {
                 sh.elements.push_back(el);
             }
         }
-        const std::wstring path = L"Z:\\root\\leonida-work\\shaders\\dxbc\\" + std::wstring(sh.name.begin(), sh.name.end()) + L".dxbc";
+        const std::wstring path = ce_data_path((L"leonida-work\\shaders\\dxbc\\" + std::wstring(sh.name.begin(), sh.name.end()) + L".dxbc").c_str());
         sh.dxbc = xs_read_file(path);
         if (!sh.dxbc.empty()) {
             XsPsoShader& slot = g_pso_map[line.substr(0, a)];
@@ -268,7 +268,7 @@ void xs_pso_load() {
 }
 void xs_pso_want(const std::string& hex) {
     if (!g_pso_wanted.insert(hex).second) return;
-    HANDLE h = CreateFileW(L"Z:\\root\\leonida-psowant.txt", FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, 0, nullptr);
+    HANDLE h = CreateFileW(ce_data_path(L"leonida-psowant.txt").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     const std::string line = hex + "\n";
     DWORD wr = 0;
@@ -593,9 +593,9 @@ void xs_capture_frame(ID3D12CommandQueue* queue, ID3D12Resource* texture, std::u
         for (int i = 0; i < 5000 && fence->GetCompletedValue() < 1; ++i) Sleep(1);
         void* mapped = nullptr;
         if (fence->GetCompletedValue() >= 1 && SUCCEEDED(rb->Map(0, nullptr, &mapped)) && mapped) {
-            CreateDirectoryW(L"Z:\\root\\frames", nullptr);
+            CreateDirectoryW(ce_data_path(L"frames").c_str(), nullptr);
             wchar_t name[96];
-            swprintf_s(name, L"Z:\\root\\frames\\frame_%06llu.ppm", (unsigned long long)frame);
+            swprintf_s(name, L"%s\\frame_%06llu.ppm", ce_data_path(L"frames").c_str(), (unsigned long long)frame);
             HANDLE h = CreateFileW(name, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
             if (h != INVALID_HANDLE_VALUE) {
                 char header[64];
@@ -2690,6 +2690,17 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
             auto* q = static_cast<ID3D12CommandQueue*>(static_cast<IUnknown*>(self->real));
             return hr_to_u64(q->GetClockCalibration(reinterpret_cast<UINT64*>(a1), reinterpret_cast<UINT64*>(a2)));
         }
+        // HACK: the title calls command-allocator slot 9 in a tight loop over its blocks (a3 advances by 0x30).
+        // The PC allocator has no such method, so E_NOTIMPL made it retry forever (millions of calls). Answer S_OK
+        // and it moves on.
+        if constexpr (K == ChildKind::allocator && Slot == 9) {
+            static std::atomic<bool> told{false};
+            if (!told.exchange(true)) {
+                std::fprintf(stderr, "[hack] allocator slot 9 answered S_OK (stub)\n");
+                std::fflush(stderr);
+            }
+            return hr_to_u64(S_OK);
+        }
         if (Slot >= self->slot_count) {
             bool expected = false;
             if (ChildStats<K>::beyond_warned[Slot].compare_exchange_strong(expected, true,
@@ -2702,10 +2713,14 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                              static_cast<unsigned long long>(a3), static_cast<unsigned long long>(a4));
             }
             d3d12_trace::record(child_trace_name<K>(Slot), "unsupported");
-            std::fprintf(stderr, "[hack] %s slot %u beyond PC: caller %p a1=%llx a2=%llx a3=%llx a4=%llx\n",
-                         child_kind_name<K>(), Slot, _ReturnAddress(), (unsigned long long)a1, (unsigned long long)a2,
-                         (unsigned long long)a3, (unsigned long long)a4);
-            std::fflush(stderr);
+            // Logged a handful of times only: an unbounded title loop calls this millions of times.
+            static std::atomic<int> beyond_calls{0};
+            if (beyond_calls.fetch_add(1) < 20) {
+                std::fprintf(stderr, "[hack] %s slot %u beyond PC: caller %p a1=%llx a2=%llx a3=%llx a4=%llx\n",
+                             child_kind_name<K>(), Slot, _ReturnAddress(), (unsigned long long)a1,
+                             (unsigned long long)a2, (unsigned long long)a3, (unsigned long long)a4);
+                std::fflush(stderr);
+            }
             return hr_to_u64(E_NOTIMPL);
         }
         d3d12_trace::record(child_trace_name<K>(Slot));  // "called": the real object's result is not inspected
@@ -3701,17 +3716,17 @@ std::uint64_t WINAPI proxy_slot(DeviceProxy* self, std::uint64_t a1, std::uint64
             static std::atomic<int> rec{0};
             const int r = rec++;
             if (r < 6) {
-                CreateDirectoryW(L"Z:\\root\\leonida-dump", nullptr);
+                CreateDirectoryW(ce_data_path(L"leonida-dump").c_str(), nullptr);
                 const auto* w = reinterpret_cast<const std::uint64_t*>(desc_in);
                 wchar_t name[128];
-                swprintf_s(name, L"Z:\\root\\leonida-dump\\pso%02d_record.bin", r);
+                swprintf_s(name, L"%s\\pso%02d_record.bin", ce_data_path(L"leonida-dump").c_str(), r);
                 HANDLE h = CreateFileW(name, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
                 if (h != INVALID_HANDLE_VALUE) { DWORD wr; WriteFile(h, desc_in, 0x160, &wr, nullptr); CloseHandle(h); }
                 for (int i = 0; i < 6; ++i) {
                     const void* ptr = reinterpret_cast<const void*>(w[1 + 2 * i]);
                     const std::uint64_t len = w[2 + 2 * i];
                     if (!ptr || !len || len > (1u << 24)) continue;
-                    swprintf_s(name, L"Z:\\root\\leonida-dump\\pso%02d_blob%d.bin", r, i);
+                    swprintf_s(name, L"%s\\pso%02d_blob%d.bin", ce_data_path(L"leonida-dump").c_str(), r, i);
                     h = CreateFileW(name, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
                     if (h != INVALID_HANDLE_VALUE) { DWORD wr; WriteFile(h, ptr, static_cast<DWORD>(len), &wr, nullptr); CloseHandle(h); }
                 }

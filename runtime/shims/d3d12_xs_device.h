@@ -54,6 +54,23 @@
 
 namespace rt::d3d12_xs {
 
+// HACK (Leonida CE boot): where the diagnostic dumps and the pipeline map live. LEONIDA_CE_DATA_DIR sets the folder;
+// Z:\root is the Wine setup the boot notes were measured on, and stays the default so that setup is unchanged. The
+// files are frames\, leonida-dump\, leonida-psomap.txt, leonida-psowant.txt and leonida-work\shaders\dxbc\.
+inline std::wstring ce_data_path(const wchar_t* leaf) {
+    static const std::wstring base = [] {
+        wchar_t value[512] = {};
+        const DWORD written = GetEnvironmentVariableW(L"LEONIDA_CE_DATA_DIR", value, 512);
+        std::wstring dir = (written && written < 512) ? std::wstring(value) : std::wstring(L"Z:\\root");
+        while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+        return dir;
+    }();
+    std::wstring path = base;
+    if (!path.empty()) path.push_back(L'\\');
+    path += leaf;
+    return path;
+}
+
 // Wraps `real` and returns the requested device interface through `out`. Takes ownership of one reference to
 // `real` on success; on failure the caller keeps its reference. Returns E_NOINTERFACE if `riid` is not a D3D12
 // device interface the PC device implements.

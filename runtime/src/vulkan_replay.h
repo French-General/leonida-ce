@@ -54,6 +54,8 @@
 #include <vector>
 
 namespace leonida {
+// Diagnostic: a refused copy names the check that refused it, so a rejected ExecuteCommandLists can be traced.
+#define COPY_REJECTED() (std::fprintf(stderr, "[copy] rejected at line %d\n", __LINE__), ReplayResult::invalid_copy)
 
 // What the resolver knows about a resource. image == VK_NULL_HANDLE means a buffer in the shared GPU address
 // space: its transitions become global memory barriers.
@@ -1669,7 +1671,7 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
         if ((dst.aspectMask != src.aspectMask && !depth_colour_pair(p.binding, p.source)) ||
             p.binding.volume != p.source.volume || p.binding.samples != p.source.samples ||
             p.binding.rgb96 != p.source.rgb96)
-            return ReplayResult::invalid_copy;
+            return COPY_REJECTED();
         p.same_copy_subresource = p.source.image == p.binding.image && src.aspectMask == dst.aspectMask &&
                                   src.baseMipLevel == dst.baseMipLevel && src.baseArrayLayer == dst.baseArrayLayer;
         const VkExtent2D from = mip_extent(p.source, src.baseMipLevel), to = mip_extent(p.binding, dst.baseMipLevel);
@@ -1681,7 +1683,7 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
         const std::uint32_t block = block_format(p.source.format, src.aspectMask).block;
         const auto padded = [block](std::uint32_t size) { return (size + block - 1) / block * block; };
         if (box.right > padded(from.width) || box.bottom > padded(from.height) || box.back > from_depth)
-            return ReplayResult::invalid_copy;
+            return COPY_REJECTED();
         if (const std::uint32_t dst_block = block_format(p.binding.format, dst.aspectMask).block; dst_block != block) {
             // A BC format and its uncompressed equivalent ("Format Conversion using Direct3D 10.1"): one texel of the
             // uncompressed side is one block of the other. The box is in source texels, the offset in destination
@@ -1693,7 +1695,7 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
                 box.top >= from.height || !within(copy.z, box.back - box.front, to_depth) ||
                 copy.x / dst_block + blocks(box.right - box.left, block) > blocks(to.width, dst_block) ||
                 copy.y / dst_block + blocks(box.bottom - box.top, block) > blocks(to.height, dst_block))
-                return ReplayResult::invalid_copy;
+                return COPY_REJECTED();
             const std::uint32_t w = std::min(padded(box.right - box.left), from.width - box.left);
             const std::uint32_t h = std::min(padded(box.bottom - box.top), from.height - box.top);
             const VkImageCopy region{{src.aspectMask, src.baseMipLevel, src.baseArrayLayer, 1},
@@ -1725,7 +1727,7 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
             };
             if (intersects(box.left, copy.x, padded(w)) && intersects(box.top, copy.y, padded(h)) &&
                 intersects(box.front, copy.z, d))
-                return ReplayResult::invalid_copy;
+                return COPY_REJECTED();
         }
         if (block > 1) {
             // D3D12 copies whole blocks: the box is rounded up to blocks and must fit the destination's padded mip.
@@ -1733,10 +1735,10 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
             // extent is cut where it reaches an edge, and a copy that cannot satisfy both images is staged (below).
             if ((box.left | box.top | copy.x | copy.y) % block || box.left >= from.width || box.top >= from.height ||
                 copy.x >= padded(to.width) || copy.y >= padded(to.height))
-                return ReplayResult::invalid_copy;
+                return COPY_REJECTED();
             w = padded(w);
             h = padded(h);
-            if (w > padded(to.width) - copy.x || h > padded(to.height) - copy.y) return ReplayResult::invalid_copy;
+            if (w > padded(to.width) - copy.x || h > padded(to.height) - copy.y) return COPY_REJECTED();
             // Each image's own extent: the whole blocks, cut where they reach that image's edge.
             const std::uint32_t src_w = std::min(w, from.width - box.left), src_h = std::min(h, from.height - box.top);
             const std::uint32_t dst_w = std::min(w, to.width - copy.x), dst_h = std::min(h, to.height - copy.y);
@@ -1753,7 +1755,7 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
                 // cut extent and from there into the destination with the destination's (`staged_reads` and
                 // `staged_writes`, offsets from the start of the scratch; prepare allocates it). The box fits the
                 // source's padded mip, so the scratch holds every block the destination reads.
-                if (!within(copy.z, d, to_depth)) return ReplayResult::invalid_copy;
+                if (!within(copy.z, d, to_depth)) return COPY_REJECTED();
                 VkBufferImageCopy read{};
                 read.bufferRowLength = blocks_w;
                 read.bufferImageHeight = blocks_h;
@@ -1772,7 +1774,7 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
             }
         }
         if (!within(copy.x, w, to.width) || !within(copy.y, h, to.height) || !within(copy.z, d, to_depth))
-            return ReplayResult::invalid_copy;
+            return COPY_REJECTED();
         p.image_copies.push_back({{src.aspectMask, src.baseMipLevel, src.baseArrayLayer, 1},
                                   {std::int32_t(box.left), std::int32_t(box.top), std::int32_t(box.front)},
                                   {dst.aspectMask, dst.baseMipLevel, dst.baseArrayLayer, 1},
@@ -1788,10 +1790,10 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
     const ResourceBinding& buffer = upload ? p.source : p.binding;
     const CopyLocation& texture = upload ? copy.dst : copy.src;
     const CopyLocation& placed = upload ? copy.src : copy.dst;
-    if (!buffer.buffer) return ReplayResult::invalid_copy;
+    if (!buffer.buffer) return COPY_REJECTED();
     VkImageSubresourceRange range{};
     if (!copy_subresource(image, texture.subresource, range)) return ReplayResult::invalid_subresource;
-    if (image.samples != 1) return ReplayResult::invalid_copy;  // multisampled textures have no footprint
+    if (image.samples != 1) return COPY_REJECTED();  // multisampled textures have no footprint
     const BlockFormat format = copy_block_format(image, range.aspectMask);
     // A 12-byte texel does not divide D3D12's 256-byte pitches; an rgb96 copy hands Vulkan the scratch buffer of
     // the repack, never this pitch, and the pass reads the footprint in words.
@@ -1808,22 +1810,22 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
     const auto texture_z = upload ? copy.z : box.front, placed_z = upload ? box.front : copy.z;
     const auto depth = box.back - box.front;
     if (!depth || !within(placed_z, depth, placed.depth) || !within(texture_z, depth, mip_depth) ||
-        !within(placed_x, w, placed.width) || !within(placed_y, h, placed.height)) return ReplayResult::invalid_copy;
-    if (texture_x >= mip.width || texture_y >= mip.height) return ReplayResult::invalid_copy;
+        !within(placed_x, w, placed.width) || !within(placed_y, h, placed.height)) return COPY_REJECTED();
+    if (texture_x >= mip.width || texture_y >= mip.height) return COPY_REJECTED();
     if (format.block > 1) {
         w = std::min(w, mip.width - texture_x);
         h = std::min(h, mip.height - texture_y);
     }
-    if (!within(texture_x, w, mip.width) || !within(texture_y, h, mip.height)) return ReplayResult::invalid_copy;
-    if ((placed_x | placed_y | texture_x | texture_y) % format.block) return ReplayResult::invalid_copy;
+    if (!within(texture_x, w, mip.width) || !within(texture_y, h, mip.height)) return COPY_REJECTED();
+    if ((placed_x | placed_y | texture_x | texture_y) % format.block) return COPY_REJECTED();
     const auto slice_rows = (std::uint64_t(placed.height) + format.block - 1) / format.block;
     const std::uint64_t slice_pitch = slice_rows * placed.row_pitch;
     if (!slice_pitch || placed.offset > buffer.size || placed_z > (buffer.size - placed.offset) / slice_pitch)
-        return ReplayResult::invalid_copy;
+        return COPY_REJECTED();
     const auto slice_start = placed.offset + placed_z * slice_pitch;
     const auto in_slice = std::uint64_t(placed_y / format.block) * placed.row_pitch +
                           std::uint64_t(placed_x / format.block) * format.bytes;
-    if (!within(slice_start, in_slice, buffer.size)) return ReplayResult::invalid_copy;
+    if (!within(slice_start, in_slice, buffer.size)) return COPY_REJECTED();
     const auto offset = slice_start + in_slice;
     // Vulkan wants a buffer offset that is a multiple of the texel size (VUID-vkCmdCopyBufferToImage-dstImage-07975),
     // which D3D12's 512-byte placement does not give a 12-byte texel: one more reason an rgb96 copy is repacked.
@@ -1834,8 +1836,8 @@ inline ReplayResult prepare_texture_copy(const CopyTexture& copy, Prepared& p) {
     if (!rows || !row_bytes || !within(std::uint64_t(placed_x / format.block) * format.bytes, row_bytes, placed.row_pitch) ||
         depth - 1 > (buffer.size - offset) / slice_pitch ||
         !within(offset + (depth - 1) * slice_pitch, (rows - 1) * placed.row_pitch + row_bytes, buffer.size))
-        return ReplayResult::invalid_copy;
-    if (buffer.size > UINT64_MAX - buffer.buffer_offset) return ReplayResult::invalid_copy;
+        return COPY_REJECTED();
+    if (buffer.size > UINT64_MAX - buffer.buffer_offset) return COPY_REJECTED();
     const VkDeviceSize backing_offset = buffer.buffer_offset + offset;
     if (backing_offset % alignment && !copy.tile_footprint) return ReplayResult::unsupported;
     VkBufferImageCopy region{};
@@ -1884,14 +1886,14 @@ inline bool stage_unaligned_tile(const ReplayFunctions& vk, Prepared& p, bool up
 // CopyResource: the whole buffer, or every subresource of two textures of the same shape.
 inline ReplayResult prepare_resource_copy(Prepared& p) {
     if (p.binding.buffer && p.source.buffer) {
-        if (p.binding.size != p.source.size || !p.source.size) return ReplayResult::invalid_copy;
+        if (p.binding.size != p.source.size || !p.source.size) return COPY_REJECTED();
         if (p.source.size > UINT64_MAX - p.source.buffer_offset ||
             p.binding.size > UINT64_MAX - p.binding.buffer_offset)
-            return ReplayResult::invalid_copy;
+            return COPY_REJECTED();
         const VkDeviceSize src = p.source.buffer_offset;
         const VkDeviceSize dst = p.binding.buffer_offset;
         if (p.source.buffer == p.binding.buffer && src < dst + p.source.size && dst < src + p.source.size)
-            return ReplayResult::invalid_copy;
+            return COPY_REJECTED();
         p.buffer_copies.push_back({src, dst, p.source.size});
         return ReplayResult::success;
     }
@@ -1909,7 +1911,7 @@ inline ReplayResult prepare_resource_copy(Prepared& p) {
         dst.array_layers != src.array_layers || (dst.aspects != src.aspects && !depth_colour_pair(dst, src)) ||
         dst.samples != src.samples || dst.rgb96 != src.rgb96 ||
         block_format(dst.format, VK_IMAGE_ASPECT_COLOR_BIT).bytes != block_format(src.format, VK_IMAGE_ASPECT_COLOR_BIT).bytes)
-        return ReplayResult::invalid_copy;
+        return COPY_REJECTED();
     // A depth <-> colour pair has one aspect on each side; the copies name each side's own (staged by the caller).
     const bool cross = dst.aspects != src.aspects;
     for (const VkImageAspectFlags aspect : {VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT}) {
@@ -1922,7 +1924,7 @@ inline ReplayResult prepare_resource_copy(Prepared& p) {
             // edge block cannot take a whole uncompressed texel per block in one vkCmdCopyImage; refused until such
             // a copy is staged through a buffer.
             if (sb != db && (blocks(extent.width, sb) * db > to.width || blocks(extent.height, sb) * db > to.height))
-                return ReplayResult::invalid_copy;
+                return COPY_REJECTED();
             p.image_copies.push_back({{src_aspect, mip, 0, dst.array_layers}, {0, 0, 0}, {aspect, mip, 0, dst.array_layers},
                                       {0, 0, 0}, {extent.width, extent.height, std::max(1u, src.depth >> mip)}});
         }
@@ -1939,7 +1941,7 @@ inline ReplayResult prepare_resolve(const ResolveSubresource& resolve, Prepared&
     if (!copy_subresource(p.binding, resolve.dst_subresource, dst) ||
         !copy_subresource(p.source, resolve.src_subresource, src))
         return ReplayResult::invalid_subresource;
-    if (p.source.samples <= 1 || p.binding.samples != 1 || p.binding.volume) return ReplayResult::invalid_copy;
+    if (p.source.samples <= 1 || p.binding.samples != 1 || p.binding.volume) return COPY_REJECTED();
     const VkExtent2D from = mip_extent(p.source, src.baseMipLevel), to = mip_extent(p.binding, dst.baseMipLevel);
     VkOffset3D src_offset{}, dst_offset{};
     VkExtent3D extent{from.width, from.height, 1};
@@ -1947,14 +1949,14 @@ inline ReplayResult prepare_resolve(const ResolveSubresource& resolve, Prepared&
         dst_offset = {std::int32_t(region->dst_x), std::int32_t(region->dst_y), 0};
         if (const auto& r = region->src_rect) {
             if (std::uint32_t(r->right) > from.width || std::uint32_t(r->bottom) > from.height)
-                return ReplayResult::invalid_copy;
+                return COPY_REJECTED();
             src_offset = {r->left, r->top, 0};
             extent = {std::uint32_t(r->right - r->left), std::uint32_t(r->bottom - r->top), 1};
         }
         if (!within(region->dst_x, extent.width, to.width) || !within(region->dst_y, extent.height, to.height))
-            return ReplayResult::invalid_copy;
+            return COPY_REJECTED();
     } else if (from.width != to.width || from.height != to.height) {
-        return ReplayResult::invalid_copy;
+        return COPY_REJECTED();
     }
     if (src.aspectMask != dst.aspectMask || p.source.format != p.binding.format) return ReplayResult::unsupported;
     const auto& region = resolve.region;
@@ -2754,15 +2756,15 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                 if (!p.binding.buffer || !p.source.buffer ||
                     !detail::within(buffer_copy->dst_offset, buffer_copy->size, size(p.binding, dst_id)) ||
                     !detail::within(buffer_copy->src_offset, buffer_copy->size, size(p.source, src_id)))
-                    return ReplayResult::invalid_copy;
+                    return COPY_REJECTED();
                 if (buffer_copy->src_offset > UINT64_MAX - p.source.buffer_offset ||
-                    buffer_copy->dst_offset > UINT64_MAX - p.binding.buffer_offset) return ReplayResult::invalid_copy;
+                    buffer_copy->dst_offset > UINT64_MAX - p.binding.buffer_offset) return COPY_REJECTED();
                 const VkDeviceSize src = p.source.buffer_offset + buffer_copy->src_offset;
                 const VkDeviceSize dst = p.binding.buffer_offset + buffer_copy->dst_offset;
                 if (buffer_copy->size > UINT64_MAX - src || buffer_copy->size > UINT64_MAX - dst)
-                    return ReplayResult::invalid_copy;
+                    return COPY_REJECTED();
                 if (p.source.buffer == p.binding.buffer && src < dst + buffer_copy->size && dst < src + buffer_copy->size)
-                    return ReplayResult::invalid_copy;
+                    return COPY_REJECTED();
                 if (predicated) {
                     if ((statistics_active && !statistics_helpers) || !vk.prepare_predicated_copy || !vk.emit_predicated_copy ||
                         !vk.prepare_predicated_copy(p.source.buffer, p.binding.buffer, src, dst, buffer_copy->size, p.predicated_copy))
@@ -2780,7 +2782,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                     VkDeviceSize base = 0;
                     if (!f.bytes || !vk.copy_image_to_buffer || !vk.copy_buffer_to_image || !vk.copy_scratch ||
                         !vk.copy_scratch(bytes, p.staged, base))
-                        return ReplayResult::invalid_copy;  // refused as before this path existed
+                        return COPY_REJECTED();  // refused as before this path existed
                     p.staged_reads[0].bufferOffset += base;
                     p.staged_writes[0].bufferOffset += base;
                 }
@@ -2927,7 +2929,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             std::uint64_t bytes = 4;
             if (!vk.buffer_at(write->address, bytes, p.write_buffer, p.write_offset) || bytes < 4)
                 { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
-            if (p.write_offset % 4) return ReplayResult::invalid_copy;
+            if (p.write_offset % 4) return COPY_REJECTED();
             // WriteBufferImmediate resolves by VA and may target a readback buffer in COPY_DEST.
             out.wrote_readback = true;
             out.readback_src_stages |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -2939,14 +2941,14 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
             p.source = *source;
             if (!p.binding.buffer || !p.source.buffer || !detail::within(atomic->dst_offset, atomic->bytes, p.binding.size) ||
                 !detail::within(atomic->src_offset, atomic->bytes, p.source.size))
-                return ReplayResult::invalid_copy;
+                return COPY_REJECTED();
             for (const auto& d : atomic->dependencies) {
                 const ResourceBinding* dependent = resolve(d.resource);
                 if (!dependent) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
                 if (!dependent->image) {
                     const std::uint64_t end = d.end == UINT64_MAX ? dependent->size : d.end;
                     if (d.subresource != 0 || d.begin >= end || end > dependent->size)
-                        return ReplayResult::invalid_copy;
+                        return COPY_REJECTED();
                 }
             }
             p.buffer_copies.push_back({p.source.buffer_offset + atomic->src_offset,
@@ -3092,7 +3094,7 @@ ReplayResult prepare(const CommandList& list, Resolve&& resolve, const ReplayFun
                 VkBuffer buffer = VK_NULL_HANDLE;
                 VkDeviceSize offset = 0;
                 if (!vk.buffer_at(info->dest_va, room, buffer, offset)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d (command %zu of %zu)\n", __LINE__, i, commands.size()); } return ReplayResult::unresolved_resource; }
-                if (room < 8 * info->sources.size()) return ReplayResult::invalid_copy;
+                if (room < 8 * info->sources.size()) return COPY_REJECTED();
             }
         } else if (const auto* dispatch = std::get_if<Dispatch>(&command)) {
             if (!vk.bind_pipeline || !vk.push_constants || !vk.dispatch || !vk.compute_pipeline)
