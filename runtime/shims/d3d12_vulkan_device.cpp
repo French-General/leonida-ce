@@ -8784,6 +8784,16 @@ private:
                       " refused (texture size, mips, samples or alignment), dimension")
                          .c_str(),
                      int(desc->Dimension));
+            {   // DIAGNOSTIC: the whole description, so the invalid field is visible
+                static std::atomic<int> n{0};
+                if (n++ < 4)
+                    std::fprintf(stderr,
+                                 "[hack] refusal desc: %llux%u depth=%u mips=%u fmt=%d samples=%u layout=%u flags=%#x "
+                                 "heap_type=%d heap_flags=%#x\n",
+                                 (unsigned long long)desc->Width, desc->Height, desc->DepthOrArraySize,
+                                 desc->MipLevels, (int)desc->Format, desc->SampleDesc.Count, (int)desc->Layout,
+                                 (unsigned)desc->Flags, (int)heap->Type, (unsigned)heap_flags);
+            }
             return finish(E_INVALIDARG);
         }
         return finish(create_committed(heap, heap_flags, desc, state, castable_count, castable, riid, out));
