@@ -135,3 +135,11 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   and SHAPE contexts at 61.78 s) overlapping or under-sizing; then the silent xapu/chad status and result writes.
   Next: log the object's address against those allocations, and break on writes to it (software: single-step is
   too slow; check each runtime writer's target range instead).
+- Not the runtime's audio-time allocations: in one run the corrupted audio object was 0x7b0ecd569140, the APU
+  cached heap 0x7b08778f0000+0x1c700000, the non-cached one 0x7b0c39c60000+0x226e00, and the two XMemAlloc blocks
+  (0xf0814000) 0x7b0c26548440+0x60000 and 0x7b08981a0080+0x1e00000; none contains it. The silent xapu result
+  record matches VIctory's 0x50-byte layout, so dequeues do not overrun either. Next: which allocator made the
+  audio object (the title's own heaps), and a check of other runtime writers into title memory (bottom-of-pipe
+  writes 71/72, the console texture refresh, CBV snapshots).
+- Shell note: never `pkill -f` a pattern that also appears in the command running it (it kills its own shell,
+  exit 144); use `pkill -x gdb`.
