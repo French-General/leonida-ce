@@ -4003,6 +4003,18 @@ public:
                 std::fprintf(stderr, "[rt] d3d12: no translated compute shader for %s sha256 %s\n",
                              fspx ? (program.state.empty() ? "FSPX kind-6" : "FSPX kind-6 and kind-0") : "FSSM",
                              leonida::sha256_hex(program.bytes).c_str());
+            {   // HACK: dump the container so it can be translated offline (tools/fspx_unpack.py takes .dxbc files)
+                CreateDirectoryW(L"Z:\\root\\leonida-dump", nullptr);
+                const std::string hex = leonida::sha256_hex(
+                    {static_cast<const std::uint8_t*>(desc.CS.pShaderBytecode), desc.CS.BytecodeLength});
+                const std::wstring name = L"Z:\\root\\leonida-dump\\cs_" + std::wstring(hex.begin(), hex.end()) + L".dxbc";
+                HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h != INVALID_HANDLE_VALUE) {
+                    DWORD wrote = 0;
+                    WriteFile(h, desc.CS.pShaderBytecode, static_cast<DWORD>(desc.CS.BytecodeLength), &wrote, nullptr);
+                    CloseHandle(h);
+                }
+            }
             return E_INVALIDARG;
         }
         // Set 0 (bindless images, samplers, the descriptor hash table): the device keeps it, and a pipeline whose

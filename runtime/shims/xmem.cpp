@@ -477,9 +477,19 @@ bool map_page(uintptr_t address, uint64_t page, DWORD protect) {
     void* const target = reinterpret_cast<void*>(address);
     if (!isolate_placeholder(target, kPhysicalPageSize)) return false;
     const FaultLockExclusive lock;
-    void* const view = placeholder_api().map_view3(it->second.section->handle, GetCurrentProcess(), target,
-                                                   it->second.offset, kPhysicalPageSize, MEM_REPLACE_PLACEHOLDER,
-                                                   protect, nullptr, 0);
+    void* view = placeholder_api().map_view3(it->second.section->handle, GetCurrentProcess(), target,
+                                             it->second.offset, kPhysicalPageSize, MEM_REPLACE_PLACEHOLDER,
+                                             protect, nullptr, 0);
+    constexpr DWORD kCaching = PAGE_WRITECOMBINE | PAGE_NOCACHE;
+    if (!view && (protect & kCaching) && GetLastError() == ERROR_INVALID_PARAMETER) {
+        // Wine 9's MapViewOfFile3 refuses PAGE_WRITECOMBINE and PAGE_NOCACHE (error 87); Windows takes them. The
+        // caching hint changes nothing the title can observe through the CPU, so map with the base protection.
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true, std::memory_order_relaxed))
+            std::fprintf(stderr, "[rt] xmem: the host refused a write-combined view; mapping without the caching bits\n");
+        view = placeholder_api().map_view3(it->second.section->handle, GetCurrentProcess(), target, it->second.offset,
+                                           kPhysicalPageSize, MEM_REPLACE_PLACEHOLDER, protect & ~kCaching, nullptr, 0);
+    }
     if (!view) return false;
     g_mapped[address] = MappedPage{page, it->second.section, it->second.offset};
     return true;
@@ -665,6 +675,8 @@ void* WINAPI XMemMapPhysicalPages(void* address, uint64_t page_count, const uint
     const uintptr_t start = reinterpret_cast<uintptr_t>(address);
     if (!aligned_page_address(start) || page_count > (std::numeric_limits<uintptr_t>::max)() / kPhysicalPageSize ||
         start > (std::numeric_limits<uintptr_t>::max)() - page_count * kPhysicalPageSize) {
+        std::fprintf(stderr, "[hack] XMemMapPhysicalPages(%p, %llu): bad address/count\n", address, (unsigned long long)page_count);
+        std::fflush(stderr);
         SetLastError(ERROR_INVALID_PARAMETER);
         return nullptr;
     }
@@ -681,12 +693,21 @@ void* WINAPI XMemMapPhysicalPages(void* address, uint64_t page_count, const uint
     }
     const Window* const window = find_window(start, page_count * kPhysicalPageSize);
     if (!window) {
+        std::fprintf(stderr, "[hack] XMemMapPhysicalPages(%p, %llu): no window covers it\n", address, (unsigned long long)page_count);
+        std::fflush(stderr);
         SetLastError(ERROR_INVALID_ADDRESS);
         return nullptr;
     }
     const DWORD protect = view_protect(*window);
     for (uint64_t i = 0; i < page_count; ++i) {
-        if (!map_page(start + i * kPhysicalPageSize, page_array[i], protect)) return nullptr;
+        if (!map_page(start + i * kPhysicalPageSize, page_array[i], protect)) {
+            const DWORD e = GetLastError();
+            std::fprintf(stderr, "[hack] XMemMapPhysicalPages(%p, %llu): map_page %llu (page 0x%llx, protect 0x%lx) failed, error %lu\n",
+                         address, (unsigned long long)page_count, (unsigned long long)i, (unsigned long long)page_array[i],
+                         (unsigned long)protect, (unsigned long)e);
+            std::fflush(stderr);
+            return nullptr;
+        }
     }
     return address;
 }
