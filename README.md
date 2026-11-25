@@ -294,7 +294,7 @@ pull requests.
 - [libHttpClient](https://github.com/microsoft/libHttpClient) (MIT) by Microsoft: the XTaskQueue/XAsync implementation
   in `third_party/xtaskqueue`, used by the offline `xgameruntime` shim.
 - [LLVM](https://llvm.org/): AMDGPU disassembler.
-- Logo: ["Grand Theft Auto VI" icon by SlyDevil](https://www.steamgriddb.com/icon/122618) on SteamGridDB.
+- Logo: ["Grand Theft Auto VI" icon by SlyDevil](https://www.steamgriddb.com/icon/122618) on SteamGridDB, with a "CE" mark added for Leonida CE.
 - [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools): assembly and validation.
 
 Grand Theft Auto and all related names are trademarks of their owners. This project is not affiliated with or
