@@ -4639,6 +4639,60 @@ LONG CALLBACK xs_probe_handler(EXCEPTION_POINTERS* info) {
                 std::fflush(stderr);
             }
         }
+        // DIAGNOSTIC (Leonida CE, agC): LEONIDA_CE_PROBE_TEX=1 with probes on +0x1335be6 (the generated-texture
+        // request +0x1335a20 calls its generator's fill, vtable +0x40: rsi = the 0xa0 request node, rcx = generator,
+        // rdx = the CPU image), +0x1335c05 (fill returned) and +0x133609a (the final call *0xb0 through the node that
+        // crashes): logs the image's mips (w, h, pitch, size, data) against the node's address and the bytes the
+        // fill writes (rows of generator width*16), and whether the node's vtable is still a title address.
+        static const bool tex_mode = [] {
+            char v[8] = {};
+            if (GetEnvironmentVariableA("LEONIDA_CE_PROBE_TEX", v, sizeof(v)) && v[0] == '1') return true;
+            char pv[256] = {};  // agW: or a trailing "tex" in the probe list
+            return GetEnvironmentVariableA("LEONIDA_CE_PROBE", pv, sizeof(pv)) && std::strstr(pv, "tex") != nullptr;
+        }();
+        if (tex_mode && (at == 0x141335be6ull || at == 0x141335c05ull || at == 0x14133609aull)) {
+            in_range = false;
+            const auto* node = reinterpret_cast<const std::uint64_t*>(c->Rsi);
+            const std::uint64_t nvt = xs_readable(node, 0xa0) ? node[0] : 0;
+            const bool vt_ok = nvt >= 0x146000000ull && nvt < 0x147000000ull;
+            static std::atomic<int> told{0};
+            if (at == 0x141335be6ull) {
+                const auto* img = reinterpret_cast<const std::uint8_t*>(c->Rdx);
+                const auto* gen = reinterpret_cast<const std::uint8_t*>(c->Rcx);
+                if (told++ < 400 && xs_readable(img, 0x40) && xs_readable(gen, 0x48)) {
+                    const std::uint32_t fmt = *reinterpret_cast<const std::uint32_t*>(img);
+                    const std::uint16_t cnt = *reinterpret_cast<const std::uint16_t*>(img + 10);
+                    const auto* sub = *reinterpret_cast<const std::uint8_t* const*>(img + 0x10);
+                    const std::uint32_t gw = *reinterpret_cast<const std::uint32_t*>(gen + 0x38);
+                    const std::uint32_t gh = *reinterpret_cast<const std::uint32_t*>(gen + 0x3c);
+                    std::fprintf(stderr, "[tex] fill tid %lx node %llx vt %llx gen %llx gvt %llx gen w %u h %u img fmt %x mips %u"
+                                 " node+38 %llx\n", GetCurrentThreadId(), (unsigned long long)c->Rsi,
+                                 (unsigned long long)nvt, (unsigned long long)c->Rcx,
+                                 (unsigned long long)*reinterpret_cast<const std::uint64_t*>(gen),
+                                 gw, gh, fmt, cnt, xs_readable(node, 0x40) ? (unsigned long long)node[7] : 0ull);
+                    for (unsigned i = 0; i < cnt && i < 4 && xs_readable(sub + i * 0x20, 0x20); ++i) {
+                        const auto* e = reinterpret_cast<const std::uint64_t*>(sub + i * 0x20);
+                        const std::uint32_t w = static_cast<std::uint32_t>(e[0]), h = static_cast<std::uint32_t>(e[0] >> 32);
+                        const std::uint64_t pitch = e[1], size = e[2], data = e[3];
+                        const std::uint64_t end_w = gh ? data + (gh - 1) * pitch + std::uint64_t(gw) * 16 : data;
+                        std::fprintf(stderr, "[tex]   mip %u w %u h %u pitch %llx size %llx data %llx..%llx writes to %llx%s%s\n",
+                                     i, w, h, (unsigned long long)pitch, (unsigned long long)size,
+                                     (unsigned long long)data, (unsigned long long)(data + size),
+                                     (unsigned long long)end_w, end_w > data + size ? " OVERRUN" : "",
+                                     (c->Rsi >= data && c->Rsi < end_w) ? " NODE-INSIDE-WRITE" : "");
+                    }
+                    std::fflush(stderr);
+                }
+            } else if (!vt_ok || told < 400) {
+                if (!vt_ok || at == 0x14133609aull) {
+                    ++told;
+                    std::fprintf(stderr, "[tex] %s tid %lx node %llx vt %llx%s\n",
+                                 at == 0x141335c05ull ? "after-fill" : "final-call", GetCurrentThreadId(),
+                                 (unsigned long long)c->Rsi, (unsigned long long)nvt, vt_ok ? "" : " BAD VTABLE");
+                    std::fflush(stderr);
+                }
+            }
+        }
         if (in_range && pr.hits++ < 60) {
             {
                 char chain[256];
@@ -4787,6 +4841,54 @@ void xs_install_probes() {
     }
 }
 
+// HACK (Leonida CE, agW): the title's CPU-image pitch function +0x1555c10 (and the size function +0x1555b60 built on
+// it) returns 0 for staging format 0x0a (R32G32B32A32: word 0x10000a). The generated-texture request +0x1335a20 falls
+// back to a CPU staging image when it cannot map the texture itself (+0x1336320 -> lock fails), allocates 0 bytes for
+// the 256x1 float4 colour ramp, and the fill +0x550e2d0 writes 4 KiB over the request node and its neighbours: the
+// crash at +0x13360a3 (vtable 0x3f8000003f800000), the bad frees and +0x538d68e. Patch +0x1555c29 to jump to a stub
+// that answers width*16 for format 0x0a. LEONIDA_CE_NO_FMT10_PITCH=1 leaves it.
+void xs_patch_fmt10_pitch() {
+    char v[8] = {};
+    if (GetEnvironmentVariableA("LEONIDA_CE_NO_FMT10_PITCH", v, sizeof(v)) && v[0] == '1') return;
+    auto* at = reinterpret_cast<std::uint8_t*>(0x141555c29ull);
+    static const std::uint8_t expect[10] = {0x83, 0xc0, 0xfd, 0x83, 0xf8, 0x02, 0x72, 0x55, 0x31, 0xd2};
+    if (!xs_readable(at, 10) || std::memcmp(at, expect, 10) != 0) {
+        std::fprintf(stderr, "[hack] fmt 0x0a pitch patch: bytes differ, not applied\n");
+        return;
+    }
+    std::uint8_t* stub = nullptr;
+    for (std::uintptr_t a = 0x13f000000ull; a > 0xc1000000ull && !stub; a -= 0x10000)
+        stub = static_cast<std::uint8_t*>(VirtualAlloc(reinterpret_cast<void*>(a), 4096, MEM_COMMIT | MEM_RESERVE,
+                                                       PAGE_EXECUTE_READWRITE));
+    if (!stub) {
+        std::fprintf(stderr, "[hack] fmt 0x0a pitch patch: no stub page near the image\n");
+        return;
+    }
+    const std::uint8_t code[] = {
+        0x83, 0xf8, 0x0a,              // cmp eax, 10   (eax = format & 0xfff here)
+        0x75, 0x06,                    // jne +6
+        0xc1, 0xe2, 0x04,              // shl edx, 4    (width * 16)
+        0x89, 0xd0,                    // mov eax, edx
+        0xc3,                          // ret
+        0x83, 0xc0, 0xfd,              // add eax, -3   (the replaced code)
+        0x83, 0xf8, 0x02,              // cmp eax, 2
+        0x73, 0x0e,                    // jae +14
+        0xff, 0x25, 0, 0, 0, 0, 0x86, 0x5c, 0x55, 0x41, 0x01, 0, 0, 0,  // jmp 0x141555c86
+        0xff, 0x25, 0, 0, 0, 0, 0x31, 0x5c, 0x55, 0x41, 0x01, 0, 0, 0,  // jmp 0x141555c31
+    };
+    std::memcpy(stub, code, sizeof(code));
+    FlushInstructionCache(GetCurrentProcess(), stub, sizeof(code));
+    std::uint8_t patch[8] = {0xe9, 0, 0, 0, 0, 0x90, 0x90, 0x90};
+    const std::int32_t rel = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(stub) - 0x141555c2ell);
+    std::memcpy(patch + 1, &rel, 4);
+    DWORD old_protect = 0;
+    if (!VirtualProtect(at, 8, PAGE_EXECUTE_READWRITE, &old_protect)) return;
+    std::memcpy(at, patch, 8);
+    VirtualProtect(at, 8, old_protect, &old_protect);
+    FlushInstructionCache(GetCurrentProcess(), at, 8);
+    std::fprintf(stderr, "[hack] fmt 0x0a pitch patch applied (game+0x1555c29 -> stub %p)\n", static_cast<void*>(stub));
+}
+
 void xs_patch_audio_lock_leak() {
     auto* at = reinterpret_cast<std::uint8_t*>(0x145267747ull);
     static const std::uint8_t expect[6] = {0x0f, 0x84, 0xae, 0x05, 0x00, 0x00};  // je +0x5ae (to +0x5267cfb)
@@ -4904,6 +5006,7 @@ void xs_patch_scratch_release() {
 void set_console_arena(std::uint8_t* mapped, std::uint64_t arena_size, std::uint64_t ring_cpu, std::uint64_t ring_va,
                        std::uint64_t ring_size) {
     xs_patch_audio_lock_leak();
+    xs_patch_fmt10_pitch();
     xs_patch_lut_fill();
     xs_patch_walk_alloc_hint();
     xs_patch_scratch_release();

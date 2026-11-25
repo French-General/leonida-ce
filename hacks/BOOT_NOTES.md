@@ -496,3 +496,21 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   Then a crash at 78.8 s: +0x13360A3 reading -1 (the old walk crash site), next to fix.
 - Tools now set up: cdb (Debugging Tools for Windows) on the VM (C:\zroot\dbgdump.ps1: non-invasive attach, !runaway,
   ~*k, !locks; output is UTF-16), Ghidra 12.2 headless on the GPU box (/root/ghidra-scripts/Decomp.java, JDK 25).
+- THE WALK CRASH IS FIXED (2026-11-24). The crash at +0x13360a3 (and its bad-free / +0x538d68e / +0x538d0e6 forms) was
+  a heap overrun by the title itself, caught in the act under Wine (probes, Definite):
+  - The generated-texture request +0x1335a20 fails to lock the texture's own image (+0x1336230 -> +0x1336320, vtable
+    +8 returns null on our runtime; why is still open) and falls back to a CPU staging image in format word 0x10000a
+    (R32G32B32A32).
+  - The title's pitch function +0x1555c10 (and size +0x1555b60) handles format&0xfff 1-4, 9 and >0x14 only: 0x0a gives
+    pitch 0, size 0, a 0-byte image.
+  - The generator fill +0x550e2d0 (a 256x1 float4 colour ramp, 4 KiB) writes it anyway, over the live 0xa0-byte request
+    node 0xef0 bytes on: its vtable becomes 0x3f8000003f800000 (1.0f, 1.0f) and call *0xb0 at +0x13360a3 faults.
+  Hack: xs_patch_fmt10_pitch jumps from +0x1555c29 to a stub that returns width*16 for format 0x0a
+  (LEONIDA_CE_NO_FMT10_PITCH=1 off). Native Windows: no exception in 600 s, boot state 3, frame 6300, speech streaming.
+  Not the cause: failed compute pipelines (an empty placeholder for untranslated compute programs is in anyway,
+  LEONIDA_CE_NO_CS_PLACEHOLDER=1 off). LEONIDA_CE_SKIP_LUT never helped because it nops two of the four row copies.
+- Graphics pipelines now build in the background on a pool of threads (half the cores); a draw whose pipeline is
+  not ready yet is left out instead of freezing the frame (or failing the whole list). LEONIDA_CE_SYNC_PSO=1: at the draw.
+- Probe mode LEONIDA_CE_PROBE_TEX=1 (or ",tex" at the end of LEONIDA_CE_PROBE) logs generated-texture requests
+  (+0x1335be6 / +0x1335c05 / +0x133609a): image mips against the node and whether its vtable survives.
+- Open: why the texture lock fails (the console takes the direct path); the screen is still black at state 3.

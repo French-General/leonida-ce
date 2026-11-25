@@ -41,6 +41,8 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
+#include <deque>
 #include <thread>
 #include <atomic>
 #include <bit>
@@ -4151,7 +4153,38 @@ public:
                     CloseHandle(h);
                 }
             }
-            return E_INVALIDARG;
+            // HACK (Leonida CE, agW): an untranslated compute program fails slot 67 with E_INVALIDARG; the title then
+            // keeps a null definition and its walk crashes (+0x13360a3 at ~79 s). Register an empty program (its
+            // dispatches do nothing) instead. LEONIDA_CE_NO_CS_PLACEHOLDER=1 keeps the failure.
+            static const bool no_cs_placeholder = [] {
+                char v[8] = {};
+                return GetEnvironmentVariableA("LEONIDA_CE_NO_CS_PLACEHOLDER", v, sizeof(v)) && v[0] == '1';
+            }();
+            if (no_cs_placeholder) return E_INVALIDARG;
+            {
+                const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(leonida::ShaderUserData)};
+                VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                layout_info.pushConstantRangeCount = 1;
+                layout_info.pPushConstantRanges = &push;
+                if (vk.vkCreatePipelineLayout(dev, &layout_info, nullptr, &pipeline_.layout) != VK_SUCCESS)
+                    return E_INVALIDARG;
+                pipeline_.pipeline = empty_compute_pipeline(pipeline_.layout);
+                if (!pipeline_.pipeline) return E_INVALIDARG;
+                static std::atomic<int> placeholders{0};
+                const int n = ++placeholders;
+                if (n <= 5 || n % 50 == 0)
+                    std::fprintf(stderr, "[hack] untranslated compute program: empty placeholder (#%d)\n", n);
+                const std::vector<std::uint8_t>& code = program.bytes;
+                VkDeviceSize offset = 0;
+                if (!device_.arena_allocate(code.size(), 256, offset, DeviceState::arena_shader)) return E_OUTOFMEMORY;
+                std::memcpy(device_.arena.mapped + offset, code.data(), code.size());
+                code_bytes_ = code.size();
+                code_base_ = offset;
+                pipeline_.code_base = offset;
+                device_.context->add_pipeline(id(), pipeline_);
+                registered_ = true;
+                return S_OK;
+            }
         }
         // Set 0 (bindless images, samplers, the descriptor hash table): the device keeps it, and a pipeline whose
         // shader declares bindings has it in its layout and has it bound at every dispatch.
@@ -4469,16 +4502,79 @@ private:
     }
 
     // Built on first use and kept until the PSO is released (replay may call this from any queue).
+    // HACK (Leonida CE): built in the background. The first draws that need it get VK_NULL_HANDLE and are left out
+    // (the replay skips them) while a pool of compile threads builds it; compiling at the draw froze the frame for
+    // every new pipeline. LEONIDA_CE_SYNC_PSO=1 compiles at the draw again.
     VkPipeline variant(std::uint32_t unbound) {
-        std::lock_guard lock(variants_mutex_);
+        static const bool sync = [] {
+            char v[8] = {};
+            return GetEnvironmentVariableA("LEONIDA_CE_SYNC_PSO", v, sizeof(v)) && v[0] == '1';
+        }();
+        std::unique_lock lock(variants_mutex_);
         if (const auto it = variants_.find(unbound); it != variants_.end()) return it->second;
-        const VkPipeline pipeline = build(unbound);
-        if (!pipeline) {
-            log_once("a pipeline variant for unbound attachment slots could not be built; slots", int(unbound));
-            return VK_NULL_HANDLE;
+        if (sync) {
+            const VkPipeline pipeline = build(unbound);
+            if (!pipeline) {
+                log_once("a pipeline variant for unbound attachment slots could not be built; slots", int(unbound));
+                return VK_NULL_HANDLE;
+            }
+            variants_.emplace(unbound, pipeline);
+            return pipeline;
         }
-        variants_.emplace(unbound, pipeline);
-        return pipeline;
+        if (!pending_.insert(unbound).second) return VK_NULL_HANDLE;  // already queued
+        static_cast<ID3D12PipelineState*>(this)->AddRef();  // released by the compile job
+        lock.unlock();
+        compile_pool().post([this, unbound] {
+            const VkPipeline pipeline = build(unbound);
+            {
+                std::lock_guard l(variants_mutex_);
+                pending_.erase(unbound);
+                // A failure stays in the map as VK_NULL_HANDLE: its draws are left out, nothing retries.
+                variants_.emplace(unbound, pipeline);
+            }
+            if (!pipeline) log_once("a graphics pipeline could not be built; unbound slots", int(unbound));
+            static std::atomic<std::uint64_t> built{0};
+            const std::uint64_t n = ++built;
+            if (n == 1 || n % 1000 == 0)
+                std::fprintf(stderr, "[rt] d3d12: %llu graphics pipelines built in the background\n",
+                             static_cast<unsigned long long>(n));
+            static_cast<ID3D12PipelineState*>(this)->Release();
+        });
+        return VK_NULL_HANDLE;
+    }
+
+    // Worker threads for background pipeline builds: half the cores (at least 2).
+    struct CompilePool {
+        std::mutex mu;
+        std::condition_variable cv;
+        std::deque<std::function<void()>> jobs;
+        explicit CompilePool(unsigned n) {
+            for (unsigned i = 0; i < n; ++i)
+                std::thread([this] {
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                    for (;;) {
+                        std::function<void()> job;
+                        {
+                            std::unique_lock l(mu);
+                            cv.wait(l, [this] { return !jobs.empty(); });
+                            job = std::move(jobs.front());
+                            jobs.pop_front();
+                        }
+                        job();
+                    }
+                }).detach();
+        }
+        void post(std::function<void()> job) {
+            {
+                std::lock_guard l(mu);
+                jobs.push_back(std::move(job));
+            }
+            cv.notify_one();
+        }
+    };
+    static CompilePool& compile_pool() {
+        static CompilePool* pool = new CompilePool(std::max(2u, std::thread::hardware_concurrency() / 2));
+        return *pool;
     }
 
     DeviceState& device_;
@@ -4487,6 +4583,7 @@ private:
     Recipe recipe_;
     std::mutex variants_mutex_;
     std::map<std::uint32_t, VkPipeline> variants_;
+    std::set<std::uint32_t> pending_;  // variants queued for a background build
     VkShaderModule module_ = VK_NULL_HANDLE;
     std::shared_ptr<AsyncCompute> async_job_;  // HACK (Leonida CE boot): background compute compile
     std::vector<VkPipeline> retired_;          // placeholders replaced by their real pipeline

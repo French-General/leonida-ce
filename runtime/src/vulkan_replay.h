@@ -1096,6 +1096,8 @@ struct PreparedDraw {
     // lock across both), so it is not copied.
     const GraphicsPipeline* graphics = nullptr;
     VkPipeline pipeline = VK_NULL_HANDLE;  // graphics->pipeline, or its variant for the slots the draw leaves unbound
+    // Leonida CE: the pipeline is still compiling in the background (or failed): the draw is left out, not the list.
+    bool skip = false;
     std::vector<Attachment> colors;  // by slot; id 0 = unbound
     Attachment depth;
     std::vector<VkBuffer> vertex_buffers;
@@ -1110,6 +1112,7 @@ struct PreparedDraw {
 
     // Back to a new draw's state, keeping the vectors' storage.
     void reset() {
+        skip = false;
         graphics = nullptr;
         pipeline = VK_NULL_HANDLE;
         colors.clear();
@@ -2149,7 +2152,10 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
     p.graphics = pipeline;
     // A lazily created pipeline (Leonida CE) is built on its first draw: variant 0 is the pipeline itself, cached.
     p.pipeline = pipeline->pipeline ? pipeline->pipeline : pipeline->variant(0);
-    if (!p.pipeline) return ReplayResult::unsupported;
+    if (!p.pipeline) {
+        p.skip = true;  // compiling in the background (Leonida CE): this draw is left out
+        return ReplayResult::success;
+    }
     p.area = {UINT32_MAX, UINT32_MAX};
     std::uint32_t layers = UINT32_MAX;
     const auto shrink = [&](const ResourceBinding& b, const TargetView& view, const VkImageSubresourceRange& range) {
@@ -2208,7 +2214,10 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
     if (pipeline->depth_format != VK_FORMAT_UNDEFINED && !p.depth.id) unbound |= GraphicsPipeline::unbound_depth;
     if (unbound) {
         p.pipeline = pipeline->variant ? pipeline->variant(unbound) : VK_NULL_HANDLE;
-        if (!p.pipeline) return ReplayResult::unsupported;
+        if (!p.pipeline) {
+            p.skip = true;
+            return ReplayResult::success;
+        }
     }
 
     // HACK (Leonida CE): the shaders read the title's per-draw data (root arguments point into its upload ring) at
@@ -4168,6 +4177,7 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
             vk.dispatch(command_buffer, dispatch->x, dispatch->y, dispatch->z);
         } else if (const auto* draw = std::get_if<Draw>(&command)) {
             const detail::PreparedDraw& d = prepared.draws[p.draw];
+            if (d.skip) continue;  // its pipeline is still compiling (Leonida CE)
             constexpr VkAccessFlags color_access =
                 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             constexpr VkAccessFlags depth_access =
