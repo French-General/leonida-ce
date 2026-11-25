@@ -2167,7 +2167,7 @@ private:
                 discard();
                 return ReplayResult::invalid_copy;
             }
-            const std::uint64_t device_address = vk.heap_base + va;
+            const std::uint64_t device_address = vk.heap_base + vk.normalise_va(va);
             std::memcpy(static_cast<std::uint8_t*>(mapped) + 8ull * i, &device_address, sizeof(device_address));
         }
         funcs.vkUnmapMemory(context_.device(), stage.memory);

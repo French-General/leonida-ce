@@ -44,6 +44,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+
+#include "range_table.h"
 #include <functional>
 #include <limits>
 #include <map>
@@ -879,6 +881,12 @@ struct ReplayFunctions {
     VkDeviceSize zero_offset = 0;
     VkDeviceSize zero_size = 0;
     std::uint64_t heap_base = 0;  // device address of the GPU address arena (push-constant dwords 32-33)
+    // The title's VA ranges and their arena shadows (src/range_table.h). Empty until something registers a
+    // range, and normalise_va then returns its input, so an unregistered run behaves exactly as before.
+    // Shared: ReplayFunctions is copied by value (the backend keeps its own), and every copy must see the same
+    // registrations.
+    std::shared_ptr<RangeTable> ranges = std::make_shared<RangeTable>();
+    std::uint64_t normalise_va(std::uint64_t va) const { return ranges->normalise(va); }
     // Resolves available binary-occlusion queries to 64-bit 0/1 values, outside conditional rendering.
     std::function<void(VkCommandBuffer, VkQueryPool, std::uint32_t first, std::uint32_t count,
                        VkBuffer dst, VkDeviceSize offset)> resolve_binary_occlusion;
@@ -4112,7 +4120,7 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
             // The build's addresses are console VAs into the GPU address arena (heap_base is its device address).
             // A null VA (no index buffer, no transform) stays null: heap_base + 0 would name the arena's zero page.
             const VkDeviceSize heap_base = vk.heap_base;
-            const auto addr = [&](std::uint64_t va) -> VkDeviceAddress { return va ? heap_base + va : 0; };
+            const auto addr = [&](std::uint64_t va) -> VkDeviceAddress { return va ? heap_base + vk.normalise_va(va) : 0; };
             std::vector<VkAccelerationStructureGeometryKHR> geoms;
             std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
             if (build->is_tlas) {
