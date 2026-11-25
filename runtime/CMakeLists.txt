@@ -3260,7 +3260,10 @@ if(TARGET Vulkan::Headers)
     add_executable(conservative_raster_test test/conservative_raster_test.cpp)
     add_test(NAME conservative_raster COMMAND conservative_raster_test)
     # The GPU address arena's size from LEONIDA_ARENA_MB and synthetic device buffer limits.
-    add_executable(arena_size_test test/arena_size_test.cpp)
+    add_executable(range_table_test test/range_table_test.cpp)
+target_link_libraries(range_table_test PRIVATE Vulkan::Headers)
+add_test(NAME range_table COMMAND range_table_test)
+add_executable(arena_size_test test/arena_size_test.cpp)
     target_link_libraries(arena_size_test PRIVATE Vulkan::Headers)
     add_test(NAME arena_size COMMAND arena_size_test)
     # Queue construction cleans its Vulkan handles if holder registration runs out of host memory.
