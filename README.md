@@ -22,6 +22,10 @@ like a PC's, so the game's own code runs natively; the console's system software
 GPU programs are translated to SPIR-V for Vulkan. It continues the original Leonida project, which went private;
 the history, the GPLv3 license and the credit to everyone who worked on it are kept.
 
+> [!CAUTION]
+> **WE DON'T HAVE AN OFFICIAL DISCORD OR WEBSITE. PEOPLE CLAIMING WE DO ARE FAKES.** This GitHub repository is
+> the only official place for Leonida CE.
+
 > [!IMPORTANT]
 > This repository has **no game files, keys or executables**, and doesn't explain how to get them. You need your own
 > copy with its files readable on disk; nothing here decrypts or bypasses any protection. Everything the build makes
