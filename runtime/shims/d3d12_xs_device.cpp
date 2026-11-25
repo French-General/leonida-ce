@@ -1430,9 +1430,11 @@ void xs_refresh_placed_textures(ID3D12Device* dev) {
 // placed buffer up to 8 MiB whose title bytes changed (full hash) into its GPU resource. LEONIDA_CE_NO_BUFFER_SYNC=1
 // turns it off.
 void xs_refresh_placed_buffers(ID3D12CommandQueue* queue) {
+    // Opt-in (LEONIDA_CE_BUFFER_SYNC=1): once the boot runs the title has hundreds of placed buffers, and hashing all of
+    // them before every submission stalled the present thread; the per-draw ring sync covers what draws read.
     static const bool off = [] {
         char v[8] = {};
-        return GetEnvironmentVariableA("LEONIDA_CE_NO_BUFFER_SYNC", v, sizeof(v)) && v[0] == '1';
+        return !(GetEnvironmentVariableA("LEONIDA_CE_BUFFER_SYNC", v, sizeof(v)) && v[0] == '1');
     }();
     if (off || !queue) return;
     std::vector<XsPlaced> buffers;
@@ -2914,9 +2916,13 @@ std::uint64_t WINAPI child_slot(ChildProxy* self, std::uint64_t a1, std::uint64_
                 // never shows its first screen. Once sign-in is done (frame 60 on), make pad 0 active: the pad index,
                 // the profile manager's ready byte 0x1498489C0, and bit 0x02 of pad 0's entry (0x1498482B8 + 0x144).
                 // Found by static analysis of the boot state machine (0x141D83960). LEONIDA_CE_NO_PAD_HACK=1: off.
+                // OFF by default (LEONIDA_CE_PAD_HACK=1 turns it on): the byte 0x1498489C0 it sets is the online
+                // system's "already initialized" flag, not a profile-ready flag. Setting it before 0x143DA1560 runs makes
+                // that init fail and shut the system down, leaving a dangling singleton (0x1498C0F20) that the boot task
+                // 0xB198EC07 then crashes on (swallowed): the boot state machine never started (subagent, Definite).
                 static const bool no_pad_hack = [] {
                     char v[8] = {};
-                    return GetEnvironmentVariableA("LEONIDA_CE_NO_PAD_HACK", v, sizeof(v)) && v[0] == '1';
+                    return !(GetEnvironmentVariableA("LEONIDA_CE_PAD_HACK", v, sizeof(v)) && v[0] == '1');
                 }();
                 auto* const pad = reinterpret_cast<volatile std::int32_t*>(0x146C31B50ull);
                 if (!no_pad_hack && f >= 60 && xs_readable(const_cast<std::int32_t*>(pad), 4) && *pad == -1) {

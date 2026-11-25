@@ -4067,8 +4067,24 @@ public:
         recipe_.depth = depth;
         recipe_.blends = std::move(blends);
         recipe_.blend = blend;
-        graphics_.pipeline = build(0);
-        if (!graphics_.pipeline) return E_FAIL;
+        // HACK (Leonida CE): lazy graphics pipelines. GTA VI creates 20,000+ graphics pipelines in its startup task
+        // graph and its boot state machine (and the frontend, the first screen) waits for all of them; compiled here,
+        // one by one through the driver, that took far longer than any run (black screen, the boot node never ran).
+        // Now the Vulkan pipeline is built on its first draw (variant 0, cached like the unbound-slot variants), so
+        // creation returns at once. LEONIDA_CE_EAGER_PSO=1 compiles at creation again.
+        static const bool eager = [] {
+            char v[8] = {};
+            return GetEnvironmentVariableA("LEONIDA_CE_EAGER_PSO", v, sizeof(v)) && v[0] == '1';
+        }();
+        if (eager) {
+            graphics_.pipeline = build(0);
+            if (!graphics_.pipeline) return E_FAIL;
+        } else {
+            graphics_.pipeline = VK_NULL_HANDLE;
+            static std::atomic<bool> told{false};
+            if (!told.exchange(true))
+                std::fprintf(stderr, "[rt] d3d12: graphics pipelines are built on first use (LEONIDA_CE_EAGER_PSO=1: at creation)\n");
+        }
         graphics_.variant = [this](std::uint32_t unbound) { return variant(unbound); };
 
         if (code_stage) {

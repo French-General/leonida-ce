@@ -476,3 +476,23 @@ Continues `docs/retail_boot_chain.md` (stops 1-13). Slots are 0-based vtable ind
   - Boot node (in progress): 0x145B47FF0 builds a task-graph node (name hash 0x672FD9D1, body functor 0x1421C3B60,
     stored at obj+0x5A0 of the graph 0x141DECC30 builds) with edges to nodes 0xEA79F4B6, 0xB198EC07, 0x13B28C68,
     0x5FDC36D5, 0x198352B0, 0xA599B5CB; the body never runs, so the boot state machine never starts.
+- BOOT UNBLOCKED (2026-11-24). Two causes:
+  1. My own pad hack: it wrote byte 0x1498489C0, which is the online system's "already initialized" flag. Whenever the
+     online-system init 0x143DA1560 ran after present 60, its step 0x143DA1F00 saw the flag set and failed; the init
+     shut the system down and left the singleton at 0x1498C0F20 dangling, and 0x14502B2E0 (reached from the boot task
+     0xB198EC07 via 0x1422082D0 -> 0x142208CA0) faulted on it (read of 0x40 at 0x14502B2F1, swallowed by the job
+     worker). The node never finished, so the boot node 0x672FD9D1 (0x1421C3B60 -> 0x1421B8F00 -> state 1) never ran.
+     Found by a subagent with probes and a 6-byte patch test (Definite). The pad hack is now opt-in
+     (LEONIDA_CE_PAD_HACK=1); the title sets pad 0 and that flag itself.
+  2. Pipeline creation: the startup graph creates 43,000+ graphics pipelines; compiling them at creation took many
+     minutes (Windows: NVIDIA's compiler; cdb showed the job workers in pipeline creation). Graphics pipelines are now
+     built on first draw (LEONIDA_CE_EAGER_PSO=1 restores creation-time compiles).
+  Also: the per-submission placed-buffer sync is opt-in (LEONIDA_CE_BUFFER_SYNC=1): hashing hundreds of placed buffers
+  per submission stalled the present thread (cdb + llvm-symbolizer: xs_refresh_placed_buffers); the vertex-sync
+  readability walk runs only on the host path.
+  Result on native Windows: boot state 1 by frame 600; new service calls save_init_async, user_get_gamertag,
+  save_init_result, user_get_is_guest, user_get_age_group, user_check_privilege, save_container_info; compute
+  dispatches; Scaleform UI pipelines (VBatchVertexCxformEAlpha / FVertexCxformEAlpha) and the first indexed draws.
+  Then a crash at 78.8 s: +0x13360A3 reading -1 (the old walk crash site), next to fix.
+- Tools now set up: cdb (Debugging Tools for Windows) on the VM (C:\zroot\dbgdump.ps1: non-invasive attach, !runaway,
+  ~*k, !locks; output is UTF-16), Ghidra 12.2 headless on the GPU box (/root/ghidra-scripts/Decomp.java, JDK 25).

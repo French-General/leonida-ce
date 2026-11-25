@@ -2141,13 +2141,15 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
         !vk.draw_indexed || !vk.bind_pipeline || !vk.push_constants)
         return ReplayResult::unsupported;
     const GraphicsPipeline* pipeline = vk.graphics_pipeline(draw.pipeline);
-    if (!pipeline || !pipeline->pipeline) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
+    if (!pipeline || (!pipeline->pipeline && !pipeline->variant)) { static bool told_ = false; if (!told_) { told_ = true; std::fprintf(stderr, "[hack] replay: unresolved resource at vulkan_replay.h:%d\n", __LINE__); } return ReplayResult::unresolved_resource; }
     if (pipeline->mesh != draw.mesh) return ReplayResult::invalid_draw;
     if (draw.mesh && !vk.draw_mesh_tasks) return ReplayResult::unsupported;
     if (pipeline->bindless_set && !vk.bind_descriptor_sets) return ReplayResult::unsupported;
     if (pipeline->color_formats.size() > max_render_targets) return ReplayResult::unsupported;
     p.graphics = pipeline;
-    p.pipeline = pipeline->pipeline;
+    // A lazily created pipeline (Leonida CE) is built on its first draw: variant 0 is the pipeline itself, cached.
+    p.pipeline = pipeline->pipeline ? pipeline->pipeline : pipeline->variant(0);
+    if (!p.pipeline) return ReplayResult::unsupported;
     p.area = {UINT32_MAX, UINT32_MAX};
     std::uint32_t layers = UINT32_MAX;
     const auto shrink = [&](const ResourceBinding& b, const TargetView& view, const VkImageSubresourceRange& range) {
@@ -2261,8 +2263,10 @@ ReplayResult prepare_draw(const Draw& draw, Resolve&& resolve, const ReplayFunct
             }();
             const std::uint8_t* host = nullptr;
             const HostReadStatus hs = vk.host_at ? vk.host_at(view.va, size, host) : HostReadStatus::absent;
-            const bool readable = detail::title_readable(view.va, size);
-            {
+            // Only where the host path could apply: walking the regions of every view on every draw (large vertex
+            // buffers are many small XMem views) stalled the render thread in VirtualQuery.
+            const bool readable = hs == HostReadStatus::ok && host && detail::title_readable(view.va, size);
+            if (false) {
                 static std::atomic<int> diag{0};
                 if (diag++ < 3)
                     std::fprintf(stderr, "[smoke] vertex sync check va %llx: host_at %d host %p title readable %d\n",
